@@ -1,0 +1,53 @@
+appId: studio.40h.bundy
+productName: Bundy
+directories:
+  buildResources: resources
+  output: dist
+extraResources:
+  - from: resources/
+    to: .
+
+files:
+  - out/**/*
+  - node_modules/**/*
+  - "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!node_modules/.bin"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!.editorconfig"
+  - "!**/._*"
+  - "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}"
+  - "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}"
+  - "!**/{appveyor.yml,.travis.yml,circle.yml}"
+  - "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+
+mac:
+  icon: resources/icon.png
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # No Apple Developer certificate — unsigned build.
+  # afterSign deep-resigns all binaries so Gatekeeper accepts it after xattr -cr.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+publish:
+  provider: generic
+  url: https://bundy.40h.studio/updates/
+dmg:
+  artifactName: Bundy-${version}-${arch}.dmg
+
+nsis:
+  artifactName: Bundy-${version}-Setup.exe
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+
+asar: true
+asarUnpack:
+  - "**/{uiohook-napi,*.node}"
+  - "**/active-win/**"
+
+afterSign: afterSign.js

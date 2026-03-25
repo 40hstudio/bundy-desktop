@@ -1,0 +1,36 @@
+{
+  "name": "bundy-desktop",
+  "version": "1.2.1",
+  "description": "Bundy Clock – macOS menu bar app",
+  "main": "out/main/index.js",
+  "author": "40h Studio",
+  "homepage": "https://bundy.40h.studio",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "predist": "bash scripts/setup-codesign.sh",
+    "dist": "npm run build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^3.0.0",
+    "active-win": "^8.2.1",
+    "electron-store": "^10.0.0",
+    "electron-updater": "^6.8.3",
+    "uiohook-napi": "^1.5.3"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.5",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.6"
+  }
+}

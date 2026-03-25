@@ -1,0 +1,33 @@
+import type { StoredAuth, BundyStatus, Permissions } from '../../preload/index'
+
+declare global {
+  interface Window {
+    electronAPI: {
+      getStoredAuth: () => Promise<StoredAuth | null>
+      login: (shortToken: string) => Promise<StoredAuth>
+      logout: () => Promise<void>
+      getStatus: () => Promise<BundyStatus>
+      doAction: (action: string, note?: string) => Promise<void>
+      submitReport: (content: string) => Promise<void>
+      checkPermissions: () => Promise<Permissions>
+      openAccessibilitySettings: () => Promise<void>
+      openScreenRecordingSettings: () => Promise<void>
+      openExternal: (url: string) => Promise<void>
+      checkForUpdates: () => Promise<void>
+      installUpdate: () => Promise<void>
+      getVersion: () => Promise<string>
+      onUpdateAvailable: (cb: (info: { version: string }) => void) => () => void
+      onUpdateDownloaded: (cb: () => void) => () => void
+      onStatusUpdate: (cb: (status: BundyStatus) => void) => () => void
+      onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void
+    }
+  }
+}
+
+interface BundyStatus {
+  isClockedIn: boolean
+  onBreak: boolean
+  elapsedMs: number
+  username: string
+  role: string
+}

@@ -1,0 +1,57 @@
+name: Build Bundy Desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.0.0)"
+        required: false
+        default: "v1.0.0"
+
+jobs:
+  build-mac:
+    runs-on: macos-14  # Apple Silicon runner
+    defaults:
+      run:
+        working-directory: bundy-desktop
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: bundy-desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package DMG (unsigned — no Apple Developer account required)
+        run: npx electron-builder --mac dmg --x64 --arm64
+        env:
+          # Skip code-signing so anyone can build without an Apple Developer ID
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload DMG artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bundy-mac-dmg
+          path: bundy-desktop/dist/*.dmg
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bundy-desktop/dist/*.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
