@@ -34,8 +34,10 @@ mac:
   hardenedRuntime: false
   gatekeeperAssess: false
 publish:
-  provider: generic
-  url: https://bundy.40h.studio/updates/
+  provider: github
+  owner: 40hstudio
+  repo: bundy-desktop
+  private: true
 dmg:
   artifactName: Bundy-${version}-${arch}.dmg
 
