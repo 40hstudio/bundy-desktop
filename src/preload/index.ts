@@ -68,7 +68,9 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, perms: Permissions): void => cb(perms)
     ipcRenderer.on('permissions-update', handler)
     return () => ipcRenderer.removeListener('permissions-update', handler)
-  }
+  },
+  sendCrashReport: (note: string): Promise<void> =>
+    ipcRenderer.invoke('send-crash-report', note)
 }
 
 if (process.contextIsolated) {

@@ -16,6 +16,7 @@ import store from './store'
 import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE } from './api'
 import { startScreenshots, stopScreenshots } from './screenshot'
 import { startActivity, stopActivity } from './activity'
+import { initCrashReporter, sendUserReport } from './crash-reporter'
 
 let tray: Tray | null = null
 let popupWin: BrowserWindow | null = null
@@ -350,10 +351,17 @@ ipcMain.handle('install-update', () => {
   autoUpdater.quitAndInstall()
 })
 
+ipcMain.handle('send-crash-report', async (_event, note: string) => {
+  await sendUserReport(note)
+})
+
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
   app.dock?.hide()
+
+  // ── Crash reporter ──────────────────────────────────────────────────────────
+  initCrashReporter()
 
   // ── Auto-updater ────────────────────────────────────────────────────────────
   autoUpdater.autoDownload = true

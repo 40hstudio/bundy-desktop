@@ -22,6 +22,7 @@ declare global {
       onUpdateDownloaded: (cb: () => void) => () => void
       onStatusUpdate: (cb: (status: BundyStatus) => void) => () => void
       onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void
+      sendCrashReport: (note: string) => Promise<void>
     }
   }
 }

@@ -90,6 +90,10 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   const [updateReady, setUpdateReady] = useState(false)
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
   const [appVersion, setAppVersion] = useState<string>('')
+  const [showCrashModal, setShowCrashModal] = useState(false)
+  const [crashNote, setCrashNote] = useState('')
+  const [crashSubmitting, setCrashSubmitting] = useState(false)
+  const [crashSent, setCrashSent] = useState(false)
 
   const applyStatus = useCallback((s: BundyStatus) => {
     setStatus(s)
@@ -422,6 +426,114 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* Report Issue link */}
+      <div style={{ textAlign: 'center', marginTop: 'auto' }}>
+        <button
+          onClick={() => { setCrashNote(''); setCrashSent(false); setShowCrashModal(true) }}
+          style={{
+            background: 'none',
+            border: 'none',
+            fontSize: '10px',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            opacity: 0.6,
+            textDecoration: 'underline'
+          }}
+        >
+          Report an issue
+        </button>
+      </div>
+
+      {/* Report Issue Modal */}
+      {showCrashModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: '16px'
+          }}
+        >
+          <div
+            className="neu-raised"
+            style={{
+              width: '100%',
+              maxWidth: '340px',
+              borderRadius: '16px',
+              padding: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+              background: 'var(--bg)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, fontSize: '13px' }}>🐛 Report an Issue</span>
+              <button
+                onClick={() => setShowCrashModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px' }}
+              >✕</button>
+            </div>
+
+            {crashSent ? (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <div style={{ fontSize: '24px', marginBottom: '8px' }}>✅</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Report sent. Thank you!</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Describe what happened or what went wrong. App version and system info will be included automatically.
+                </div>
+                <textarea
+                  value={crashNote}
+                  onChange={(e) => setCrashNote(e.target.value)}
+                  placeholder="What happened? What were you doing when the issue occurred?"
+                  rows={5}
+                  style={{
+                    width: '100%',
+                    borderRadius: '10px',
+                    padding: '10px',
+                    fontSize: '12px',
+                    background: 'var(--bg)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border, #ccc)',
+                    resize: 'none',
+                    boxSizing: 'border-box',
+                    lineHeight: '1.5'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    className="neu-raised"
+                    onClick={() => setShowCrashModal(false)}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', border: 'none', cursor: 'pointer' }}
+                  >Cancel</button>
+                  <button
+                    className="neu-raised"
+                    onClick={async () => {
+                      if (!crashNote.trim()) return
+                      setCrashSubmitting(true)
+                      try {
+                        await window.electronAPI.sendCrashReport(crashNote.trim())
+                        setCrashSent(true)
+                      } catch { /* ignore */ }
+                      setCrashSubmitting(false)
+                    }}
+                    disabled={!crashNote.trim() || crashSubmitting}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', fontWeight: 700, color: 'var(--accent)', border: 'none', cursor: 'pointer' }}
+                  >{crashSubmitting ? '…' : 'Send Report'}</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
