@@ -487,7 +487,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           )}
 
           {/* Plan items list */}
-          <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto' }}>
+          <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {planItems.length === 0 ? (
             <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '4px' }}>
               No plan items yet. Tap + to add.
