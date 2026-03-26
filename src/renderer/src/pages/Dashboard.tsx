@@ -241,7 +241,8 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         flexDirection: 'column',
         height: '100%',
         padding: '16px',
-        gap: '12px'
+        gap: '12px',
+        overflowY: 'auto'
       }}
     >
       {/* Header */}
@@ -497,41 +498,77 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                 key={item.id}
                 style={{
                   display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '6px',
-                  padding: '4px 0',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  padding: '6px 0',
                   borderBottom: '1px solid rgba(128,128,128,0.1)'
                 }}
               >
-                <span style={{ fontSize: '11px', flexShrink: 0 }}>
-                  {item.status === 'completed' ? '✅' : item.status === 'in-progress' ? '🔄' : item.status === 'blocked' ? '🚫' : '📌'}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {item.project.name}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                  <span style={{ fontSize: '11px', flexShrink: 0 }}>
+                    {item.status === 'completed' ? '✅' : item.status === 'continued' ? '🔁' : item.status === 'in-progress' ? '🔄' : item.status === 'ready-qa' ? '🧪' : item.status === 'ready-client' ? '📤' : item.status === 'blocked' ? '🚫' : '📌'}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.project.name}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text)', wordBreak: 'break-word' }}>
+                      {item.details}
+                    </div>
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text)', wordBreak: 'break-word' }}>
-                    {item.details}
-                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await window.electronAPI.deletePlanItem(item.id)
+                        await loadPlan()
+                      } catch { /* ignore */ }
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      color: 'var(--text-muted)',
+                      padding: '0 2px',
+                      flexShrink: 0,
+                      opacity: 0.5
+                    }}
+                  >✕</button>
                 </div>
-                <button
-                  onClick={async () => {
-                    try {
-                      await window.electronAPI.deletePlanItem(item.id)
-                      await loadPlan()
-                    } catch { /* ignore */ }
-                  }}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: '10px',
-                    cursor: 'pointer',
-                    color: 'var(--text-muted)',
-                    padding: '0 2px',
-                    flexShrink: 0,
-                    opacity: 0.5
-                  }}
-                >✕</button>
+                {/* Status selector */}
+                <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', paddingLeft: '20px' }}>
+                  {([
+                    { value: 'planned', label: '📌 To Do', color: 'var(--text-muted)' },
+                    { value: 'in-progress', label: '🔄 In Progress', color: 'var(--warning)' },
+                    { value: 'ready-qa', label: '🧪 QA', color: '#8b5cf6' },
+                    { value: 'ready-client', label: '📤 Client', color: '#0ea5e9' },
+                    { value: 'blocked', label: '🚫 Blocked', color: 'var(--danger)' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.value}
+                      className={item.status === opt.value ? 'neu-raised' : ''}
+                      onClick={async () => {
+                        try {
+                          await window.electronAPI.updatePlanItem(item.id, opt.value)
+                          await loadPlan()
+                        } catch { /* ignore */ }
+                      }}
+                      style={{
+                        fontSize: '9px',
+                        padding: '2px 6px',
+                        border: item.status === opt.value ? 'none' : '1px solid transparent',
+                        borderRadius: '5px',
+                        cursor: 'pointer',
+                        background: item.status === opt.value ? undefined : 'transparent',
+                        color: item.status === opt.value ? opt.color : 'var(--text-muted)',
+                        fontWeight: item.status === opt.value ? 600 : 400,
+                        opacity: item.status === opt.value ? 1 : 0.7
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             ))
           )}
@@ -800,9 +837,9 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
                           {([
                             { value: 'completed', label: '✅ Done', color: 'var(--success)' },
-                            { value: 'in-progress', label: '🔄 In Progress', color: 'var(--warning)' },
+                            { value: 'continued', label: '🔁 To be continued', color: 'var(--warning)' },
+                            { value: 'planned', label: '📌 Haven\'t started', color: 'var(--text-muted)' },
                             { value: 'blocked', label: '🚫 Blocked', color: 'var(--danger)' },
-                            { value: 'planned', label: '📌 Not Started', color: 'var(--text-muted)' },
                           ] as const).map(opt => (
                             <button
                               key={opt.value}
