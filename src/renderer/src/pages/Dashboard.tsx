@@ -242,7 +242,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         height: '100%',
         padding: '16px',
         gap: '12px',
-        overflowY: 'auto'
+        overflow: 'hidden'
       }}
     >
       {/* Header */}
