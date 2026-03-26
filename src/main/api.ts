@@ -166,12 +166,13 @@ export async function uploadScreenshot(
 let sseAbort: AbortController | null = null
 let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-export function connectSSE(onUpdate: () => void): void {
+export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void {
   disconnectSSE()
 
   const token = store.get('desktopToken')
   if (!token) return
 
+  let hasConnectedOnce = false
   const controller = new AbortController()
   sseAbort = controller
 
@@ -194,6 +195,10 @@ export function connectSSE(onUpdate: () => void): void {
           scheduleReconnect()
           return
         }
+
+        // Fire onReconnect on every reconnect (not the first connect)
+        if (hasConnectedOnce && onReconnect) onReconnect()
+        hasConnectedOnce = true
 
         const reader = res.body.getReader()
         const decoder = new TextDecoder()

@@ -245,7 +245,11 @@ function startPoller(): void {
   statusPollerTimer = setInterval(() => void pollAndPush(), 30_000)
 
   // Real-time sync: listen for SSE events so web actions update instantly
-  connectSSE(() => void refreshStatus())
+  // onReconnect: SSE reconnects ~5s after server restart — check for app updates
+  connectSSE(
+    () => void refreshStatus(),
+    () => autoUpdater.checkForUpdates().catch(() => {})
+  )
 }
 
 function stopPoller(): void {
@@ -382,8 +386,8 @@ app.whenReady().then(() => {
 
   // Check on startup (delay 10s so the app is fully loaded first)
   setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 10_000)
-  // Check every 4 hours
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 4 * 60 * 60 * 1_000)
+  // Fallback: check every 30 minutes (primary detection is via SSE reconnect)
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 30 * 60 * 1_000)
 
   tray = new Tray(getTrayIcon(false))
   tray.setToolTip('Bundy')
