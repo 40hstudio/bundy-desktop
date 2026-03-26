@@ -394,9 +394,9 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
       {status?.isClockedIn && (
         <div
           className="neu-inset"
-          style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}
+          style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', flex: '1 1 0', minHeight: 0 }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>📋 Daily Plan</span>
             <button
               onClick={() => { setShowAddForm(!showAddForm); setNewProjectName(''); setNewDetails('') }}
@@ -486,6 +486,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           )}
 
           {/* Plan items list */}
+          <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto' }}>
           {planItems.length === 0 ? (
             <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '4px' }}>
               No plan items yet. Tap + to add.
@@ -534,6 +535,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
               </div>
             ))
           )}
+          </div>
         </div>
       )}
 
