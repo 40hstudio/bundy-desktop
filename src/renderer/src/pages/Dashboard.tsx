@@ -95,10 +95,42 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   const [crashSubmitting, setCrashSubmitting] = useState(false)
   const [crashSent, setCrashSent] = useState(false)
 
+  // ─── Daily Plan state ──────────────────────────────────────────────────────
+  interface PlanItem {
+    id: string
+    project: { id: string; name: string }
+    details: string
+    status: string
+    outcome: string | null
+  }
+  const [planItems, setPlanItems] = useState<PlanItem[]>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newDetails, setNewDetails] = useState('')
+  const [addingItem, setAddingItem] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(false)
+  // Clock-out confirmation: one status + outcome per item
+  const [confirmItems, setConfirmItems] = useState<Array<{ itemId: string; status: string; outcome: string }>>([])
+  const [clockOutStep, setClockOutStep] = useState<'plan' | 'report'>('plan')
+
   const applyStatus = useCallback((s: BundyStatus) => {
     setStatus(s)
     setBaseMs(s.elapsedMs)
     setSnapshotAt(Date.now())
+  }, [])
+
+  const loadPlan = useCallback(async () => {
+    try {
+      const plan = await window.electronAPI.getDailyPlan()
+      setPlanItems(plan?.items ?? [])
+    } catch { /* non-fatal */ }
+  }, [])
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const p = await window.electronAPI.getProjects()
+      setProjects(p)
+    } catch { /* non-fatal */ }
   }, [])
 
   // Fetch status on mount
@@ -106,7 +138,9 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
     window.electronAPI.getStatus().then(applyStatus).catch(() => {})
     window.electronAPI.checkPermissions().then(setPermissions).catch(() => {})
     window.electronAPI.getVersion().then(setAppVersion).catch(() => {})
-  }, [applyStatus])
+    loadPlan()
+    loadProjects()
+  }, [applyStatus, loadPlan, loadProjects])
 
   // Subscribe to pushed status updates from main process
   useEffect(() => {
@@ -184,12 +218,18 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
       await window.electronAPI.doAction(action)
       const next = await window.electronAPI.getStatus()
       applyStatus(next)
+      // After check-in, ensure today's plan exists and reload
+      if (action === 'clock-in') {
+        await window.electronAPI.ensureDailyPlan()
+        await loadPlan()
+        await loadProjects()
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Action failed')
     } finally {
       setLoading(null)
     }
-  }, [applyStatus])
+  }, [applyStatus, loadPlan, loadProjects])
 
   const missingScreen = permissions?.screen !== 'granted'
   const missingAccessibility = !permissions?.accessibility
@@ -289,7 +329,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           <>
             <button
               className="neu-raised"
-              onClick={() => { setReportContent(''); setReportError(''); setShowReportModal(true) }}
+              onClick={() => {
+                setReportContent('')
+                setReportError('')
+                // Initialize confirm items from current plan items
+                setConfirmItems(planItems.map(i => ({ itemId: i.id, status: i.status, outcome: '' })))
+                setClockOutStep(planItems.length > 0 ? 'plan' : 'report')
+                setShowReportModal(true)
+              }}
               disabled={!!loading}
               style={{ padding: '10px', fontWeight: 600, color: 'var(--danger)', border: 'none' }}
             >
@@ -340,6 +387,153 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           }}
         >
           {error}
+        </div>
+      )}
+
+      {/* Daily Plan Section */}
+      {status?.isClockedIn && (
+        <div
+          className="neu-inset"
+          style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>📋 Daily Plan</span>
+            <button
+              onClick={() => { setShowAddForm(!showAddForm); setNewProjectName(''); setNewDetails('') }}
+              style={{
+                background: 'none',
+                border: 'none',
+                fontSize: '16px',
+                cursor: 'pointer',
+                color: 'var(--accent)',
+                padding: '0 4px',
+                lineHeight: 1
+              }}
+            >
+              {showAddForm ? '−' : '+'}
+            </button>
+          </div>
+
+          {/* Add new plan item form */}
+          {showAddForm && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <input
+                list="project-list"
+                value={newProjectName}
+                onChange={e => setNewProjectName(e.target.value)}
+                placeholder="Project name"
+                style={{
+                  fontSize: '11px',
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border, #ccc)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  boxSizing: 'border-box',
+                  width: '100%'
+                }}
+              />
+              <datalist id="project-list">
+                {projects.map(p => <option key={p.id} value={p.name} />)}
+              </datalist>
+              <input
+                value={newDetails}
+                onChange={e => setNewDetails(e.target.value)}
+                placeholder="What will you work on?"
+                onKeyDown={async e => {
+                  if (e.key === 'Enter' && newProjectName.trim() && newDetails.trim() && !addingItem) {
+                    setAddingItem(true)
+                    try {
+                      await window.electronAPI.addPlanItem(newProjectName.trim(), newDetails.trim())
+                      await loadPlan()
+                      await loadProjects()
+                      setNewProjectName('')
+                      setNewDetails('')
+                    } catch { /* ignore */ }
+                    setAddingItem(false)
+                  }
+                }}
+                style={{
+                  fontSize: '11px',
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border, #ccc)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  boxSizing: 'border-box',
+                  width: '100%'
+                }}
+              />
+              <button
+                className="neu-raised"
+                disabled={!newProjectName.trim() || !newDetails.trim() || addingItem}
+                onClick={async () => {
+                  setAddingItem(true)
+                  try {
+                    await window.electronAPI.addPlanItem(newProjectName.trim(), newDetails.trim())
+                    await loadPlan()
+                    await loadProjects()
+                    setNewProjectName('')
+                    setNewDetails('')
+                  } catch { /* ignore */ }
+                  setAddingItem(false)
+                }}
+                style={{ fontSize: '11px', fontWeight: 600, padding: '6px', border: 'none', cursor: 'pointer', color: 'var(--accent)' }}
+              >
+                {addingItem ? '…' : 'Add'}
+              </button>
+            </div>
+          )}
+
+          {/* Plan items list */}
+          {planItems.length === 0 ? (
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '4px' }}>
+              No plan items yet. Tap + to add.
+            </div>
+          ) : (
+            planItems.map(item => (
+              <div
+                key={item.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '6px',
+                  padding: '4px 0',
+                  borderBottom: '1px solid rgba(128,128,128,0.1)'
+                }}
+              >
+                <span style={{ fontSize: '11px', flexShrink: 0 }}>
+                  {item.status === 'completed' ? '✅' : item.status === 'in-progress' ? '🔄' : item.status === 'blocked' ? '🚫' : '📌'}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.project.name}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text)', wordBreak: 'break-word' }}>
+                    {item.details}
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      await window.electronAPI.deletePlanItem(item.id)
+                      await loadPlan()
+                    } catch { /* ignore */ }
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '10px',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    padding: '0 2px',
+                    flexShrink: 0,
+                    opacity: 0.5
+                  }}
+                >✕</button>
+              </div>
+            ))
+          )}
         </div>
       )}
 
@@ -568,186 +762,298 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           >
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, fontSize: '13px' }}>🔴 Clock Out Report</span>
+              <span style={{ fontWeight: 700, fontSize: '13px' }}>
+                {clockOutStep === 'plan' ? '📋 Confirm Plan Status' : '🔴 Clock Out Report'}
+              </span>
               <button
                 onClick={() => { setShowReportModal(false); setShowPreview(false) }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px' }}
               >✕</button>
             </div>
 
-            {/* Write / Preview tabs */}
-            <div
-              className="neu-inset"
-              style={{ display: 'flex', borderRadius: '8px', padding: '2px', gap: '2px' }}
-            >
-              {(['Write', 'Preview'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setShowPreview(tab === 'Preview')}
-                  className={!showPreview === (tab === 'Write') ? 'neu-raised' : ''}
-                  style={{
-                    flex: 1,
-                    padding: '5px',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    background: 'transparent',
-                    color: (!showPreview === (tab === 'Write')) ? 'var(--text)' : 'var(--text-muted)'
-                  }}
-                >
-                  {tab}
-                </button>
-              ))}
-            </div>
+            {/* ─── Step 1: Plan Confirmation ─── */}
+            {clockOutStep === 'plan' && (
+              <>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Update the status of each task before clocking out.
+                </div>
 
-            {/* Formatting toolbar (Write mode) */}
-            {!showPreview && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                {([
-                  { label: 'B',    prefix: '**',    suffix: '**',      title: 'Bold',            style: { fontWeight: 700 } },
-                  { label: 'I',    prefix: '_',     suffix: '_',       title: 'Italic',          style: { fontStyle: 'italic' as const } },
-                  { label: '~~',   prefix: '~~',    suffix: '~~',      title: 'Strikethrough',   style: { textDecoration: 'line-through' as const } },
-                  { label: 'H1',   prefix: '# ',    suffix: '',        title: 'Heading 1',       style: {} },
-                  { label: 'H2',   prefix: '## ',   suffix: '',        title: 'Heading 2',       style: {} },
-                  { label: 'H3',   prefix: '### ',  suffix: '',        title: 'Heading 3',       style: {} },
-                  { label: '❝',    prefix: '> ',    suffix: '',        title: 'Blockquote',      style: {} },
-                  { label: '•',    prefix: '\n- ',  suffix: '',        title: 'Bullet list',     style: {} },
-                  { label: '1.',   prefix: '\n1. ', suffix: '',        title: 'Numbered list',   style: {} },
-                  { label: '`c`',  prefix: '`',     suffix: '`',       title: 'Inline code',     style: { fontFamily: 'monospace' } },
-                  { label: '—',    prefix: '\n---\n', suffix: '',     title: 'Horizontal rule', style: {} },
-                ]).map(({ label, prefix, suffix, title, style: btnStyle }) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {planItems.map((item, idx) => {
+                    const ci = confirmItems[idx]
+                    if (!ci) return null
+                    return (
+                      <div
+                        key={item.id}
+                        className="neu-inset"
+                        style={{ padding: '8px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}
+                      >
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--accent)' }}>{item.project.name}</span>
+                          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {item.details}
+                          </span>
+                        </div>
+                        {/* Status selector */}
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          {([
+                            { value: 'completed', label: '✅ Done', color: 'var(--success)' },
+                            { value: 'in-progress', label: '🔄 In Progress', color: 'var(--warning)' },
+                            { value: 'blocked', label: '🚫 Blocked', color: 'var(--danger)' },
+                            { value: 'planned', label: '📌 Not Started', color: 'var(--text-muted)' },
+                          ] as const).map(opt => (
+                            <button
+                              key={opt.value}
+                              className={ci.status === opt.value ? 'neu-raised' : ''}
+                              onClick={() => {
+                                setConfirmItems(prev => prev.map((c, i) => i === idx ? { ...c, status: opt.value } : c))
+                              }}
+                              style={{
+                                fontSize: '10px',
+                                padding: '3px 8px',
+                                border: ci.status === opt.value ? 'none' : '1px solid transparent',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                background: ci.status === opt.value ? undefined : 'transparent',
+                                color: ci.status === opt.value ? opt.color : 'var(--text-muted)',
+                                fontWeight: ci.status === opt.value ? 600 : 400
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {/* Outcome note (optional) */}
+                        <input
+                          value={ci.outcome}
+                          onChange={(e) => {
+                            setConfirmItems(prev => prev.map((c, i) => i === idx ? { ...c, outcome: e.target.value } : c))
+                          }}
+                          placeholder="Outcome note (optional)"
+                          style={{
+                            fontSize: '10px',
+                            padding: '5px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border, #ccc)',
+                            background: 'var(--bg)',
+                            color: 'var(--text)',
+                            boxSizing: 'border-box',
+                            width: '100%'
+                          }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
                   <button
-                    key={title}
-                    title={title}
                     className="neu-raised"
-                    onClick={() => {
-                      if (reportTextareaRef.current) {
-                        insertMarkdown(reportTextareaRef.current, setReportContent, prefix, suffix)
+                    onClick={() => { setShowReportModal(false); setShowPreview(false) }}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', border: 'none', cursor: 'pointer' }}
+                  >Cancel</button>
+                  <button
+                    className="neu-raised"
+                    onClick={() => setClockOutStep('report')}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', fontWeight: 700, color: 'var(--accent)', border: 'none', cursor: 'pointer' }}
+                  >Next →</button>
+                </div>
+              </>
+            )}
+
+            {/* ─── Step 2: Report Editor ─── */}
+            {clockOutStep === 'report' && (
+              <>
+                {/* Write / Preview tabs */}
+                <div
+                  className="neu-inset"
+                  style={{ display: 'flex', borderRadius: '8px', padding: '2px', gap: '2px' }}
+                >
+                  {(['Write', 'Preview'] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setShowPreview(tab === 'Preview')}
+                      className={!showPreview === (tab === 'Write') ? 'neu-raised' : ''}
+                      style={{
+                        flex: 1,
+                        padding: '5px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        background: 'transparent',
+                        color: (!showPreview === (tab === 'Write')) ? 'var(--text)' : 'var(--text-muted)'
+                      }}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Formatting toolbar (Write mode) */}
+                {!showPreview && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {([
+                      { label: 'B',    prefix: '**',    suffix: '**',      title: 'Bold',            style: { fontWeight: 700 } },
+                      { label: 'I',    prefix: '_',     suffix: '_',       title: 'Italic',          style: { fontStyle: 'italic' as const } },
+                      { label: '~~',   prefix: '~~',    suffix: '~~',      title: 'Strikethrough',   style: { textDecoration: 'line-through' as const } },
+                      { label: 'H1',   prefix: '# ',    suffix: '',        title: 'Heading 1',       style: {} },
+                      { label: 'H2',   prefix: '## ',   suffix: '',        title: 'Heading 2',       style: {} },
+                      { label: 'H3',   prefix: '### ',  suffix: '',        title: 'Heading 3',       style: {} },
+                      { label: '❝',    prefix: '> ',    suffix: '',        title: 'Blockquote',      style: {} },
+                      { label: '•',    prefix: '\n- ',  suffix: '',        title: 'Bullet list',     style: {} },
+                      { label: '1.',   prefix: '\n1. ', suffix: '',        title: 'Numbered list',   style: {} },
+                      { label: '`c`',  prefix: '`',     suffix: '`',       title: 'Inline code',     style: { fontFamily: 'monospace' } },
+                      { label: '—',    prefix: '\n---\n', suffix: '',     title: 'Horizontal rule', style: {} },
+                    ]).map(({ label, prefix, suffix, title, style: btnStyle }) => (
+                      <button
+                        key={title}
+                        title={title}
+                        className="neu-raised"
+                        onClick={() => {
+                          if (reportTextareaRef.current) {
+                            insertMarkdown(reportTextareaRef.current, setReportContent, prefix, suffix)
+                          }
+                        }}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          border: 'none',
+                          cursor: 'pointer',
+                          borderRadius: '6px',
+                          fontFamily: 'SF Mono, Menlo, monospace',
+                          ...btnStyle
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Editor */}
+                {!showPreview ? (
+                  <textarea
+                    ref={reportTextareaRef}
+                    value={reportContent}
+                    onChange={(e) => setReportContent(e.target.value)}
+                    onKeyDown={(e) => {
+                      const ta = e.currentTarget
+                      if (e.key === 'Tab') {
+                        e.preventDefault()
+                        insertMarkdown(ta, setReportContent, '  ', '')
+                        return
+                      }
+                      const mod = e.ctrlKey || e.metaKey
+                      if (mod && e.key === 'b') {
+                        e.preventDefault()
+                        insertMarkdown(ta, setReportContent, '**', '**')
+                      } else if (mod && e.key === 'i') {
+                        e.preventDefault()
+                        insertMarkdown(ta, setReportContent, '_', '_')
                       }
                     }}
+                    placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
+                    rows={8}
                     style={{
-                      padding: '4px 8px',
-                      fontSize: '11px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      borderRadius: '6px',
+                      width: '100%',
+                      borderRadius: '10px',
+                      padding: '10px',
+                      fontSize: '12px',
                       fontFamily: 'SF Mono, Menlo, monospace',
-                      ...btnStyle
+                      background: 'var(--bg)',
+                      color: 'var(--text)',
+                      border: '1px solid var(--border, #ccc)',
+                      resize: 'none',
+                      boxSizing: 'border-box',
+                      lineHeight: '1.5'
                     }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      minHeight: '160px',
+                      borderRadius: '10px',
+                      padding: '10px',
+                      fontSize: '12px',
+                      background: 'var(--bg)',
+                      color: 'var(--text)',
+                      border: '1px solid var(--border, #ccc)',
+                      boxSizing: 'border-box',
+                      lineHeight: '1.5',
+                      overflowY: 'auto'
+                    }}
+                    dangerouslySetInnerHTML={{
+                      __html: reportContent.trim()
+                        ? simpleMarkdown(reportContent)
+                        : '<span style="opacity:0.4">Nothing to preview yet…</span>'
+                    }}
+                  />
+                )}
+
+                {/* Footer stats */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                    {reportContent.split(/\s+/).filter(Boolean).length} words
+                  </span>
+                </div>
+
+                {reportError && (
+                  <div style={{ fontSize: '11px', color: 'var(--danger)' }}>{reportError}</div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    className="neu-raised"
+                    onClick={() => {
+                      if (planItems.length > 0) {
+                        setClockOutStep('plan')
+                      } else {
+                        setShowReportModal(false)
+                        setShowPreview(false)
+                      }
+                    }}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', border: 'none', cursor: 'pointer' }}
                   >
-                    {label}
+                    {planItems.length > 0 ? '← Back' : 'Cancel'}
                   </button>
-                ))}
-              </div>
+                  <button
+                    className="neu-raised"
+                    onClick={async () => {
+                      if (!reportContent.trim()) return
+                      setReportSubmitting(true)
+                      setReportError('')
+                      try {
+                        await window.electronAPI.submitReportWithPlan(
+                          reportContent.trim(),
+                          confirmItems.map(ci => ({
+                            itemId: ci.itemId,
+                            status: ci.status,
+                            ...(ci.outcome.trim() ? { outcome: ci.outcome.trim() } : {})
+                          }))
+                        )
+                        setShowReportModal(false)
+                        setShowPreview(false)
+                        setReportContent('')
+                        await loadPlan()
+                        const next = await window.electronAPI.getStatus()
+                        applyStatus(next)
+                      } catch (err: unknown) {
+                        setReportError(err instanceof Error ? err.message : 'Failed to submit')
+                      } finally {
+                        setReportSubmitting(false)
+                      }
+                    }}
+                    disabled={!reportContent.trim() || reportSubmitting}
+                    style={{ flex: 1, padding: '8px', fontSize: '12px', fontWeight: 700, color: 'var(--danger)', border: 'none', cursor: 'pointer' }}
+                  >
+                    {reportSubmitting ? '…' : 'Submit & Clock Out'}
+                  </button>
+                </div>
+              </>
             )}
-
-            {/* Editor */}
-            {!showPreview ? (
-              <textarea
-                ref={reportTextareaRef}
-                value={reportContent}
-                onChange={(e) => setReportContent(e.target.value)}
-                onKeyDown={(e) => {
-                  const ta = e.currentTarget
-                  if (e.key === 'Tab') {
-                    e.preventDefault()
-                    insertMarkdown(ta, setReportContent, '  ', '')
-                    return
-                  }
-                  const mod = e.ctrlKey || e.metaKey
-                  if (mod && e.key === 'b') {
-                    e.preventDefault()
-                    insertMarkdown(ta, setReportContent, '**', '**')
-                  } else if (mod && e.key === 'i') {
-                    e.preventDefault()
-                    insertMarkdown(ta, setReportContent, '_', '_')
-                  }
-                }}
-                placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
-                rows={8}
-                style={{
-                  width: '100%',
-                  borderRadius: '10px',
-                  padding: '10px',
-                  fontSize: '12px',
-                  fontFamily: 'SF Mono, Menlo, monospace',
-                  background: 'var(--bg)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border, #ccc)',
-                  resize: 'none',
-                  boxSizing: 'border-box',
-                  lineHeight: '1.5'
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: '100%',
-                  minHeight: '160px',
-                  borderRadius: '10px',
-                  padding: '10px',
-                  fontSize: '12px',
-                  background: 'var(--bg)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border, #ccc)',
-                  boxSizing: 'border-box',
-                  lineHeight: '1.5',
-                  overflowY: 'auto'
-                }}
-                dangerouslySetInnerHTML={{
-                  __html: reportContent.trim()
-                    ? simpleMarkdown(reportContent)
-                    : '<span style="opacity:0.4">Nothing to preview yet…</span>'
-                }}
-              />
-            )}
-
-            {/* Footer stats */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-                {reportContent.split(/\s+/).filter(Boolean).length} words
-              </span>
-            </div>
-
-            {reportError && (
-              <div style={{ fontSize: '11px', color: 'var(--danger)' }}>{reportError}</div>
-            )}
-
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                className="neu-raised"
-                onClick={() => { setShowReportModal(false); setShowPreview(false) }}
-                style={{ flex: 1, padding: '8px', fontSize: '12px', border: 'none', cursor: 'pointer' }}
-              >
-                Cancel
-              </button>
-              <button
-                className="neu-raised"
-                onClick={async () => {
-                  if (!reportContent.trim()) return
-                  setReportSubmitting(true)
-                  setReportError('')
-                  try {
-                    await window.electronAPI.submitReport(reportContent.trim())
-                    setShowReportModal(false)
-                    setShowPreview(false)
-                    setReportContent('')
-                    const next = await window.electronAPI.getStatus()
-                    applyStatus(next)
-                  } catch (err: unknown) {
-                    setReportError(err instanceof Error ? err.message : 'Failed to submit')
-                  } finally {
-                    setReportSubmitting(false)
-                  }
-                }}
-                disabled={!reportContent.trim() || reportSubmitting}
-                style={{ flex: 1, padding: '8px', fontSize: '12px', fontWeight: 700, color: 'var(--danger)', border: 'none', cursor: 'pointer' }}
-              >
-                {reportSubmitting ? '…' : 'Submit & Clock Out'}
-              </button>
-            </div>
           </div>
         </div>
       )}

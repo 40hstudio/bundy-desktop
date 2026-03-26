@@ -1,4 +1,4 @@
-import type { StoredAuth, BundyStatus, Permissions } from '../../preload/index'
+import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData } from '../../preload/index'
 
 declare global {
   interface Window {
@@ -23,6 +23,13 @@ declare global {
       onStatusUpdate: (cb: (status: BundyStatus) => void) => () => void
       onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
+      getDailyPlan: () => Promise<DailyPlanData | null>
+      ensureDailyPlan: () => Promise<DailyPlanData>
+      getProjects: () => Promise<Array<{ id: string; name: string }>>
+      addPlanItem: (projectName: string, details: string) => Promise<PlanItemData>
+      updatePlanItem: (itemId: string, status?: string, outcome?: string) => Promise<PlanItemData>
+      deletePlanItem: (itemId: string) => Promise<void>
+      submitReportWithPlan: (content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>) => Promise<void>
     }
   }
 }

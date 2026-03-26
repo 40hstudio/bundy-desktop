@@ -161,6 +161,125 @@ export async function uploadScreenshot(
   }
 }
 
+// ─── Daily Plan API ────────────────────────────────────────────────────────────
+
+export interface PlanProject {
+  id: string
+  name: string
+}
+
+export interface PlanItem {
+  id: string
+  projectId: string
+  project: PlanProject
+  details: string
+  status: string
+  outcome: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DailyPlan {
+  id: string
+  userId: string
+  date: string
+  items: PlanItem[]
+}
+
+export async function getDailyPlan(): Promise<DailyPlan | null> {
+  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan`, {
+    headers: { ...authHeader() }
+  })
+  if (!res.ok) return null
+  const data = (await res.json()) as { plan: DailyPlan | null }
+  return data.plan
+}
+
+export async function ensureDailyPlan(): Promise<DailyPlan> {
+  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({})
+  })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+  const data = (await res.json()) as { plan: DailyPlan }
+  return data.plan
+}
+
+export async function getProjects(): Promise<PlanProject[]> {
+  const res = await fetch(`${baseUrl()}/api/desktop/projects`, {
+    headers: { ...authHeader() }
+  })
+  if (!res.ok) return []
+  const data = (await res.json()) as { projects: PlanProject[] }
+  return data.projects
+}
+
+export async function addPlanItem(
+  projectName: string,
+  details: string
+): Promise<PlanItem> {
+  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ projectName, details })
+  })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+  const data = (await res.json()) as { item: PlanItem }
+  return data.item
+}
+
+export async function updatePlanItem(
+  itemId: string,
+  status?: string,
+  outcome?: string
+): Promise<PlanItem> {
+  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ itemId, status, outcome })
+  })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+  const data = (await res.json()) as { item: PlanItem }
+  return data.item
+}
+
+export async function deletePlanItem(itemId: string): Promise<void> {
+  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ itemId })
+  })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+}
+
+export async function submitReportWithPlan(
+  content: string,
+  planItems: Array<{ itemId: string; status: string; outcome?: string }>
+): Promise<void> {
+  const res = await fetch(`${baseUrl()}/api/bundy/report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ content, planItems })
+  })
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+}
+
 // ─── SSE connection for real-time sync ─────────────────────────────────────────
 
 let sseAbort: AbortController | null = null

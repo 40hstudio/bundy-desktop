@@ -20,6 +20,24 @@ export interface Permissions {
   accessibility: boolean
 }
 
+export interface PlanItemData {
+  id: string
+  projectId: string
+  project: { id: string; name: string }
+  details: string
+  status: string
+  outcome: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DailyPlanData {
+  id: string
+  userId: string
+  date: string
+  items: PlanItemData[]
+}
+
 const api = {
   getStoredAuth: (): Promise<StoredAuth | null> => ipcRenderer.invoke('get-stored-auth'),
   login: (shortToken: string): Promise<StoredAuth> => ipcRenderer.invoke('login', shortToken),
@@ -70,7 +88,21 @@ const api = {
     return () => ipcRenderer.removeListener('permissions-update', handler)
   },
   sendCrashReport: (note: string): Promise<void> =>
-    ipcRenderer.invoke('send-crash-report', note)
+    ipcRenderer.invoke('send-crash-report', note),
+  getDailyPlan: (): Promise<DailyPlanData | null> =>
+    ipcRenderer.invoke('get-daily-plan'),
+  ensureDailyPlan: (): Promise<DailyPlanData> =>
+    ipcRenderer.invoke('ensure-daily-plan'),
+  getProjects: (): Promise<Array<{ id: string; name: string }>> =>
+    ipcRenderer.invoke('get-projects'),
+  addPlanItem: (projectName: string, details: string): Promise<PlanItemData> =>
+    ipcRenderer.invoke('add-plan-item', projectName, details),
+  updatePlanItem: (itemId: string, status?: string, outcome?: string): Promise<PlanItemData> =>
+    ipcRenderer.invoke('update-plan-item', itemId, status, outcome),
+  deletePlanItem: (itemId: string): Promise<void> =>
+    ipcRenderer.invoke('delete-plan-item', itemId),
+  submitReportWithPlan: (content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>): Promise<void> =>
+    ipcRenderer.invoke('submit-report-with-plan', content, planItems)
 }
 
 if (process.contextIsolated) {

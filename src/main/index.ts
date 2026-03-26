@@ -13,7 +13,7 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import store from './store'
-import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE } from './api'
+import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan } from './api'
 import { startScreenshots, stopScreenshots } from './screenshot'
 import { startActivity, stopActivity } from './activity'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
@@ -353,6 +353,35 @@ ipcMain.handle('install-update', () => {
 
 ipcMain.handle('send-crash-report', async (_event, note: string) => {
   await sendUserReport(note)
+})
+
+ipcMain.handle('get-daily-plan', async () => {
+  return getDailyPlan()
+})
+
+ipcMain.handle('ensure-daily-plan', async () => {
+  return ensureDailyPlan()
+})
+
+ipcMain.handle('get-projects', async () => {
+  return getProjects()
+})
+
+ipcMain.handle('add-plan-item', async (_event, projectName: string, details: string) => {
+  return addPlanItem(projectName, details)
+})
+
+ipcMain.handle('update-plan-item', async (_event, itemId: string, status?: string, outcome?: string) => {
+  return updatePlanItem(itemId, status, outcome)
+})
+
+ipcMain.handle('delete-plan-item', async (_event, itemId: string) => {
+  return deletePlanItem(itemId)
+})
+
+ipcMain.handle('submit-report-with-plan', async (_event, content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>) => {
+  await submitReportWithPlan(content, planItems)
+  await pollAndPush()
 })
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
