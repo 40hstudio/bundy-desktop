@@ -169,7 +169,10 @@ function stopServices(): void {
 async function refreshStatus(): Promise<void> {
   if (!store.get('desktopToken')) return
   try {
-    const status = await getBundyStatus()
+    const [status, plan] = await Promise.all([
+      getBundyStatus(),
+      getDailyPlan().catch(() => null)
+    ])
     updateTray(status.isClockedIn, status.isTracking)
 
     trayTimerState = { baseMs: status.elapsedMs, snapshotAt: Date.now(), isTracking: status.isTracking }
@@ -189,6 +192,7 @@ async function refreshStatus(): Promise<void> {
 
     if (popupWin && !popupWin.isDestroyed()) {
       popupWin.webContents.send('status-update', status)
+      if (plan) popupWin.webContents.send('plan-update', plan)
       const screen = systemPreferences.getMediaAccessStatus('screen')
       const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
       popupWin.webContents.send('permissions-update', { screen, accessibility })

@@ -87,6 +87,11 @@ const api = {
     ipcRenderer.on('permissions-update', handler)
     return () => ipcRenderer.removeListener('permissions-update', handler)
   },
+  onPlanUpdate: (cb: (plan: DailyPlanData) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, plan: DailyPlanData): void => cb(plan)
+    ipcRenderer.on('plan-update', handler)
+    return () => ipcRenderer.removeListener('plan-update', handler)
+  },
   sendCrashReport: (note: string): Promise<void> =>
     ipcRenderer.invoke('send-crash-report', note),
   getDailyPlan: (): Promise<DailyPlanData | null> =>

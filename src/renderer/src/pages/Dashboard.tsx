@@ -148,6 +148,12 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
     return unsub
   }, [applyStatus])
 
+  // Subscribe to plan updates pushed from main process (triggered by SSE)
+  useEffect(() => {
+    const unsub = window.electronAPI.onPlanUpdate((plan) => setPlanItems(plan.items ?? []))
+    return unsub
+  }, [])
+
   // Subscribe to pushed permissions updates (main re-checks on every poll cycle)
   useEffect(() => {
     const unsub = window.electronAPI.onPermissionsUpdate(setPermissions)
