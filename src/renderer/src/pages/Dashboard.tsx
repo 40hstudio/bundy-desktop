@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 interface Auth {
   userId: string
@@ -33,6 +33,43 @@ function formatMs(ms: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
+function insertMarkdown(
+  ta: HTMLTextAreaElement,
+  setContent: (v: string) => void,
+  prefix: string,
+  suffix = ''
+): void {
+  const { selectionStart: s, selectionEnd: e, value } = ta
+  const selected = value.slice(s, e)
+  const newVal = value.slice(0, s) + prefix + selected + suffix + value.slice(e)
+  setContent(newVal)
+  requestAnimationFrame(() => {
+    ta.setSelectionRange(s + prefix.length, s + prefix.length + selected.length)
+    ta.focus()
+  })
+}
+
+function simpleMarkdown(md: string): string {
+  return md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3 style="font-size:0.88em;font-weight:700;margin:6px 0 2px">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 style="font-size:1em;font-weight:700;margin:8px 0 3px">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 style="font-size:1.1em;font-weight:700;margin:10px 0 4px">$1</h1>')
+    .replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:2px solid #888;padding-left:7px;margin:3px 0;opacity:0.65">$1</blockquote>')
+    .replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid rgba(128,128,128,0.3);margin:8px 0">')
+    .replace(/^[*-] (.+)$/gm, '<li style="margin-left:16px;list-style:disc">$1</li>')
+    .replace(/^\d+\. (.+)$/gm, '<li style="margin-left:16px;list-style:decimal">$1</li>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/_(.+?)_/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(128,128,128,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.85em">$1</code>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:var(--accent,#6366f1);text-decoration:underline">$1</a>')
+    .replace(/\n/g, '<br>')
+}
+
 export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   const [status, setStatus] = useState<BundyStatus | null>(null)
   const [permissions, setPermissions] = useState<Permissions | null>(null)
@@ -46,8 +83,13 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   const [reportContent, setReportContent] = useState('')
   const [reportSubmitting, setReportSubmitting] = useState(false)
   const [reportError, setReportError] = useState('')
+  const [showPreview, setShowPreview] = useState(false)
+  const reportTextareaRef = useRef<HTMLTextAreaElement>(null)
   const [updateInfo, setUpdateInfo] = useState<{ version: string } | null>(null)
+  const [downloadPercent, setDownloadPercent] = useState<number | null>(null)
   const [updateReady, setUpdateReady] = useState(false)
+  const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+  const [appVersion, setAppVersion] = useState<string>('')
 
   const applyStatus = useCallback((s: BundyStatus) => {
     setStatus(s)
@@ -59,6 +101,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   useEffect(() => {
     window.electronAPI.getStatus().then(applyStatus).catch(() => {})
     window.electronAPI.checkPermissions().then(setPermissions).catch(() => {})
+    window.electronAPI.getVersion().then(setAppVersion).catch(() => {})
   }, [applyStatus])
 
   // Subscribe to pushed status updates from main process
@@ -76,9 +119,32 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   // Subscribe to auto-update events
   useEffect(() => {
     const unsubAvail = window.electronAPI.onUpdateAvailable((info) => setUpdateInfo(info))
-    const unsubReady = window.electronAPI.onUpdateDownloaded(() => setUpdateReady(true))
-    return () => { unsubAvail(); unsubReady() }
+    const unsubProgress = window.electronAPI.onDownloadProgress(({ percent }) => setDownloadPercent(percent))
+    const unsubReady = window.electronAPI.onUpdateDownloaded(() => {
+      setDownloadPercent(100)
+      setUpdateReady(true)
+      setRestartCountdown(5)
+    })
+    // Pull current cached state — handles case where update events fired before this component mounted
+    window.electronAPI.getUpdateState().then(({ version, percent, downloaded }) => {
+      if (downloaded) {
+        setDownloadPercent(100)
+        setUpdateReady(true)
+        setRestartCountdown(5)
+      } else if (version) {
+        setUpdateInfo({ version })
+        if (percent !== null) setDownloadPercent(percent)
+      }
+    }).catch(() => {})
+    return () => { unsubAvail(); unsubProgress(); unsubReady() }
   }, [])
+
+  // Tick the restart countdown down to 0
+  useEffect(() => {
+    if (restartCountdown === null || restartCountdown <= 0) return
+    const t = setTimeout(() => setRestartCountdown(n => (n !== null ? n - 1 : null)), 1_000)
+    return () => clearTimeout(t)
+  }, [restartCountdown])
 
   // Also poll permissions every 3s while any permission is missing so the
   // warning badge dismisses immediately after the user grants access
@@ -145,7 +211,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         <div>
           <div style={{ fontWeight: 700, fontSize: '14px' }}>{auth.username}</div>
           <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-            {auth.role}
+            {auth.role}{appVersion ? <span style={{ marginLeft: '6px', opacity: 0.5, textTransform: 'none', fontWeight: 400 }}>v{appVersion}</span> : null}
           </div>
         </div>
         <button
@@ -321,26 +387,41 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
       {(updateInfo || updateReady) && (
         <div
           className="neu-inset"
-          style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
+          style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}
         >
-          <div style={{ fontSize: '11px', color: 'var(--text)' }}>
-            {updateReady
-              ? '✅ Update ready to install'
-              : `⬆ v${updateInfo?.version} available`}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: '11px', color: 'var(--text)', fontWeight: 600 }}>
+              {updateReady
+                ? '✅ v' + updateInfo?.version + ' ready — restarting in ' + (restartCountdown ?? 0) + 's'
+                : '⬆ v' + updateInfo?.version + ' available'}
+            </div>
+            {updateReady ? (
+              <button
+                className="neu-raised"
+                onClick={() => window.electronAPI.installUpdate()}
+                style={{ fontSize: '10px', fontWeight: 600, padding: '4px 10px', border: 'none', cursor: 'pointer', color: 'var(--accent)', whiteSpace: 'nowrap' }}
+              >
+                Restart Now
+              </button>
+            ) : (
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                {downloadPercent !== null ? `${downloadPercent}%` : 'Starting…'}
+              </span>
+            )}
           </div>
-          <button
-            className="neu-raised"
-            onClick={() => {
-              if (updateReady) {
-                window.electronAPI.installUpdate()
-              } else {
-                window.electronAPI.checkForUpdates()
-              }
-            }}
-            style={{ fontSize: '10px', fontWeight: 600, padding: '4px 10px', border: 'none', cursor: 'pointer', color: 'var(--accent)', whiteSpace: 'nowrap' }}
-          >
-            {updateReady ? 'Restart & Install' : 'Downloading…'}
-          </button>
+          {!updateReady && (
+            <div style={{ height: '4px', borderRadius: '2px', background: 'var(--neo-inset, rgba(0,0,0,0.12))', overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${downloadPercent ?? 0}%`,
+                  borderRadius: '2px',
+                  background: 'var(--accent)',
+                  transition: 'width 0.4s ease'
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -362,45 +443,161 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
             className="neu-raised"
             style={{
               width: '100%',
-              maxWidth: '340px',
+              maxWidth: '380px',
               borderRadius: '16px',
               padding: '16px',
               display: 'flex',
               flexDirection: 'column',
               gap: '10px',
-              background: 'var(--bg)'
+              background: 'var(--bg)',
+              maxHeight: '90vh',
+              overflowY: 'auto'
             }}
           >
+            {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 700, fontSize: '13px' }}>🔴 Clock Out Report</span>
               <button
-                onClick={() => setShowReportModal(false)}
+                onClick={() => { setShowReportModal(false); setShowPreview(false) }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px' }}
               >✕</button>
             </div>
 
-            <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: 0 }}>
-              Summarise what you worked on today.
-            </p>
+            {/* Write / Preview tabs */}
+            <div
+              className="neu-inset"
+              style={{ display: 'flex', borderRadius: '8px', padding: '2px', gap: '2px' }}
+            >
+              {(['Write', 'Preview'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setShowPreview(tab === 'Preview')}
+                  className={!showPreview === (tab === 'Write') ? 'neu-raised' : ''}
+                  style={{
+                    flex: 1,
+                    padding: '5px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    background: 'transparent',
+                    color: (!showPreview === (tab === 'Write')) ? 'var(--text)' : 'var(--text-muted)'
+                  }}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
 
-            <textarea
-              value={reportContent}
-              onChange={(e) => setReportContent(e.target.value)}
-              placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2"
-              rows={6}
-              style={{
-                width: '100%',
-                borderRadius: '10px',
-                padding: '10px',
-                fontSize: '12px',
-                fontFamily: 'SF Mono, Menlo, monospace',
-                background: 'var(--bg)',
-                color: 'var(--text)',
-                border: '1px solid var(--border, #ccc)',
-                resize: 'none',
-                boxSizing: 'border-box'
-              }}
-            />
+            {/* Formatting toolbar (Write mode) */}
+            {!showPreview && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {([
+                  { label: 'B',    prefix: '**',    suffix: '**',      title: 'Bold',            style: { fontWeight: 700 } },
+                  { label: 'I',    prefix: '_',     suffix: '_',       title: 'Italic',          style: { fontStyle: 'italic' as const } },
+                  { label: '~~',   prefix: '~~',    suffix: '~~',      title: 'Strikethrough',   style: { textDecoration: 'line-through' as const } },
+                  { label: 'H1',   prefix: '# ',    suffix: '',        title: 'Heading 1',       style: {} },
+                  { label: 'H2',   prefix: '## ',   suffix: '',        title: 'Heading 2',       style: {} },
+                  { label: 'H3',   prefix: '### ',  suffix: '',        title: 'Heading 3',       style: {} },
+                  { label: '❝',    prefix: '> ',    suffix: '',        title: 'Blockquote',      style: {} },
+                  { label: '•',    prefix: '\n- ',  suffix: '',        title: 'Bullet list',     style: {} },
+                  { label: '1.',   prefix: '\n1. ', suffix: '',        title: 'Numbered list',   style: {} },
+                  { label: '`c`',  prefix: '`',     suffix: '`',       title: 'Inline code',     style: { fontFamily: 'monospace' } },
+                  { label: '—',    prefix: '\n---\n', suffix: '',     title: 'Horizontal rule', style: {} },
+                ]).map(({ label, prefix, suffix, title, style: btnStyle }) => (
+                  <button
+                    key={title}
+                    title={title}
+                    className="neu-raised"
+                    onClick={() => {
+                      if (reportTextareaRef.current) {
+                        insertMarkdown(reportTextareaRef.current, setReportContent, prefix, suffix)
+                      }
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '11px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      borderRadius: '6px',
+                      fontFamily: 'SF Mono, Menlo, monospace',
+                      ...btnStyle
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Editor */}
+            {!showPreview ? (
+              <textarea
+                ref={reportTextareaRef}
+                value={reportContent}
+                onChange={(e) => setReportContent(e.target.value)}
+                onKeyDown={(e) => {
+                  const ta = e.currentTarget
+                  if (e.key === 'Tab') {
+                    e.preventDefault()
+                    insertMarkdown(ta, setReportContent, '  ', '')
+                    return
+                  }
+                  const mod = e.ctrlKey || e.metaKey
+                  if (mod && e.key === 'b') {
+                    e.preventDefault()
+                    insertMarkdown(ta, setReportContent, '**', '**')
+                  } else if (mod && e.key === 'i') {
+                    e.preventDefault()
+                    insertMarkdown(ta, setReportContent, '_', '_')
+                  }
+                }}
+                placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
+                rows={8}
+                style={{
+                  width: '100%',
+                  borderRadius: '10px',
+                  padding: '10px',
+                  fontSize: '12px',
+                  fontFamily: 'SF Mono, Menlo, monospace',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border, #ccc)',
+                  resize: 'none',
+                  boxSizing: 'border-box',
+                  lineHeight: '1.5'
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '100%',
+                  minHeight: '160px',
+                  borderRadius: '10px',
+                  padding: '10px',
+                  fontSize: '12px',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border, #ccc)',
+                  boxSizing: 'border-box',
+                  lineHeight: '1.5',
+                  overflowY: 'auto'
+                }}
+                dangerouslySetInnerHTML={{
+                  __html: reportContent.trim()
+                    ? simpleMarkdown(reportContent)
+                    : '<span style="opacity:0.4">Nothing to preview yet…</span>'
+                }}
+              />
+            )}
+
+            {/* Footer stats */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                {reportContent.split(/\s+/).filter(Boolean).length} words
+              </span>
+            </div>
 
             {reportError && (
               <div style={{ fontSize: '11px', color: 'var(--danger)' }}>{reportError}</div>
@@ -409,7 +606,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 className="neu-raised"
-                onClick={() => setShowReportModal(false)}
+                onClick={() => { setShowReportModal(false); setShowPreview(false) }}
                 style={{ flex: 1, padding: '8px', fontSize: '12px', border: 'none', cursor: 'pointer' }}
               >
                 Cancel
@@ -423,6 +620,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                   try {
                     await window.electronAPI.submitReport(reportContent.trim())
                     setShowReportModal(false)
+                    setShowPreview(false)
                     setReportContent('')
                     const next = await window.electronAPI.getStatus()
                     applyStatus(next)

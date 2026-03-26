@@ -20,6 +20,9 @@ import { startActivity, stopActivity } from './activity'
 let tray: Tray | null = null
 let popupWin: BrowserWindow | null = null
 let statusPollerTimer: NodeJS.Timeout | null = null
+let pendingUpdateVersion: string | null = null
+let pendingDownloadPercent: number | null = null
+let updateDownloaded = false
 let trayTimerTick: NodeJS.Timeout | null = null
 let trayTimerState = { baseMs: 0, snapshotAt: 0, isTracking: false }
 
@@ -131,6 +134,23 @@ function togglePopup(): void {
     false
   )
   popupWin.show()
+  // Flush any cached update state to the newly visible popup
+  popupWin.webContents.once('did-finish-load', () => {
+    flushUpdateState()
+  })
+  flushUpdateState()
+}
+
+function flushUpdateState(): void {
+  if (!popupWin || popupWin.isDestroyed()) return
+  if (updateDownloaded) {
+    popupWin.webContents.send('update-downloaded')
+  } else if (pendingUpdateVersion !== null) {
+    popupWin.webContents.send('update-available', { version: pendingUpdateVersion })
+    if (pendingDownloadPercent !== null) {
+      popupWin.webContents.send('download-progress', { percent: pendingDownloadPercent })
+    }
+  }
 }
 
 // ─── Monitoring services ───────────────────────────────────────────────────────
@@ -143,6 +163,39 @@ function stopServices(): void {
 }
 
 // ─── Status polling → push to renderer ────────────────────────────────────────
+
+/** Lightweight status refresh — no heartbeat POST. Used for SSE-triggered updates. */
+async function refreshStatus(): Promise<void> {
+  if (!store.get('desktopToken')) return
+  try {
+    const status = await getBundyStatus()
+    updateTray(status.isClockedIn, status.isTracking)
+
+    trayTimerState = { baseMs: status.elapsedMs, snapshotAt: Date.now(), isTracking: status.isTracking }
+    if (status.isTracking) {
+      startTrayTimer()
+    } else {
+      stopTrayTimer()
+    }
+
+    if (status.isTracking) {
+      startScreenshots()
+      await startActivity()
+    } else {
+      stopScreenshots()
+      stopActivity()
+    }
+
+    if (popupWin && !popupWin.isDestroyed()) {
+      popupWin.webContents.send('status-update', status)
+      const screen = systemPreferences.getMediaAccessStatus('screen')
+      const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
+      popupWin.webContents.send('permissions-update', { screen, accessibility })
+    }
+  } catch {
+    // network error is non-fatal
+  }
+}
 
 async function pollAndPush(): Promise<void> {
   if (!store.get('desktopToken')) return
@@ -192,7 +245,7 @@ function startPoller(): void {
   statusPollerTimer = setInterval(() => void pollAndPush(), 30_000)
 
   // Real-time sync: listen for SSE events so web actions update instantly
-  connectSSE(() => void pollAndPush())
+  connectSSE(() => void refreshStatus())
 }
 
 function stopPoller(): void {
@@ -279,6 +332,12 @@ ipcMain.handle('open-external', async (_event, url: string) => {
 
 ipcMain.handle('get-version', () => app.getVersion())
 
+ipcMain.handle('get-update-state', () => ({
+  version: pendingUpdateVersion,
+  percent: pendingDownloadPercent,
+  downloaded: updateDownloaded,
+}))
+
 ipcMain.handle('check-for-updates', () => {
   autoUpdater.checkForUpdates().catch(() => {})
 })
@@ -297,15 +356,28 @@ app.whenReady().then(() => {
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('update-available', (info) => {
+    pendingUpdateVersion = info.version
     if (popupWin && !popupWin.isDestroyed()) {
       popupWin.webContents.send('update-available', { version: info.version })
     }
   })
 
+  autoUpdater.on('download-progress', (progress) => {
+    pendingDownloadPercent = Math.round(progress.percent)
+    if (popupWin && !popupWin.isDestroyed()) {
+      popupWin.webContents.send('download-progress', { percent: pendingDownloadPercent })
+    }
+  })
+
   autoUpdater.on('update-downloaded', () => {
+    updateDownloaded = true
+    pendingDownloadPercent = 100
     if (popupWin && !popupWin.isDestroyed()) {
       popupWin.webContents.send('update-downloaded')
     }
+    // Auto-install 5 s after download — gives the user a brief window to click
+    // "Restart Now" or just let it happen automatically.
+    setTimeout(() => autoUpdater.quitAndInstall(false, true), 5_000)
   })
 
   // Check on startup (delay 10s so the app is fully loaded first)

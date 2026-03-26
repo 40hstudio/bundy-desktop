@@ -16,7 +16,9 @@ declare global {
       checkForUpdates: () => Promise<void>
       installUpdate: () => Promise<void>
       getVersion: () => Promise<string>
+      getUpdateState: () => Promise<{ version: string | null; percent: number | null; downloaded: boolean }>
       onUpdateAvailable: (cb: (info: { version: string }) => void) => () => void
+      onDownloadProgress: (cb: (info: { percent: number }) => void) => () => void
       onUpdateDownloaded: (cb: () => void) => () => void
       onStatusUpdate: (cb: (status: BundyStatus) => void) => () => void
       onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void

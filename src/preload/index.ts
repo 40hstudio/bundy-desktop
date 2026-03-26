@@ -38,6 +38,8 @@ const api = {
     ipcRenderer.invoke('open-external', url),
   getVersion: (): Promise<string> =>
     ipcRenderer.invoke('get-version'),
+  getUpdateState: (): Promise<{ version: string | null; percent: number | null; downloaded: boolean }> =>
+    ipcRenderer.invoke('get-update-state'),
   checkForUpdates: (): Promise<void> =>
     ipcRenderer.invoke('check-for-updates'),
   installUpdate: (): Promise<void> =>
@@ -46,6 +48,11 @@ const api = {
     const handler = (_e: Electron.IpcRendererEvent, info: { version: string }): void => cb(info)
     ipcRenderer.on('update-available', handler)
     return () => ipcRenderer.removeListener('update-available', handler)
+  },
+  onDownloadProgress: (cb: (info: { percent: number }) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, info: { percent: number }): void => cb(info)
+    ipcRenderer.on('download-progress', handler)
+    return () => ipcRenderer.removeListener('download-progress', handler)
   },
   onUpdateDownloaded: (cb: () => void): (() => void) => {
     const handler = (): void => cb()

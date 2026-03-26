@@ -121,12 +121,19 @@ export async function submitReport(content: string): Promise<void> {
   }
 }
 
-export async function sendDesktopHeartbeat(): Promise<void> {
-  if (!store.get('desktopToken')) return
-  await fetch(`${baseUrl()}/api/desktop/heartbeat`, {
-    method: 'POST',
-    headers: { ...authHeader() }
-  }).catch(() => {})
+export async function sendDesktopHeartbeat(): Promise<string | null> {
+  if (!store.get('desktopToken')) return null
+  try {
+    const res = await fetch(`${baseUrl()}/api/desktop/heartbeat`, {
+      method: 'POST',
+      headers: { ...authHeader() }
+    })
+    if (res.ok) {
+      const data = (await res.json()) as { currentStatus?: string }
+      return data.currentStatus ?? null
+    }
+  } catch { /* network error — non-fatal */ }
+  return null
 }
 
 export async function breakOnQuit(): Promise<void> {
