@@ -13,7 +13,7 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import store from './store'
-import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan } from './api'
+import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler } from './api'
 import { startScreenshots, stopScreenshots } from './screenshot'
 import { startActivity, stopActivity } from './activity'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
@@ -392,6 +392,20 @@ ipcMain.handle('submit-report-with-plan', async (_event, content: string, planIt
 
 app.whenReady().then(() => {
   app.dock?.hide()
+
+  // ── Token expiry handler — fires when server returns 401 ─────────────────
+  setTokenExpiredHandler(() => {
+    stopPoller()
+    stopTrayTimer()
+    stopServices()
+    store.set('desktopToken', '')
+    store.set('userId', '')
+    store.set('username', '')
+    store.set('role', '')
+    if (popupWin && !popupWin.isDestroyed()) {
+      popupWin.webContents.send('token-expired')
+    }
+  })
 
   // ── Crash reporter ──────────────────────────────────────────────────────────
   initCrashReporter()

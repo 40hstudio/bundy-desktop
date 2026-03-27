@@ -23,6 +23,7 @@ declare global {
       onStatusUpdate: (cb: (status: BundyStatus) => void) => () => void
       onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void
       onPlanUpdate: (cb: (plan: DailyPlanData) => void) => () => void
+      onTokenExpired: (cb: () => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
       getDailyPlan: () => Promise<DailyPlanData | null>
       ensureDailyPlan: () => Promise<DailyPlanData>

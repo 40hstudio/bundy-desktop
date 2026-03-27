@@ -92,6 +92,11 @@ const api = {
     ipcRenderer.on('plan-update', handler)
     return () => ipcRenderer.removeListener('plan-update', handler)
   },
+  onTokenExpired: (cb: () => void): (() => void) => {
+    const handler = (): void => cb()
+    ipcRenderer.on('token-expired', handler)
+    return () => ipcRenderer.removeListener('token-expired', handler)
+  },
   sendCrashReport: (note: string): Promise<void> =>
     ipcRenderer.invoke('send-crash-report', note),
   getDailyPlan: (): Promise<DailyPlanData | null> =>

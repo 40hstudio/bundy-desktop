@@ -17,6 +17,13 @@ export default function App(): JSX.Element {
     })
   }, [])
 
+  // If the server rejects our token (expired at 5 AM WIB), force re-login
+  useEffect(() => {
+    return window.electronAPI.onTokenExpired(() => {
+      setAuth(null)
+    })
+  }, [])
+
   if (auth === undefined) {
     return (
       <div

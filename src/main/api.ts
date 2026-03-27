@@ -9,6 +9,24 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+/** Called by index.ts to be notified when the server returns 401 (token expired). */
+let _onTokenExpired: (() => void) | null = null
+export function setTokenExpiredHandler(fn: () => void): void {
+  _onTokenExpired = fn
+}
+
+/** Throws if the response is not ok. Fires the expiry handler on 401. */
+async function checkResponse(res: Response): Promise<void> {
+  if (res.status === 401) {
+    _onTokenExpired?.()
+    throw new Error('TOKEN_EXPIRED')
+  }
+  if (!res.ok) {
+    const json = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(json.error ?? `HTTP ${res.status}`)
+  }
+}
+
 export async function exchangeToken(
   shortToken: string,
   deviceName: string
@@ -76,7 +94,7 @@ export async function getBundyStatus(): Promise<BundyStatus> {
   const res = await fetch(`${baseUrl()}/api/bundy`, {
     headers: { ...authHeader() }
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  await checkResponse(res)
 
   const data = (await res.json()) as BundyApiResponse
   const { currentStatus, todayLogs } = data
@@ -103,10 +121,7 @@ export async function doAction(action: DesktopAction, _note?: string): Promise<v
     headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ action: serverAction })
   })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
+  await checkResponse(res)
 }
 
 export async function submitReport(content: string): Promise<void> {
