@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import {
+  ClipboardList, Plus, Minus, X,
+  CircleDot, PlayCircle, FlaskConical, Send, Ban, CheckCircle2, RotateCcw
+} from 'lucide-react'
 
 interface Auth {
   userId: string
@@ -404,20 +408,23 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', flex: '1 1 0', minHeight: 0 }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>📋 Daily Plan</span>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <ClipboardList size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              Daily Plan
+            </span>
             <button
               onClick={() => { setShowAddForm(!showAddForm); setNewProjectName(''); setNewDetails('') }}
               style={{
                 background: 'none',
                 border: 'none',
-                fontSize: '16px',
                 cursor: 'pointer',
                 color: 'var(--accent)',
                 padding: '0 4px',
-                lineHeight: 1
+                display: 'flex',
+                alignItems: 'center'
               }}
             >
-              {showAddForm ? '−' : '+'}
+              {showAddForm ? <Minus size={14} /> : <Plus size={14} />}
             </button>
           </div>
 
@@ -511,8 +518,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
-                  <span style={{ fontSize: '11px', flexShrink: 0 }}>
-                    {item.status === 'completed' ? '✅' : item.status === 'continued' ? '🔁' : item.status === 'in-progress' ? '🔄' : item.status === 'ready-qa' ? '🧪' : item.status === 'ready-client' ? '📤' : item.status === 'blocked' ? '🚫' : '📌'}
+                  <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center', paddingTop: '1px' }}>
+                    {item.status === 'completed'     ? <CheckCircle2  size={13} style={{ color: 'var(--success)' }} />
+                     : item.status === 'continued'  ? <RotateCcw     size={13} style={{ color: 'var(--text-muted)' }} />
+                     : item.status === 'in-progress' ? <PlayCircle    size={13} style={{ color: 'var(--warning)' }} />
+                     : item.status === 'ready-qa'   ? <FlaskConical  size={13} style={{ color: '#8b5cf6' }} />
+                     : item.status === 'ready-client' ? <Send         size={13} style={{ color: '#0ea5e9' }} />
+                     : item.status === 'blocked'    ? <Ban           size={13} style={{ color: 'var(--danger)' }} />
+                     : <CircleDot size={13} style={{ color: 'var(--text-muted)' }} />}
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -532,23 +545,24 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                     style={{
                       background: 'none',
                       border: 'none',
-                      fontSize: '10px',
                       cursor: 'pointer',
                       color: 'var(--text-muted)',
                       padding: '0 2px',
                       flexShrink: 0,
-                      opacity: 0.5
+                      opacity: 0.5,
+                      display: 'flex',
+                      alignItems: 'center'
                     }}
-                  >✕</button>
+                  ><X size={11} /></button>
                 </div>
                 {/* Status selector */}
                 <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', paddingLeft: '20px' }}>
                   {([
-                    { value: 'planned', label: '📌 To Do', color: 'var(--text-muted)' },
-                    { value: 'in-progress', label: '🔄 In Progress', color: 'var(--warning)' },
-                    { value: 'ready-qa', label: '🧪 QA', color: '#8b5cf6' },
-                    { value: 'ready-client', label: '📤 Client', color: '#0ea5e9' },
-                    { value: 'blocked', label: '🚫 Blocked', color: 'var(--danger)' },
+                    { value: 'planned',      label: 'To Do',      Icon: CircleDot,   color: 'var(--text-muted)' },
+                    { value: 'in-progress', label: 'In Progress', Icon: PlayCircle,  color: 'var(--warning)' },
+                    { value: 'ready-qa',    label: 'QA',          Icon: FlaskConical,color: '#8b5cf6' },
+                    { value: 'ready-client',label: 'Client',      Icon: Send,        color: '#0ea5e9' },
+                    { value: 'blocked',     label: 'Blocked',     Icon: Ban,         color: 'var(--danger)' },
                   ] as const).map(opt => (
                     <button
                       key={opt.value}
@@ -561,17 +575,20 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                       }}
                       style={{
                         fontSize: '9px',
-                        padding: '2px 6px',
+                        padding: '2px 5px',
                         border: item.status === opt.value ? 'none' : '1px solid transparent',
                         borderRadius: '5px',
                         cursor: 'pointer',
                         background: item.status === opt.value ? undefined : 'transparent',
                         color: item.status === opt.value ? opt.color : 'var(--text-muted)',
                         fontWeight: item.status === opt.value ? 600 : 400,
-                        opacity: item.status === opt.value ? 1 : 0.7
+                        opacity: item.status === opt.value ? 1 : 0.7,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '3px'
                       }}
                     >
-                      {opt.label}
+                      <opt.Icon size={9} />{opt.label}
                     </button>
                   ))}
                 </div>

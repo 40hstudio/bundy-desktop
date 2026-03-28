@@ -1,6 +1,6 @@
 {
   "name": "bundy-desktop",
-  "version": "1.2.20",
+  "version": "1.2.21",
   "description": "Bundy Clock – macOS menu bar app",
   "main": "out/main/index.js",
   "author": "40h Studio",
@@ -18,6 +18,7 @@
     "active-win": "^8.2.1",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.3",
+    "lucide-react": "^1.7.0",
     "uiohook-napi": "^1.5.3"
   },
   "devDependencies": {
