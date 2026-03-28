@@ -180,14 +180,14 @@ export async function breakOnQuit(): Promise<void> {
 }
 
 /** Exchange the desktop Bearer token for a one-time session URL (30 s TTL). */
-export async function createWebSession(): Promise<string> {
+export async function createWebSession(): Promise<{ jwt: string; maxAge: number }> {
   const res = await fetch(`${baseUrl()}/api/desktop/web-session`, {
     method: 'POST',
     headers: { ...authHeader() }
   })
   if (!res.ok) throw new Error('Failed to create web session')
-  const data = (await res.json()) as { token: string }
-  return `${baseUrl()}/api/desktop/web-session?t=${data.token}`
+  const data = (await res.json()) as { jwt: string; maxAge: number }
+  return data
 }
 
 export async function uploadScreenshot(

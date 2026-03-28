@@ -5,6 +5,7 @@ import {
   Menu,
   nativeImage,
   powerMonitor,
+  session,
   shell,
   systemPreferences,
   Tray
@@ -204,12 +205,30 @@ function broadcastOnlineState(): void {
 // ─── Full-window mode ──────────────────────────────────────────────────────────
 
 async function openFullWindow(): Promise<void> {
-  let url = store.get('apiBase') || 'https://bundy.40h.studio'
+  const apiBase = store.get('apiBase') || 'https://bundy.40h.studio'
+  const targetUrl = `${apiBase}/dashboard`
+
   if (store.get('desktopToken')) {
     try {
-      url = await createWebSession()
+      const { jwt, maxAge } = await createWebSession()
+      const hostname = new URL(apiBase).hostname
+      // Remove any stale cookie, then inject the fresh JWT directly into the
+      // Electron session BEFORE navigation — guarantees the cookie is present
+      // when the page's JS runs fetch('/api/auth/session').
+      await session.defaultSession.cookies.remove(apiBase, 'bundy_session').catch(() => {})
+      await session.defaultSession.cookies.set({
+        url: apiBase,
+        name: 'bundy_session',
+        value: jwt,
+        domain: hostname,
+        path: '/',
+        httpOnly: true,
+        secure: apiBase.startsWith('https://'),
+        sameSite: 'lax',
+        expirationDate: Math.floor((Date.now() + maxAge * 1000) / 1000)
+      })
     } catch {
-      // Fallback to base URL — user will land on login page
+      // Fallback: load without cookie — user will see login page
     }
   }
 
@@ -229,7 +248,7 @@ async function openFullWindow(): Promise<void> {
     fullWin.on('closed', () => { fullWin = null })
   }
 
-  void fullWin.loadURL(url)
+  void fullWin.loadURL(targetUrl)
   if (!fullWin.isVisible()) fullWin.show()
   fullWin.focus()
 }
