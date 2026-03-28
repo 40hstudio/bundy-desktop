@@ -27,6 +27,7 @@ declare global {
       sendCrashReport: (note: string) => Promise<void>
       openFullWindow: () => Promise<void>
       onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void) => () => void
+      onSyncToast: (cb: (data: { count: number }) => void) => () => void
       getDailyPlan: () => Promise<DailyPlanData | null>
       ensureDailyPlan: () => Promise<DailyPlanData>
       getProjects: () => Promise<Array<{ id: string; name: string }>>

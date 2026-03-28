@@ -103,6 +103,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   // ─── Online / offline state ────────────────────────────────────────────
   const [isOnline, setIsOnline] = useState(true)
   const [queuedCount, setQueuedCount] = useState(0)
+  const [syncToast, setSyncToast] = useState<string | null>(null)
 
   // ─── Daily Plan state ──────────────────────────────────────────────────────
   interface PlanItem {
@@ -174,6 +175,16 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
     const unsub = window.electronAPI.onOnlineState(({ isOnline: o, queuedCount: q }) => {
       setIsOnline(o)
       setQueuedCount(q)
+    })
+    return unsub
+  }, [])
+
+  // Show a brief toast when queued offline actions are drained
+  useEffect(() => {
+    const unsub = window.electronAPI.onSyncToast(({ count }) => {
+      setSyncToast(`${count} action${count !== 1 ? 's' : ''} synced`)
+      const t = setTimeout(() => setSyncToast(null), 2500)
+      return () => clearTimeout(t)
     })
     return unsub
   }, [])
@@ -315,6 +326,25 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         >
           <WifiOff size={10} />
           Offline{queuedCount > 0 ? ` · ${queuedCount} action${queuedCount !== 1 ? 's' : ''} queued` : ''}
+        </div>
+      )}
+
+      {/* Sync toast */}
+      {syncToast && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            background: 'rgba(0,200,120,0.12)',
+            border: '1px solid rgba(0,200,120,0.3)',
+            borderRadius: '8px',
+            padding: '5px 8px',
+            fontSize: '10px',
+            color: '#00c878',
+          }}
+        >
+          ✓ {syncToast}
         </div>
       )}
 

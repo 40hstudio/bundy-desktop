@@ -184,12 +184,17 @@ async function drainActionQueue(): Promise<void> {
   if (!pending.length) return
   store.set('pendingActions', [])
   broadcastOnlineState()
+  let synced = 0
   for (const item of pending) {
     try {
       await doAction(item.action as 'clock-in' | 'clock-out' | 'break-start' | 'break-end')
+      synced++
     } catch {
       // Skip actions that fail (e.g. duplicate/invalid state) — don't re-queue
     }
+  }
+  if (synced > 0 && popupWin && !popupWin.isDestroyed()) {
+    popupWin.webContents.send('sync-toast', { count: synced })
   }
 }
 

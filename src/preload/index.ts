@@ -106,6 +106,11 @@ const api = {
     ipcRenderer.on('online-state', handler)
     return () => ipcRenderer.removeListener('online-state', handler)
   },
+  onSyncToast: (cb: (data: { count: number }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { count: number }): void => cb(data)
+    ipcRenderer.on('sync-toast', handler)
+    return () => ipcRenderer.removeListener('sync-toast', handler)
+  },
   getDailyPlan: (): Promise<DailyPlanData | null> =>
     ipcRenderer.invoke('get-daily-plan'),
   ensureDailyPlan: (): Promise<DailyPlanData> =>
