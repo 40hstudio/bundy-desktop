@@ -6,6 +6,7 @@ interface StoreSchema {
   username: string
   role: string
   apiBase: string
+  restartForUpdate: boolean
 }
 
 const store = new ElectronStore<StoreSchema>({
@@ -14,7 +15,8 @@ const store = new ElectronStore<StoreSchema>({
     userId: '',
     username: '',
     role: '',
-    apiBase: 'https://bundy.40h.studio'
+    apiBase: 'https://bundy.40h.studio',
+    restartForUpdate: false
   },
   encryptionKey: 'bundy-desktop-key-2024'
 })

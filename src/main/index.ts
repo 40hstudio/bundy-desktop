@@ -352,6 +352,7 @@ ipcMain.handle('check-for-updates', () => {
 })
 
 ipcMain.handle('install-update', () => {
+  store.set('restartForUpdate', true)
   autoUpdater.quitAndInstall()
 })
 
@@ -436,7 +437,10 @@ app.whenReady().then(() => {
     }
     // Auto-install 5 s after download — gives the user a brief window to click
     // "Restart Now" or just let it happen automatically.
-    setTimeout(() => autoUpdater.quitAndInstall(false, true), 5_000)
+    setTimeout(() => {
+      store.set('restartForUpdate', true)
+      autoUpdater.quitAndInstall(false, true)
+    }, 5_000)
   })
 
   // Check on startup (delay 10s so the app is fully loaded first)
@@ -464,6 +468,25 @@ app.whenReady().then(() => {
   // Auto-start services if token already stored
   if (store.get('desktopToken')) {
     startPoller()
+
+    // If we restarted after an automatic update, resume the user's session.
+    // The flag is only set when quitting via quitAndInstall — not on lid close
+    // or intentional quit (both of those call breakOnQuit() instead).
+    if (store.get('restartForUpdate')) {
+      store.set('restartForUpdate', false)
+      setTimeout(async () => {
+        try {
+          const status = await getBundyStatus()
+          // Only resume if the user is clocked in but on break (paused for update)
+          if (status.isClockedIn && !status.isTracking) {
+            await doAction('break-end')
+            await pollAndPush()
+          }
+        } catch {
+          // non-fatal: network may not be up yet
+        }
+      }, 2_000)
+    }
   }
 
   // ── Lid close / screen lock → auto-break ────────────────────────────────────
@@ -497,7 +520,7 @@ app.on('before-quit', (event) => {
   stopTrayTimer()
   stopServices()
   const token = store.get('desktopToken')
-  if (token) {
+  if (token && !store.get('restartForUpdate')) {
     // Await the quit call (marks offline + auto-break) before actually exiting
     breakOnQuit().finally(() => app.exit(0))
   } else {
