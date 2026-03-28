@@ -15,6 +15,21 @@ export function setTokenExpiredHandler(fn: () => void): void {
   _onTokenExpired = fn
 }
 
+// ─── Online state tracking ─────────────────────────────────────────────────────
+let _serverReachable = true
+export function isServerReachable(): boolean { return _serverReachable }
+
+let _onOnlineStateChange: ((online: boolean) => void) | null = null
+export function setOnlineStateChangeHandler(fn: (online: boolean) => void): void {
+  _onOnlineStateChange = fn
+}
+
+function updateReachable(online: boolean): void {
+  if (online === _serverReachable) return
+  _serverReachable = online
+  _onOnlineStateChange?.(online)
+}
+
 /** Throws if the response is not ok. Fires the expiry handler on 401. */
 async function checkResponse(res: Response): Promise<void> {
   if (res.status === 401) {
@@ -144,10 +159,14 @@ export async function sendDesktopHeartbeat(): Promise<string | null> {
       headers: { ...authHeader() }
     })
     if (res.ok) {
+      updateReachable(true)
       const data = (await res.json()) as { currentStatus?: string }
       return data.currentStatus ?? null
     }
-  } catch { /* network error — non-fatal */ }
+    updateReachable(false)
+  } catch {
+    updateReachable(false)
+  }
   return null
 }
 
@@ -158,6 +177,17 @@ export async function breakOnQuit(): Promise<void> {
     method: 'POST',
     headers: { ...authHeader() }
   }).catch(() => {})
+}
+
+/** Exchange the desktop Bearer token for a one-time session URL (30 s TTL). */
+export async function createWebSession(): Promise<string> {
+  const res = await fetch(`${baseUrl()}/api/desktop/web-session`, {
+    method: 'POST',
+    headers: { ...authHeader() }
+  })
+  if (!res.ok) throw new Error('Failed to create web session')
+  const data = (await res.json()) as { token: string }
+  return `${baseUrl()}/api/desktop/web-session?t=${data.token}`
 }
 
 export async function uploadScreenshot(

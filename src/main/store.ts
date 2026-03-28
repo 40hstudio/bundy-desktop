@@ -1,5 +1,10 @@
 import ElectronStore from 'electron-store'
 
+export interface PendingAction {
+  action: string
+  timestamp: number
+}
+
 interface StoreSchema {
   desktopToken: string
   userId: string
@@ -7,6 +12,7 @@ interface StoreSchema {
   role: string
   apiBase: string
   restartForUpdate: boolean
+  pendingActions: PendingAction[]
 }
 
 const store = new ElectronStore<StoreSchema>({
@@ -16,7 +22,8 @@ const store = new ElectronStore<StoreSchema>({
     username: '',
     role: '',
     apiBase: 'https://bundy.40h.studio',
-    restartForUpdate: false
+    restartForUpdate: false,
+    pendingActions: []
   },
   encryptionKey: 'bundy-desktop-key-2024'
 })

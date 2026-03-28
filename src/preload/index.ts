@@ -99,6 +99,13 @@ const api = {
   },
   sendCrashReport: (note: string): Promise<void> =>
     ipcRenderer.invoke('send-crash-report', note),
+  openFullWindow: (): Promise<void> =>
+    ipcRenderer.invoke('open-full-window'),
+  onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: { isOnline: boolean; queuedCount: number }): void => cb(state)
+    ipcRenderer.on('online-state', handler)
+    return () => ipcRenderer.removeListener('online-state', handler)
+  },
   getDailyPlan: (): Promise<DailyPlanData | null> =>
     ipcRenderer.invoke('get-daily-plan'),
   ensureDailyPlan: (): Promise<DailyPlanData> =>

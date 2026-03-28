@@ -13,19 +13,21 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import store from './store'
-import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler } from './api'
+import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, createWebSession, type BundyStatus } from './api'
 import { startScreenshots, stopScreenshots } from './screenshot'
 import { startActivity, stopActivity } from './activity'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
 
 let tray: Tray | null = null
 let popupWin: BrowserWindow | null = null
+let fullWin: BrowserWindow | null = null
 let statusPollerTimer: NodeJS.Timeout | null = null
 let pendingUpdateVersion: string | null = null
 let pendingDownloadPercent: number | null = null
 let updateDownloaded = false
 let trayTimerTick: NodeJS.Timeout | null = null
 let trayTimerState = { baseMs: 0, snapshotAt: 0, isTracking: false }
+let cachedStatus: BundyStatus | null = null
 
 function formatMs(ms: number): string {
   const s = Math.floor(ms / 1_000)
@@ -163,6 +165,75 @@ function stopServices(): void {
   stopActivity()
 }
 
+// ─── Offline / action queue helpers ───────────────────────────────────────────
+
+function isNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const msg = err.message.toLowerCase()
+  return err instanceof TypeError || msg.includes('fetch') || msg.includes('network') || msg.includes('econnrefused') || msg.includes('enotfound')
+}
+
+function enqueueAction(action: string): void {
+  const pending = store.get('pendingActions')
+  store.set('pendingActions', [...pending, { action, timestamp: Date.now() }])
+}
+
+async function drainActionQueue(): Promise<void> {
+  const pending = store.get('pendingActions')
+  if (!pending.length) return
+  store.set('pendingActions', [])
+  broadcastOnlineState()
+  for (const item of pending) {
+    try {
+      await doAction(item.action as 'clock-in' | 'clock-out' | 'break-start' | 'break-end')
+    } catch {
+      // Skip actions that fail (e.g. duplicate/invalid state) — don't re-queue
+    }
+  }
+}
+
+function broadcastOnlineState(): void {
+  if (!popupWin || popupWin.isDestroyed()) return
+  const pending = store.get('pendingActions')
+  popupWin.webContents.send('online-state', {
+    isOnline: isServerReachable(),
+    queuedCount: pending.length
+  })
+}
+
+// ─── Full-window mode ──────────────────────────────────────────────────────────
+
+async function openFullWindow(): Promise<void> {
+  let url = store.get('apiBase') || 'https://bundy.40h.studio'
+  if (store.get('desktopToken')) {
+    try {
+      url = await createWebSession()
+    } catch {
+      // Fallback to base URL — user will land on login page
+    }
+  }
+
+  if (!fullWin || fullWin.isDestroyed()) {
+    fullWin = new BrowserWindow({
+      width: 1100,
+      height: 700,
+      minWidth: 900,
+      minHeight: 600,
+      titleBarStyle: 'hiddenInset',
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true
+      }
+    })
+    fullWin.on('closed', () => { fullWin = null })
+  }
+
+  void fullWin.loadURL(url)
+  if (!fullWin.isVisible()) fullWin.show()
+  fullWin.focus()
+}
+
 // ─── Status polling → push to renderer ────────────────────────────────────────
 
 /** Lightweight status refresh — no heartbeat POST. Used for SSE-triggered updates. */
@@ -208,8 +279,10 @@ async function pollAndPush(): Promise<void> {
     // Send heartbeat first so the web app knows desktop is online
     // before we make any other request
     await sendDesktopHeartbeat()
+    broadcastOnlineState()
 
     const status = await getBundyStatus()
+    cachedStatus = status
     updateTray(status.isClockedIn, status.isTracking)
 
     // Update tray title timer snapshot
@@ -250,10 +323,13 @@ function startPoller(): void {
   statusPollerTimer = setInterval(() => void pollAndPush(), 30_000)
 
   // Real-time sync: listen for SSE events so web actions update instantly
-  // onReconnect: SSE reconnects ~5s after server restart — check for app updates
+  // onReconnect: SSE reconnects ~5s after server restart — drain queue then check for updates
   connectSSE(
     () => void refreshStatus(),
-    () => autoUpdater.checkForUpdates().catch(() => {})
+    async () => {
+      await drainActionQueue()
+      autoUpdater.checkForUpdates().catch(() => {})
+    }
   )
 }
 
@@ -300,12 +376,34 @@ ipcMain.handle('logout', () => {
 })
 
 ipcMain.handle('get-status', async () => {
-  return getBundyStatus()
+  try {
+    const s = await getBundyStatus()
+    cachedStatus = s
+    return s
+  } catch (err: unknown) {
+    if (cachedStatus) return cachedStatus
+    throw err
+  }
 })
 
 ipcMain.handle('do-action', async (_event, action: string, note?: string) => {
-  await doAction(action as 'clock-in' | 'clock-out' | 'break-start' | 'break-end', note)
-  await pollAndPush()
+  if (!isServerReachable()) {
+    // Server unreachable — queue the action to replay on reconnect
+    enqueueAction(action)
+    broadcastOnlineState()
+    return
+  }
+  try {
+    await doAction(action as 'clock-in' | 'clock-out' | 'break-start' | 'break-end', note)
+    await pollAndPush()
+  } catch (err) {
+    if (isNetworkError(err)) {
+      enqueueAction(action)
+      broadcastOnlineState()
+    } else {
+      throw err
+    }
+  }
 })
 
 ipcMain.handle('submit-report', async (_event, content: string) => {
@@ -355,6 +453,8 @@ ipcMain.handle('install-update', () => {
   store.set('restartForUpdate', true)
   autoUpdater.quitAndInstall()
 })
+
+ipcMain.handle('open-full-window', () => void openFullWindow())
 
 ipcMain.handle('send-crash-report', async (_event, note: string) => {
   await sendUserReport(note)
@@ -407,7 +507,11 @@ app.whenReady().then(() => {
       popupWin.webContents.send('token-expired')
     }
   })
-
+  // ── Online state change — drain queue when connection restored ───────────
+  setOnlineStateChangeHandler((online) => {
+    if (online) void drainActionQueue().then(() => void pollAndPush())
+    broadcastOnlineState()
+  })
   // ── Crash reporter ──────────────────────────────────────────────────────────
   initCrashReporter()
 
@@ -454,6 +558,7 @@ app.whenReady().then(() => {
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open Bundy', click: togglePopup },
     { type: 'separator' },
+    { label: 'Open Full Dashboard', click: () => void openFullWindow() },
     {
       label: 'Open in Browser',
       click: () => void shell.openExternal(store.get('apiBase') || 'https://bundy.40h.studio')

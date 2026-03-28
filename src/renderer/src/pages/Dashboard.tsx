@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ClipboardList, Plus, Minus, X,
-  CircleDot, PlayCircle, FlaskConical, Send, Ban, CheckCircle2, RotateCcw
+  CircleDot, PlayCircle, FlaskConical, Send, Ban, CheckCircle2, RotateCcw,
+  WifiOff, ExternalLink
 } from 'lucide-react'
 
 interface Auth {
@@ -99,6 +100,10 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   const [crashSubmitting, setCrashSubmitting] = useState(false)
   const [crashSent, setCrashSent] = useState(false)
 
+  // ─── Online / offline state ────────────────────────────────────────────
+  const [isOnline, setIsOnline] = useState(true)
+  const [queuedCount, setQueuedCount] = useState(0)
+
   // ─── Daily Plan state ──────────────────────────────────────────────────────
   interface PlanItem {
     id: string
@@ -161,6 +166,15 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   // Subscribe to pushed permissions updates (main re-checks on every poll cycle)
   useEffect(() => {
     const unsub = window.electronAPI.onPermissionsUpdate(setPermissions)
+    return unsub
+  }, [])
+
+  // Subscribe to auto-update events
+  useEffect(() => {
+    const unsub = window.electronAPI.onOnlineState(({ isOnline: o, queuedCount: q }) => {
+      setIsOnline(o)
+      setQueuedCount(q)
+    })
     return unsub
   }, [])
 
@@ -283,6 +297,26 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           Sign out
         </button>
       </div>
+
+      {/* Offline banner */}
+      {!isOnline && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            background: 'rgba(252,129,129,0.12)',
+            border: '1px solid rgba(252,129,129,0.3)',
+            borderRadius: '8px',
+            padding: '5px 8px',
+            fontSize: '10px',
+            color: 'var(--danger)'
+          }}
+        >
+          <WifiOff size={10} />
+          Offline{queuedCount > 0 ? ` · ${queuedCount} action${queuedCount !== 1 ? 's' : ''} queued` : ''}
+        </div>
+      )}
 
       {/* Timer */}
       <div
@@ -685,8 +719,25 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         </div>
       )}
 
-      {/* Report Issue link */}
-      <div style={{ textAlign: 'center', marginTop: 'auto' }}>
+      {/* Footer */}
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: 'auto' }}>
+        <button
+          onClick={() => window.electronAPI.openFullWindow()}
+          style={{
+            background: 'none',
+            border: 'none',
+            fontSize: '10px',
+            color: 'var(--accent)',
+            cursor: 'pointer',
+            opacity: 0.7,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '3px'
+          }}
+        >
+          <ExternalLink size={9} />Open Dashboard
+        </button>
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)', opacity: 0.3 }}>|</span>
         <button
           onClick={() => { setCrashNote(''); setCrashSent(false); setShowCrashModal(true) }}
           style={{

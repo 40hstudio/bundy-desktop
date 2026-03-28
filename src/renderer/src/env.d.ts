@@ -25,6 +25,8 @@ declare global {
       onPlanUpdate: (cb: (plan: DailyPlanData) => void) => () => void
       onTokenExpired: (cb: () => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
+      openFullWindow: () => Promise<void>
+      onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void) => () => void
       getDailyPlan: () => Promise<DailyPlanData | null>
       ensureDailyPlan: () => Promise<DailyPlanData>
       getProjects: () => Promise<Array<{ id: string; name: string }>>
