@@ -4511,7 +4511,8 @@ function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, 
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
       background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      WebkitAppRegion: 'no-drag',
+    } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         width: 480, maxHeight: '85vh', overflow: 'auto',
         background: C.contentBg, borderRadius: 14,
@@ -4659,7 +4660,8 @@ function CreateProjectModal({ config, onClose, onCreated }: {
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
       background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      WebkitAppRegion: 'no-drag',
+    } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         width: 400, background: C.contentBg, borderRadius: 14,
         boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
@@ -4777,7 +4779,8 @@ function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
       background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      WebkitAppRegion: 'no-drag',
+    } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         width: 400, background: C.contentBg, borderRadius: 14,
         boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
@@ -4938,7 +4941,8 @@ function ManageSectionsModal({ config, projectId, projectName, sections: initial
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
       background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      WebkitAppRegion: 'no-drag',
+    } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         width: 420, maxHeight: '80vh', background: C.contentBg, borderRadius: 14,
         boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24, display: 'flex', flexDirection: 'column',
@@ -5460,7 +5464,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           </div>
         )}
         {tab === 'tasks' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <TasksPanel config={apiConfig} auth={auth} />
           </div>
         )}
