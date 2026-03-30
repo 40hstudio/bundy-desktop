@@ -1821,6 +1821,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
   const [videoOff, setVideoOff] = useState(false)
   const localVideo = useRef<HTMLVideoElement>(null)
   const remoteVideo = useRef<HTMLVideoElement>(null)
+  const remoteAudio = useRef<HTMLAudioElement>(null)
   const pc = useRef<RTCPeerConnection | null>(null)
   const localStream = useRef<MediaStream | null>(null)
   // Buffer ICE candidates that arrive before setRemoteDescription completes
@@ -1848,7 +1849,11 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
     pc.current = peerConn
     stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
     peerConn.ontrack = e => {
-      if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
+      if (callType === 'video') {
+        if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
+      } else {
+        if (remoteAudio.current) remoteAudio.current.srcObject = e.streams[0]
+      }
       setStatus('connected')
     }
     peerConn.onicecandidate = e => {
@@ -1979,6 +1984,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 200,
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20,
     }}>
+      <audio ref={remoteAudio} autoPlay style={{ display: 'none' }} />
       {callType === 'video' ? (
         <div style={{ position: 'relative', width: 480, height: 320, borderRadius: 16, overflow: 'hidden', background: '#000' }}>
           <video ref={remoteVideo} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
