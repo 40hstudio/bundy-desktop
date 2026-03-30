@@ -7,7 +7,7 @@ import {
   Calendar, Flag, User as UserIcon, Layers, Settings2,
   UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
   MicOff, PhoneOff, Edit2, MessageCircle, X, ChevronLeft,
-  Bold, Italic, List
+  Bold, Italic, List, ExternalLink, FileText, PhoneIncoming
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -562,8 +562,9 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
           headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'dm', partnerId: selected[0] }),
         })
-        const d = await res.json() as { channel?: { id: string } }
+        const d = await res.json() as { channel?: { id: string }; error?: string }
         if (d.channel?.id) { onCreated(d.channel.id); onClose() }
+        else setError(d.error ?? 'Failed to create')
       } catch { setError('Failed to create') } finally { setBusy(false) }
     } else {
       if (!name.trim()) { setError('Name is required'); return }
@@ -575,9 +576,9 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
           headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: mode, name: name.trim(), memberIds: selected }),
         })
-        const d = await res.json() as { channel?: { id: string } }
+        const d = await res.json() as { channel?: { id: string }; error?: string }
         if (d.channel?.id) { onCreated(d.channel.id); onClose() }
-        else setError('Failed to create')
+        else setError(d.error ?? 'Failed to create')
       } catch { setError('Failed to create') } finally { setBusy(false) }
     }
   }
@@ -601,7 +602,7 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
 
         {/* Mode tabs */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-          {(['dm', 'group', 'channel'] as const).map(m => (
+          {(['dm', 'group', ...(auth.role === 'admin' ? ['channel'] : [])] as Array<'dm' | 'group' | 'channel'>).map(m => (
             <button key={m} onClick={() => { setMode(m); setSelected([]); setName(''); setError('') }}
               style={{
                 flex: 1, padding: '6px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
@@ -668,6 +669,234 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
           {busy ? 'Creating…' : `Create ${modeLabels[mode]}`}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ─── OG preview client cache ──────────────────────────────────────────────────
+
+interface OgMeta { title: string | null; description: string | null; image: string | null; siteName: string | null }
+const ogClientCache = new Map<string, OgMeta | null>()
+
+function isImageUrl(url: string): boolean {
+  return /\.(jpg|jpeg|png|gif|webp|avif|svg)(\?.*)?$/i.test(url.split('?')[0])
+}
+function isVideoUrl(url: string): boolean {
+  return /\.(mp4|webm|ogg|mov)(\?.*)?$/i.test(url.split('?')[0])
+}
+
+// OG preview card rendered below a message bubble
+function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
+  const [og, setOg] = useState<OgMeta | null | undefined>(ogClientCache.has(url) ? ogClientCache.get(url) : undefined)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (ogClientCache.has(url)) return
+    const params = new URLSearchParams({ url })
+    fetch(`${config.apiBase}/api/opengraph?${params}`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+      signal: AbortSignal.timeout(8000),
+    })
+      .then(r => r.json())
+      .then((d: OgMeta & { error?: string }) => {
+        const data = d.error ? null : (d.title || d.image ? d : null)
+        ogClientCache.set(url, data)
+        setOg(data)
+      })
+      .catch(() => { ogClientCache.set(url, null); setOg(null) })
+  }, [url, config])
+
+  if (!og) return null
+
+  return (
+    <div
+      onClick={() => window.open(url, '_blank')}
+      style={{
+        marginTop: 6, borderRadius: 8, border: `1px solid ${C.border}`,
+        overflow: 'hidden', background: '#f8faff', cursor: 'pointer',
+        transition: 'opacity 0.15s',
+      }}
+    >
+      {og.image && (
+        <img
+          src={og.image} alt={og.title ?? ''}
+          style={{ width: '100%', maxHeight: expanded ? 'none' : 140, objectFit: 'cover', display: 'block' }}
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+          onClick={e => { e.stopPropagation(); setExpanded(!expanded) }}
+        />
+      )}
+      <div style={{ padding: '7px 10px' }}>
+        {og.siteName && <div style={{ fontSize: 10, color: C.accent, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>{og.siteName}</div>}
+        {og.title && <div style={{ fontSize: 12, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>{og.title}</div>}
+        {og.description && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, lineHeight: 1.4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{og.description}</div>}
+        <div style={{ fontSize: 10, color: C.accent, marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <ExternalLink size={9} />{new URL(url).hostname}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Message content renderer ─────────────────────────────────────────────────
+
+// Parses text with [label](url) markdown links and bare https:// URLs,
+// returning proper React elements so links are clickable.
+function parseContent(text: string): React.ReactNode {
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
+  const result: React.ReactNode[] = []
+  let cursor = 0
+  let m: RegExpExecArray | null
+  let keyIdx = 0
+
+  while ((m = linkRe.exec(text)) !== null) {
+    if (m.index > cursor) {
+      result.push(formatInline(text.slice(cursor, m.index), keyIdx++))
+    }
+    const label = m[1] ?? m[3]
+    const url = m[2] ?? m[3]
+    result.push(
+      <a
+        key={keyIdx++}
+        href={url}
+        onClick={e => { e.preventDefault(); window.open(url, '_blank') }}
+        style={{ color: C.accent, textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all', WebkitUserSelect: 'text', userSelect: 'text' }}
+      >
+        {label}
+        {' '}<ExternalLink size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />
+      </a>
+    )
+    cursor = m.index + m[0].length
+  }
+  if (cursor < text.length) result.push(formatInline(text.slice(cursor), keyIdx++))
+  return result.length === 1 ? result[0] : <>{result}</>
+}
+
+function formatInline(text: string, key?: number): React.ReactNode {
+  // Bold and italic using dangerouslySetInnerHTML (trusted, no user input goes back unescaped)
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const html = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')
+  return <span key={key} dangerouslySetInnerHTML={{ __html: html }} style={{ userSelect: 'text', WebkitUserSelect: 'text', wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'pre-wrap' }} />
+}
+
+// Renders message content, handling lines, links, bold/italic
+function renderMessageContent(text: string): React.ReactNode {
+  return (
+    <div style={{ userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }}>
+      {text.split('\n').map((line, li) => (
+        <div key={li} style={{ lineHeight: 1.5, minHeight: li === 0 ? undefined : '1.5em', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+          {line ? parseContent(line) : <br />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Extracts bare URLs from text (in order)
+function extractUrls(text: string): string[] {
+  const urls: string[] = []
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) urls.push(m[2] ?? m[3])
+  return urls
+}
+
+// Inline image attachment (when message content matches attachment pattern)
+function InlineAttachment({ content, isMe }: { content: string; isMe: boolean; config?: ApiConfig }) {
+  const match = content.match(/^\[📎 ([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/)
+  if (!match) return null
+  const [, filename, url] = match
+  const [expanded, setExpanded] = useState(false)
+
+  if (isImageUrl(url)) {
+    return (
+      <div style={{ marginTop: 4 }}>
+        <img
+          src={url}
+          alt={filename}
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            maxWidth: '100%', maxHeight: expanded ? 400 : 180,
+            objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', display: 'block',
+          }}
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+        />
+        {expanded && (
+          <button
+            onClick={() => window.open(url, '_blank')}
+            style={{ marginTop: 4, fontSize: 10, color: isMe ? 'rgba(255,255,255,0.8)' : C.accent, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
+          >
+            <ExternalLink size={10} /> Open full size
+          </button>
+        )}
+      </div>
+    )
+  }
+  if (isVideoUrl(url)) {
+    return (
+      <video controls src={url} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginTop: 4, display: 'block' }} />
+    )
+  }
+  // Generic file card
+  return (
+    <div
+      onClick={() => window.open(url, '_blank')}
+      style={{
+        marginTop: 4, display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px 12px', borderRadius: 8,
+        background: isMe ? 'rgba(255,255,255,0.15)' : '#f0f4ff',
+        border: `1px solid ${isMe ? 'rgba(255,255,255,0.3)' : C.border}`,
+        cursor: 'pointer',
+      }}
+    >
+      <FileText size={18} color={isMe ? 'rgba(255,255,255,0.9)' : C.accent} />
+      <span style={{ fontSize: 12, fontWeight: 600, color: isMe ? '#fff' : C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>
+      <ExternalLink size={12} color={isMe ? 'rgba(255,255,255,0.7)' : C.textMuted} />
+    </div>
+  )
+}
+
+// ─── Incoming call overlay (shown regardless of active tab) ───────────────────
+
+interface IncomingCallPayload { from: string; fromName: string; fromAvatar: string | null; sdp: string; callType: 'audio' | 'video' }
+
+function IncomingCallOverlay({ payload, onAccept, onReject }: {
+  payload: IncomingCallPayload
+  config?: ApiConfig; auth?: Auth
+  onAccept: () => void; onReject: () => void
+}) {
+  return (
+    <div style={{
+      position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+      background: C.contentBg, borderRadius: 16, padding: '16px 20px',
+      boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
+      display: 'flex', alignItems: 'center', gap: 14, minWidth: 280,
+      border: `1px solid ${C.border}`,
+      animation: 'slideIn 0.2s ease-out',
+    }}>
+      <div style={{
+        width: 44, height: 44, borderRadius: '50%', background: C.accentLight,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>
+        <PhoneIncoming size={20} color={C.accent} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>{payload.callType === 'video' ? 'Video call' : 'Audio call'}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{payload.fromName}</div>
+      </div>
+      <button
+        onClick={onReject}
+        style={{ width: 36, height: 36, borderRadius: '50%', background: C.danger, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        title="Decline"
+      >
+        <PhoneOff size={16} color="#fff" />
+      </button>
+      <button
+        onClick={onAccept}
+        style={{ width: 36, height: 36, borderRadius: '50%', background: C.success, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        title="Accept"
+      >
+        <Phone size={16} color="#fff" />
+      </button>
     </div>
   )
 }
@@ -963,6 +1192,17 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                   c.id === payload.channelId ? { ...c, unread: 0 } : c
                 ))
               }
+            } else if (ev === 'channel-created') {
+              // A new channel/DM/group was created that includes us — reload list
+              loadChannels()
+            } else if (ev === 'call-invite') {
+              // Incoming call — dispatch a custom window event so IncomingCallOverlay
+              // (rendered outside MessagesPanel) can show regardless of active tab.
+              window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
+              // If already in MessagesPanel, let CallWidget pick it up too
+              if (!activeCall) {
+                setActiveCall(null) // no-op, CallWidget handles call-invite via its own SSE path
+              }
             }
           } catch { /* ignore parse errors */ }
         }
@@ -1037,20 +1277,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const dmList = channels.filter(c => c.type === 'dm')
 
   // Render markdown-like content with selectable text
-  function renderContent(text: string) {
-    const lines = text.split('\n')
-    return lines.map((line, li) => {
-      // Replace [text](url) with anchor tags (open externally via electron shell)
-      const withLinks = line.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, label, url) => {
-        const safeUrl = encodeURI(url)
-        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;cursor:pointer" onclick="event.preventDefault();window.open('${safeUrl}','_blank')">${label}</a>`
-      })
-      const out = withLinks
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      return <div key={li} dangerouslySetInnerHTML={{ __html: out || '&nbsp;' }} style={{ lineHeight: 1.5, userSelect: 'text', WebkitUserSelect: 'text' }} />
-    })
-  }
+  // renderContent is replaced by module-level renderMessageContent + OG previews per bubble
 
   const selectedTyping = selected ? (typingMap[selected.id] ?? []) : []
 
@@ -1110,7 +1337,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
 
       {/* Message thread */}
       {selected ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{
             padding: '10px 16px', borderBottom: `1px solid ${C.border}`,
@@ -1150,7 +1377,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {loadingMsgs && messages.length === 0 && (
               <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}>
                 <Loader size={18} />
@@ -1161,6 +1388,8 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
               const showHeader = messages[i - 1]?.sender.id !== msg.sender.id
               const senderName = msg.sender.alias ?? msg.sender.username
               const isRead = msg.reads?.some(r => r.userId !== auth.userId)
+              const isAttachment = /^\[📎 [^\]]+\]\(https?:\/\/[^\s)]+\)$/.test(msg.content)
+              const plainUrls = isAttachment ? [] : extractUrls(msg.content).filter(u => !isImageUrl(u))
               return (
                 <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}>
                   {showHeader && !isMe && (
@@ -1172,18 +1401,25 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                   )}
                   <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32 }}>
                     <div style={{ maxWidth: '72%' }}>
-                      <div style={{
-                        padding: '8px 12px', borderRadius: 12,
-                        background: isMe ? C.accent : '#fff',
-                        boxShadow: isMe ? `0 2px 8px ${C.accent}44` : '2px 2px 6px #a3b1c6, -2px -2px 6px #ffffff',
-                        color: isMe ? '#fff' : C.text, fontSize: 13,
-                        borderBottomRightRadius: isMe ? 4 : 12,
-                        borderBottomLeftRadius: isMe ? 12 : 4,
-                        userSelect: 'text', WebkitUserSelect: 'text',
-                        cursor: 'text',
-                      }}>
-                        {renderContent(msg.content)}
-                      </div>
+                      {isAttachment ? (
+                        <InlineAttachment content={msg.content} isMe={isMe} config={config} />
+                      ) : (
+                        <div style={{
+                          padding: '8px 12px', borderRadius: 12,
+                          background: isMe ? C.accent : '#fff',
+                          boxShadow: isMe ? `0 2px 8px ${C.accent}44` : '2px 2px 6px #a3b1c6, -2px -2px 6px #ffffff',
+                          color: isMe ? '#fff' : C.text, fontSize: 13,
+                          borderBottomRightRadius: isMe ? 4 : 12,
+                          borderBottomLeftRadius: isMe ? 12 : 4,
+                          wordBreak: 'break-word', overflowWrap: 'break-word',
+                          userSelect: 'text', WebkitUserSelect: 'text',
+                        }}>
+                          {renderMessageContent(msg.content)}
+                        </div>
+                      )}
+                      {plainUrls.map((url, ui) => (
+                        <OgPreview key={ui} url={url} config={config} />
+                      ))}
                       {isMe && (
                         <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2, userSelect: 'none' }}>
                           {formatTime(msg.createdAt)}
@@ -2349,6 +2585,7 @@ interface Props { auth: Auth; onLogout: () => void }
 export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>('home')
   const [isOnline, setIsOnline] = useState(true)
+  const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null)
   const apiConfig = useApiConfig()
 
   useEffect(() => {
@@ -2356,9 +2593,31 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
     return unsub
   }, [])
 
+  // Listen for incoming-call events dispatched by MessagesPanel SSE
+  // (so we can show the overlay regardless of which tab is active)
+  useEffect(() => {
+    function handler(e: Event) {
+      const payload = (e as CustomEvent<IncomingCallPayload>).detail
+      setIncomingCall(payload)
+    }
+    window.addEventListener('bundy-incoming-call', handler)
+    return () => window.removeEventListener('bundy-incoming-call', handler)
+  }, [])
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
       <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} />
+
+      {/* Incoming call overlay — visible on any tab */}
+      {incomingCall && apiConfig && (
+        <IncomingCallOverlay
+          payload={incomingCall}
+          config={apiConfig}
+          auth={auth}
+          onAccept={() => { setTab('messages'); setIncomingCall(null) }}
+          onReject={() => setIncomingCall(null)}
+        />
+      )}
 
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {!isOnline && (
@@ -2377,8 +2636,9 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             <HomePanel auth={auth} />
           </div>
         )}
-        {tab === 'messages' && apiConfig && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
+        {/* MessagesPanel is always mounted so SSE stays alive for calls & notifications */}
+        {apiConfig && (
+          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36, display: tab === 'messages' ? 'block' : 'none' }}>
             <MessagesPanel config={apiConfig} auth={auth} />
           </div>
         )}
@@ -2398,7 +2658,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           </div>
         )}
         {/* Loading state while apiConfig is fetching for data panels */}
-        {(tab === 'messages' || tab === 'tasks' || tab === 'activity' || tab === 'settings') && !apiConfig && (
+        {(tab === 'tasks' || tab === 'activity' || tab === 'settings') && !apiConfig && (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted }}>
             <Loader size={24} />
           </div>
