@@ -1038,10 +1038,14 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
   )
 }
 
-function MessagesPanel({ config, auth, acceptedCall }: {
+function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef }: {
   config: ApiConfig; auth: Auth
   /** Set when user accepts an incoming call from IncomingCallOverlay */
   acceptedCall?: IncomingCallPayload | null
+  /** Pre-buffered ICE candidates from FullDashboard */
+  iceBufferRef: React.MutableRefObject<RTCIceCandidateInit[]>
+  /** Pre-buffered answer SDP from FullDashboard */
+  answerSdpRef: React.MutableRefObject<string | null>
 }) {
   const [channels, setChannels] = useState<Conversation[]>([])
   const [selected, setSelected] = useState<Conversation | null>(null)
@@ -1356,7 +1360,8 @@ function MessagesPanel({ config, auth, acceptedCall }: {
           targetUser={activeCall.targetUser}
           callType={activeCall.callType}
           offerSdp={activeCall.offerSdp}
-          onEnd={() => setActiveCall(null)}
+          bufferedIce={iceBufferRef.current.splice(0)}
+          onEnd={() => { iceBufferRef.current = []; answerSdpRef.current = null; setActiveCall(null) }}
         />
       )}
 
@@ -1809,16 +1814,19 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
 
 // ─── Call UI ─────────────────────────────────────────────────────────────────
 
-function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
+function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
   config: ApiConfig; auth: Auth
   targetUser: { id: string; name: string; avatar: string | null }
   callType: 'audio' | 'video'
   onEnd: () => void
   /** When set, this widget is the RECEIVER — skip creating offer, set remote desc from this SDP and answer */
   offerSdp?: string
+  /** Pre-buffered ICE candidates collected before this widget mounted */
+  bufferedIce?: RTCIceCandidateInit[]
 }) {
   const isReceiver = !!offerSdp
   const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>('calling')
+  const statusRef = useRef<'calling' | 'connected' | 'ended'>('calling')
   const [muted, setMuted] = useState(false)
   const [videoOff, setVideoOff] = useState(false)
   const localVideo = useRef<HTMLVideoElement>(null)
@@ -1827,7 +1835,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
   const pc = useRef<RTCPeerConnection | null>(null)
   const localStream = useRef<MediaStream | null>(null)
   // Buffer ICE candidates that arrive before setRemoteDescription completes
-  const iceBuffer = useRef<RTCIceCandidateInit[]>([])
+  const iceBuffer = useRef<RTCIceCandidateInit[]>(bufferedIce ? [...bufferedIce] : [])
   const remoteDescSet = useRef(false)
 
   useEffect(() => {
@@ -1838,7 +1846,17 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
     } else {
       startCall()
     }
-    return () => { ctrl.abort(); cleanup(false) }
+    // 30s timeout for unanswered outgoing calls
+    let timeout: NodeJS.Timeout | undefined
+    if (!isReceiver) {
+      timeout = setTimeout(() => {
+        if (statusRef.current === 'calling') {
+          console.log('[CallWidget] call timeout — no answer after 30s')
+          cleanup(true); setStatus('ended'); onEnd()
+        }
+      }, 30000)
+    }
+    return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout) }
   }, [])
 
   async function setupPeer(stream: MediaStream) {
@@ -1853,12 +1871,12 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
     peerConn.ontrack = e => {
       const remoteStream = e.streams[0]
       if (!remoteStream) return
+      console.log('[CallWidget] ontrack fired, tracks:', remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`))
       if (callType === 'video') {
         if (remoteVideo.current) {
           remoteVideo.current.srcObject = remoteStream
           remoteVideo.current.play().catch(err => console.error('[CallWidget] remoteVideo.play() failed:', err))
         }
-        // Also pipe audio track to audio element as fallback
         if (remoteAudio.current) {
           remoteAudio.current.srcObject = remoteStream
           remoteAudio.current.play().catch(() => {})
@@ -1869,7 +1887,19 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
           remoteAudio.current.play().catch(err => console.error('[CallWidget] remoteAudio.play() failed:', err))
         }
       }
-      setStatus('connected')
+    }
+    // Connection state monitoring — more reliable than ontrack for status
+    peerConn.onconnectionstatechange = () => {
+      const state = peerConn.connectionState
+      console.log('[CallWidget] connectionState:', state)
+      if (state === 'connected') { setStatus('connected'); statusRef.current = 'connected' }
+      else if (state === 'failed') { console.error('[CallWidget] connection failed'); cleanup(true); setStatus('ended'); onEnd() }
+    }
+    peerConn.oniceconnectionstatechange = () => {
+      const state = peerConn.iceConnectionState
+      console.log('[CallWidget] iceConnectionState:', state)
+      if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected' }
+      else if (state === 'failed') { console.error('[CallWidget] ICE failed'); cleanup(true); setStatus('ended'); onEnd() }
     }
     peerConn.onicecandidate = e => {
       if (e.candidate) {
@@ -2753,6 +2783,10 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
   const apiConfig = useApiConfig()
 
+  // Buffer ICE candidates and answer SDP that arrive before CallWidget mounts
+  const iceBufferRef = useRef<RTCIceCandidateInit[]>([])
+  const answerSdpRef = useRef<string | null>(null)
+
   useEffect(() => {
     const unsub = window.electronAPI.onOnlineState((state) => setIsOnline(state.isOnline))
     return unsub
@@ -2760,13 +2794,31 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   // Listen for incoming-call events dispatched by MessagesPanel SSE
   // (so we can show the overlay regardless of which tab is active)
+  // Also buffer ICE candidates and answer SDP that arrive before the CallWidget mounts
   useEffect(() => {
-    function handler(e: Event) {
+    function onIncoming(e: Event) {
       const payload = (e as CustomEvent<IncomingCallPayload>).detail
+      // Clear buffers when a new call arrives
+      iceBufferRef.current = []
+      answerSdpRef.current = null
       setIncomingCall(payload)
     }
-    window.addEventListener('bundy-incoming-call', handler)
-    return () => window.removeEventListener('bundy-incoming-call', handler)
+    function onIce(e: Event) {
+      const payload = (e as CustomEvent<{ candidate?: RTCIceCandidateInit }>).detail
+      if (payload.candidate) iceBufferRef.current.push(payload.candidate)
+    }
+    function onAnswer(e: Event) {
+      const payload = (e as CustomEvent<{ sdp?: string }>).detail
+      if (payload.sdp) answerSdpRef.current = payload.sdp
+    }
+    window.addEventListener('bundy-incoming-call', onIncoming)
+    window.addEventListener('bundy-call-ice', onIce)
+    window.addEventListener('bundy-call-answer', onAnswer)
+    return () => {
+      window.removeEventListener('bundy-incoming-call', onIncoming)
+      window.removeEventListener('bundy-call-ice', onIce)
+      window.removeEventListener('bundy-call-answer', onAnswer)
+    }
   }, [])
 
   return (
@@ -2784,7 +2836,17 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             setTab('messages')
             setIncomingCall(null)
           }}
-          onReject={() => setIncomingCall(null)}
+          onReject={() => {
+            // Notify the caller that we rejected
+            fetch(`${apiConfig.apiBase}/api/calls`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${apiConfig.token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'end', to: incomingCall.from }),
+            }).catch(() => {})
+            iceBufferRef.current = []
+            answerSdpRef.current = null
+            setIncomingCall(null)
+          }}
         />
       )}
 
@@ -2815,7 +2877,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             visibility: tab === 'messages' ? 'visible' : 'hidden',
             pointerEvents: tab === 'messages' ? 'auto' : 'none',
           }}>
-          <MessagesPanel config={apiConfig} auth={auth} acceptedCall={acceptedCall} />
+          <MessagesPanel config={apiConfig} auth={auth} acceptedCall={acceptedCall} iceBufferRef={iceBufferRef} answerSdpRef={answerSdpRef} />
           </div>
         )}
         {tab === 'tasks' && apiConfig && (
