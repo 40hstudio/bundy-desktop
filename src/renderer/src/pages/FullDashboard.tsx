@@ -1261,10 +1261,12 @@ function MessagesPanel({ config, auth, acceptedCall }: {
               // Incoming call — dispatch a custom window event so IncomingCallOverlay
               // (rendered outside MessagesPanel) can show regardless of active tab.
               window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
-              // If already in MessagesPanel, let CallWidget pick it up too
-              if (!activeCall) {
-                setActiveCall(null) // no-op, CallWidget handles call-invite via its own SSE path
-              }
+            } else if (ev === 'call-answer') {
+              window.dispatchEvent(new CustomEvent('bundy-call-answer', { detail: payload }))
+            } else if (ev === 'call-ice') {
+              window.dispatchEvent(new CustomEvent('bundy-call-ice', { detail: payload }))
+            } else if (ev === 'call-end') {
+              window.dispatchEvent(new CustomEvent('bundy-call-end', { detail: payload }))
             }
           } catch { /* ignore parse errors */ }
         }
@@ -1917,42 +1919,35 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
   }
 
   function listenForSignals(ctrl: AbortController) {
-    fetch(`${config.apiBase}/api/bundy/stream`, {
-      headers: { Authorization: `Bearer ${config.token}` },
-      signal: ctrl.signal,
-    }).then(async res => {
-      if (!res.body) return
-      const reader = res.body.getReader()
-      const dec = new TextDecoder()
-      let buf = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const parts = buf.split('\n\n'); buf = parts.pop() ?? ''
-        for (const part of parts) {
-          const evM = part.match(/^event: (.+)/m)
-          const datM = part.match(/^data: (.+)/m)
-          if (!evM || !datM) continue
-          try {
-            const ev = evM[1].trim()
-            const payload = JSON.parse(datM[1]) as { from?: string; sdp?: string; candidate?: RTCIceCandidateInit }
-            if (ev === 'call-answer' && !isReceiver && pc.current) {
-              await pc.current.setRemoteDescription({ type: 'answer', sdp: payload.sdp! })
-              await drainIceBuffer(pc.current)
-            } else if (ev === 'call-ice' && payload.candidate) {
-              if (remoteDescSet.current && pc.current) {
-                try { await pc.current.addIceCandidate(new RTCIceCandidate(payload.candidate)) } catch { /* ignore */ }
-              } else {
-                iceBuffer.current.push(payload.candidate)
-              }
-            } else if (ev === 'call-end') {
-              cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000)
-            }
-          } catch { /* ignore */ }
-        }
+    // Signals are routed through MessagesPanel's existing SSE connection via window events.
+    // This avoids the race condition of opening a 3rd SSE connection that may miss early signals.
+    const onAnswer = async (e: Event) => {
+      const payload = (e as CustomEvent<{ sdp?: string }>).detail
+      if (!isReceiver && pc.current) {
+        try {
+          await pc.current.setRemoteDescription({ type: 'answer', sdp: payload.sdp! })
+          await drainIceBuffer(pc.current)
+        } catch (err) { console.error('[CallWidget] setRemoteDescription(answer) failed:', err) }
       }
-    }).catch(() => {})
+    }
+    const onIce = async (e: Event) => {
+      const payload = (e as CustomEvent<{ candidate?: RTCIceCandidateInit }>).detail
+      if (!payload.candidate) return
+      if (remoteDescSet.current && pc.current) {
+        try { await pc.current.addIceCandidate(new RTCIceCandidate(payload.candidate)) } catch { /* ignore */ }
+      } else {
+        iceBuffer.current.push(payload.candidate)
+      }
+    }
+    const onCallEnd = () => { cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000) }
+    window.addEventListener('bundy-call-answer', onAnswer)
+    window.addEventListener('bundy-call-ice', onIce)
+    window.addEventListener('bundy-call-end', onCallEnd)
+    ctrl.signal.addEventListener('abort', () => {
+      window.removeEventListener('bundy-call-answer', onAnswer)
+      window.removeEventListener('bundy-call-ice', onIce)
+      window.removeEventListener('bundy-call-end', onCallEnd)
+    })
   }
 
   function cleanup(sendEnd: boolean) {
