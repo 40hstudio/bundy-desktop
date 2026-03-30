@@ -4,7 +4,10 @@ import {
   LogOut, Play, Pause, RotateCcw, Square, Plus, Trash2,
   Send, Hash, Users, Lock, ChevronRight, Circle, Clock,
   Check, AlertCircle, Loader, WifiOff, RefreshCw, Filter,
-  Calendar, Flag, User as UserIcon, Layers
+  Calendar, Flag, User as UserIcon, Layers, Settings2,
+  UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
+  MicOff, PhoneOff, Edit2, MessageCircle, X, ChevronLeft,
+  Bold, Italic, List
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -20,15 +23,24 @@ interface PlanItem {
   project: { id: string; name: string }
 }
 interface DailyPlan { id: string; date: string; items: PlanItem[] }
+interface UserInfo {
+  id: string; username: string; alias: string | null; avatarUrl: string | null; role?: string
+}
+interface ChannelMember {
+  userId: string; user: UserInfo
+}
 interface Conversation {
   id: string; type: 'channel' | 'group' | 'dm'
   name: string; avatar?: string | null
   lastMessage?: string; lastTime?: string
   unread?: number
+  members: ChannelMember[]
+  partnerId?: string    // for DM — the other user's id
 }
 interface ChatMessage {
   id: string; content: string; createdAt: string; editedAt: string | null
   sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+  reads?: { userId: string }[]
 }
 interface Task {
   id: string; title: string; description: string | null
@@ -37,7 +49,14 @@ interface Task {
   project: { id: string; name: string; color: string } | null
   section: { id: string; name: string } | null
   assignee: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
+  multiAssignees?: { user: UserInfo }[]
+  comments?: TaskComment[]
+  subtasks?: Task[]
   _count: { comments: number; subtasks: number }
+}
+interface TaskComment {
+  id: string; body: string; createdAt: string; attachmentUrl: string | null; attachmentName: string | null
+  user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
 }
 interface LogEntry { id: string; action: string; timestamp: string }
 
@@ -152,7 +171,7 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
           }}>🕐</div>
           <div>
             <div style={{ color: '#f1f5f9', fontWeight: 700, fontSize: 15 }}>Bundy</div>
-            <div style={{ color: '#475569', fontSize: 11 }}>
+            <div style={{ fontSize: 11, color: isOnline ? C.success : '#475569' }}>
               {isOnline ? '● Online' : '○ Offline'}
             </div>
           </div>
@@ -334,13 +353,13 @@ function HomePanel({ auth }: { auth: Auth }) {
     : status.onBreak ? C.warning
     : C.textMuted
 
-  const PLAN_STATUSES = ['todo', 'in-progress', 'done', 'blocked']
+  const PLAN_STATUSES = ['planned', 'in-progress', 'completed', 'blocked']
   const PLAN_ICONS: Record<string, React.ReactNode> = {
-    todo: <Circle size={13} />, 'in-progress': <Play size={13} />,
-    done: <Check size={13} />, blocked: <AlertCircle size={13} />,
+    planned: <Circle size={13} />, 'in-progress': <Play size={13} />,
+    completed: <Check size={13} />, blocked: <AlertCircle size={13} />,
   }
   const PLAN_COLORS: Record<string, string> = {
-    todo: C.textMuted, 'in-progress': C.accent, done: C.success, blocked: C.danger,
+    planned: C.textMuted, 'in-progress': C.accent, completed: C.success, blocked: C.danger,
   }
 
   return (
@@ -389,7 +408,7 @@ function HomePanel({ auth }: { auth: Auth }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Today's Plan</div>
           <div style={{ fontSize: 11, color: C.textMuted }}>
-            {plan?.items?.filter(i => i.status === 'done').length ?? 0} / {plan?.items?.length ?? 0} done
+            {plan?.items?.filter(i => i.status === 'completed').length ?? 0} / {plan?.items?.length ?? 0} done
           </div>
         </div>
 
@@ -439,7 +458,7 @@ function HomePanel({ auth }: { auth: Auth }) {
             <div key={item.id} style={{
               ...neu(), padding: '10px 12px',
               display: 'flex', alignItems: 'center', gap: 10,
-              opacity: item.status === 'done' ? 0.6 : 1,
+              opacity: item.status === 'completed' ? 0.6 : 1,
             }}>
               {/* Status cycle button */}
               <button
@@ -458,7 +477,7 @@ function HomePanel({ auth }: { auth: Auth }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
                   fontSize: 13, color: C.text,
-                  textDecoration: item.status === 'done' ? 'line-through' : 'none',
+                  textDecoration: item.status === 'completed' ? 'line-through' : 'none',
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
                   {item.details}
@@ -480,7 +499,193 @@ function HomePanel({ auth }: { auth: Auth }) {
   )
 }
 
+// ─── Avatar helper ────────────────────────────────────────────────────────────
+
+function Avatar({ url, name, size = 30, radius = '50%' }: { url?: string | null; name: string; size?: number; radius?: string }) {
+  const [err, setErr] = useState(false)
+  if (url && !err) {
+    return (
+      <img
+        src={url} alt={name}
+        onError={() => setErr(true)}
+        style={{ width: size, height: size, borderRadius: radius, objectFit: 'cover', flexShrink: 0 }}
+      />
+    )
+  }
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: radius, background: C.accentLight,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.4, fontWeight: 700, color: C.accent, flexShrink: 0,
+    }}>
+      {(name[0] ?? '?').toUpperCase()}
+    </div>
+  )
+}
+
 // ─── Messages Panel ───────────────────────────────────────────────────────────
+
+// Sub-modal: New DM / channel picker
+function NewConvModal({ config, auth, onClose, onCreated }: {
+  config: ApiConfig; auth: Auth
+  onClose: () => void; onCreated: (id: string) => void
+}) {
+  const [users, setUsers] = useState<UserInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => r.json())
+      .then((d: { users: UserInfo[] }) => setUsers(d.users.filter(u => u.id !== auth.userId)))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [config, auth.userId])
+
+  async function startDm(userId: string) {
+    setBusy(true)
+    try {
+      const res = await fetch(`${config.apiBase}/api/channels`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'dm', partnerId: userId }),
+      })
+      const d = await res.json() as { channel?: { id: string } }
+      if (d.channel?.id) { onCreated(d.channel.id); onClose() }
+    } catch { /* ignore */ } finally { setBusy(false) }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: C.contentBg, borderRadius: 14, padding: 20, width: 320,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>New Direct Message</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={16} /></button>
+        </div>
+        {loading ? <div style={{ textAlign: 'center', padding: 20 }}><Loader size={20} /></div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflow: 'auto' }}>
+            {users.map(u => (
+              <button key={u.id} onClick={() => startDm(u.id)} disabled={busy}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                  background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 8,
+                  textAlign: 'left',
+                }}>
+                <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={32} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{u.alias ?? u.username}</div>
+                  <div style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Sub-modal: Channel member management
+function ChannelSettingsModal({ config, auth, conv, onClose }: {
+  config: ApiConfig; auth: Auth; conv: Conversation; onClose: () => void
+}) {
+  const [members, setMembers] = useState<ChannelMember[]>(conv.members)
+  const [allUsers, setAllUsers] = useState<UserInfo[]>([])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => r.json())
+      .then((d: { users: UserInfo[] }) => setAllUsers(d.users))
+      .catch(() => {})
+  }, [config])
+
+  async function addMember(userId: string) {
+    setBusy(true)
+    try {
+      const res = await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      })
+      const d = await res.json() as { ok?: boolean; user?: UserInfo }
+      if (d.ok && d.user) setMembers(prev => [...prev, { userId, user: d.user! }])
+    } catch { /* ignore */ } finally { setBusy(false) }
+  }
+
+  async function removeMember(userId: string) {
+    setBusy(true)
+    try {
+      await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      })
+      setMembers(prev => prev.filter(m => m.userId !== userId))
+    } catch { /* ignore */ } finally { setBusy(false) }
+  }
+
+  const nonMembers = allUsers.filter(u => !members.some(m => m.userId === u.id))
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: C.contentBg, borderRadius: 14, padding: 20, width: 340,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.4)', maxHeight: '80vh', overflow: 'auto',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{conv.name} — Members</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={16} /></button>
+        </div>
+
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>Current Members</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+          {members.map(m => (
+            <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Avatar url={m.user.avatarUrl} name={m.user.alias ?? m.user.username} size={28} />
+              <span style={{ flex: 1, fontSize: 13, color: C.text }}>{m.user.alias ?? m.user.username}</span>
+              {m.userId !== auth.userId && (
+                <button onClick={() => removeMember(m.userId)} disabled={busy}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 4 }}>
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {nonMembers.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>Add Members</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {nonMembers.map(u => (
+                <button key={u.id} onClick={() => addMember(u.id)} disabled={busy}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px',
+                    background: 'transparent', border: `1px solid ${C.border}`, cursor: 'pointer',
+                    borderRadius: 8, textAlign: 'left',
+                  }}>
+                  <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={26} />
+                  <span style={{ fontSize: 13, color: C.text }}>{u.alias ?? u.username}</span>
+                  <UserPlus size={13} style={{ marginLeft: 'auto', color: C.accent }} />
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [channels, setChannels] = useState<Conversation[]>([])
@@ -489,6 +694,10 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [showNewDm, setShowNewDm] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [typingUsers, setTypingUsers] = useState<string[]>([])
+  const typingTimer = useRef<NodeJS.Timeout | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -509,16 +718,19 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
     try {
       const data = await apiFetch('/api/channels') as { channels: Array<{
         id: string; type: string; name: string | null
-        members: Array<{ userId: string; user: { id: string; username: string; alias: string | null; avatarUrl: string | null } }>
+        members: Array<{ userId: string; user: UserInfo }>
         messages: Array<{ content: string; createdAt: string; sender: { username: string; alias: string | null } }>
+        unread?: number
       }> }
       const convs: Conversation[] = data.channels.map(ch => {
         let name = ch.name ?? ''
         let avatar: string | null = null
+        let partnerId: string | undefined
         if (ch.type === 'dm') {
           const other = ch.members.find(m => m.userId !== auth.userId)
           name = other?.user.alias ?? other?.user.username ?? 'DM'
           avatar = other?.user.avatarUrl ?? null
+          partnerId = other?.userId
         } else if (ch.type === 'group') {
           name = ch.name ?? 'Group'
         } else {
@@ -526,9 +738,11 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         }
         const last = ch.messages[0]
         return {
-          id: ch.id, type: ch.type as Conversation['type'], name, avatar,
+          id: ch.id, type: ch.type as Conversation['type'], name, avatar, partnerId,
+          members: ch.members,
           lastMessage: last ? `${last.sender.alias ?? last.sender.username}: ${last.content}` : undefined,
           lastTime: last?.createdAt,
+          unread: ch.unread ?? 0,
         }
       })
       setChannels(convs)
@@ -542,25 +756,92 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         messages: Array<{
           id: string; content: string; createdAt: string; editedAt: string | null
           sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+          reads: { userId: string }[]
         }>
       }
       setMessages(data.messages.map(m => ({
         id: m.id, content: m.content, createdAt: m.createdAt, editedAt: m.editedAt,
-        sender: m.sender,
+        sender: m.sender, reads: m.reads,
       })))
     } catch { setMessages([]) } finally {
       setLoadingMsgs(false)
     }
   }, [apiFetch])
 
+  // SSE for real-time messages + typing
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  useEffect(() => {
+    const es = new EventSource(`${config.apiBase}/api/bundy/stream`, {
+      // @ts-ignore — headers not in standard EventSource but Electron supports fetch-based SSE
+    })
+    // Use fetch-based SSE for auth
+    const ctrl = new AbortController()
+    let buf = ''
+    const sseUrl = `${config.apiBase}/api/bundy/stream`
+    fetch(sseUrl, {
+      headers: { Authorization: `Bearer ${config.token}` },
+      signal: ctrl.signal,
+    }).then(async res => {
+      if (!res.body) return
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const parts = buf.split('\n\n')
+        buf = parts.pop() ?? ''
+        for (const part of parts) {
+          const eventMatch = part.match(/^event: (.+)/m)
+          const dataMatch = part.match(/^data: (.+)/m)
+          if (!eventMatch || !dataMatch) continue
+          const ev = eventMatch[1].trim()
+          try {
+            const payload = JSON.parse(dataMatch[1])
+            if (ev === 'channel-message') {
+              if (selectedRef.current?.id === payload.channelId) {
+                setMessages(prev => {
+                  if (prev.some(m => m.id === payload.id)) return prev
+                  return [...prev, {
+                    id: payload.id, content: payload.content,
+                    createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
+                    sender: {
+                      id: payload.senderId,
+                      username: payload.senderName,
+                      alias: payload.senderName,
+                      avatarUrl: payload.senderAvatar ?? null,
+                    },
+                    reads: [],
+                  }]
+                })
+              }
+              loadChannels()
+            } else if (ev === 'channel-typing') {
+              if (selectedRef.current?.id === payload.channelId && payload.userId !== auth.userId) {
+                setTypingUsers(prev => prev.includes(payload.userName) ? prev : [...prev, payload.userName])
+                setTimeout(() => setTypingUsers(prev => prev.filter(n => n !== payload.userName)), 3000)
+              }
+            } else if (ev === 'channel-read') {
+              setMessages(prev => prev.map(m =>
+                payload.messageIds?.includes(m.id)
+                  ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
+                  : m
+              ))
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
+    }).catch(() => {})
+    return () => ctrl.abort()
+  }, [config, auth.userId, loadChannels])
+
   useEffect(() => { loadChannels() }, [loadChannels])
 
   useEffect(() => {
     if (!selected) return
     loadMessages(selected)
-    // Poll for new messages every 4s
     if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(() => loadMessages(selected), 4_000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [selected, loadMessages])
 
@@ -568,15 +849,26 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  function sendTyping() {
+    if (!selected) return
+    if (typingTimer.current) return // debounce
+    typingTimer.current = setTimeout(() => { typingTimer.current = null }, 2000)
+    fetch(`${config.apiBase}/api/channels/${selected.id}/typing`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+    }).catch(() => {})
+  }
+
   async function send() {
     if (!input.trim() || !selected || sending) return
+    const content = input.trim()
     setSending(true)
+    setInput('')
     try {
       await apiFetch(`/api/channels/${selected.id}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content: input.trim() }),
+        body: JSON.stringify({ content }),
       })
-      setInput('')
       await loadMessages(selected)
       await loadChannels()
     } catch { /* offline */ } finally {
@@ -588,39 +880,52 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const groupList = channels.filter(c => c.type === 'group')
   const dmList = channels.filter(c => c.type === 'dm')
 
+  // Format message content with bold/italic/lists
+  function renderContent(text: string) {
+    const lines = text.split('\n')
+    return lines.map((line, li) => {
+      let out = line
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/^• /, '• ')
+      return <div key={li} dangerouslySetInnerHTML={{ __html: out }} style={{ lineHeight: 1.5 }} />
+    })
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex' }}>
+      {showNewDm && <NewConvModal config={config} auth={auth} onClose={() => setShowNewDm(false)} onCreated={id => { loadChannels(); setSelected(channels.find(c => c.id === id) ?? null) }} />}
+      {showSettings && selected && <ChannelSettingsModal config={config} auth={auth} conv={selected} onClose={() => setShowSettings(false)} />}
+
       {/* Conversations sidebar */}
       <div style={{
         width: 240, height: '100%', borderRight: `1px solid ${C.border}`,
         background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0,
       }}>
-        <div style={{ padding: '16px 16px 8px', fontWeight: 700, fontSize: 14, color: C.text }}>
-          Messages
+        <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Messages</span>
+          <button onClick={() => setShowNewDm(true)} title="New Direct Message"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4 }}>
+            <Edit2 size={15} />
+          </button>
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {channelList.length > 0 && (
             <>
-              <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                Channels
-              </div>
-              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} onClick={() => setSelected(c)} />)}
+              <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
+              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
             </>
           )}
           {groupList.length > 0 && (
             <>
-              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                Groups
-              </div>
-              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} onClick={() => setSelected(c)} />)}
+              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Groups</div>
+              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
             </>
           )}
           {dmList.length > 0 && (
             <>
-              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                Direct Messages
-              </div>
-              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} onClick={() => setSelected(c)} />)}
+              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Direct Messages</div>
+              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
             </>
           )}
         </div>
@@ -628,120 +933,142 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
 
       {/* Message thread */}
       {selected ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
           {/* Header */}
           <div style={{
-            padding: '14px 20px', borderBottom: `1px solid ${C.border}`,
+            padding: '12px 20px', borderBottom: `1px solid ${C.border}`,
             background: C.contentBg, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
           }}>
             {selected.type === 'channel' && <Hash size={16} color={C.textMuted} />}
             {selected.type === 'group' && <Users size={16} color={C.textMuted} />}
-            {selected.type === 'dm' && (
-              <div style={{ width: 26, height: 26, borderRadius: '50%', background: C.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: C.accent }}>
-                {selected.name[0]?.toUpperCase()}
-              </div>
+            {selected.type === 'dm' && <Avatar url={selected.avatar} name={selected.name} size={28} />}
+            <span style={{ fontWeight: 700, fontSize: 14, color: C.text, flex: 1 }}>{selected.name}</span>
+            {selected.type !== 'dm' && (
+              <button onClick={() => setShowSettings(true)} title="Manage members"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
+                <Settings2 size={16} />
+              </button>
             )}
-            <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{selected.name}</span>
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {loadingMsgs && messages.length === 0 && (
               <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}>
-                <Loader size={18} style={{ animation: 'spin 1s linear infinite' }} />
+                <Loader size={18} />
               </div>
             )}
             {messages.map((msg, i) => {
               const isMe = msg.sender.id === auth.userId
               const prevMsg = messages[i - 1]
-              const showName = !isMe && prevMsg?.sender.id !== msg.sender.id
+              const showHeader = prevMsg?.sender.id !== msg.sender.id
               const senderName = msg.sender.alias ?? msg.sender.username
+              const isRead = msg.reads?.some(r => r.userId !== auth.userId)
               return (
-                <div key={msg.id}>
-                  {showName && (
-                    <div style={{ fontSize: 11, fontWeight: 600, color: C.accent, marginBottom: 2, marginLeft: 4, marginTop: i > 0 ? 8 : 0 }}>
-                      {senderName}
+                <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}>
+                  {showHeader && !isMe && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <Avatar url={msg.sender.avatarUrl} name={senderName} size={24} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{senderName}</span>
+                      <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(msg.createdAt)}</span>
                     </div>
                   )}
-                  <div style={{
-                    display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start',
-                  }}>
-                    <div style={{
-                      maxWidth: '70%', padding: '8px 12px', borderRadius: 12,
-                      background: isMe ? C.accent : C.contentBg,
-                      boxShadow: isMe ? `0 2px 8px ${C.accent}44` : '2px 2px 6px #a3b1c6, -2px -2px 6px #ffffff',
-                      color: isMe ? '#fff' : C.text, fontSize: 13, lineHeight: 1.5,
-                      borderBottomRightRadius: isMe ? 4 : 12,
-                      borderBottomLeftRadius: isMe ? 12 : 4,
-                    }}>
-                      {msg.content}
+                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32 }}>
+                    <div style={{ maxWidth: '72%' }}>
+                      <div style={{
+                        padding: '8px 12px', borderRadius: 12,
+                        background: isMe ? C.accent : '#fff',
+                        boxShadow: isMe ? `0 2px 8px ${C.accent}44` : '2px 2px 6px #a3b1c6, -2px -2px 6px #ffffff',
+                        color: isMe ? '#fff' : C.text, fontSize: 13,
+                        borderBottomRightRadius: isMe ? 4 : 12,
+                        borderBottomLeftRadius: isMe ? 12 : 4,
+                      }}>
+                        {renderContent(msg.content)}
+                      </div>
+                      {isMe && (
+                        <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+                          {formatTime(msg.createdAt)}
+                          {isRead ? ' · Read' : ' · Sent'}
+                          {msg.editedAt && ' · Edited'}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               )
             })}
+            {typingUsers.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  {[0,1,2].map(i => (
+                    <span key={i} style={{
+                      width: 6, height: 6, borderRadius: '50%', background: C.textMuted,
+                      animation: `bounce 1.2s ${i*0.2}s infinite`,
+                    }} />
+                  ))}
+                </div>
+                <span style={{ fontSize: 11, color: C.textMuted }}>{typingUsers.join(', ')} is typing…</span>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input */}
-          <div style={{ padding: '12px 20px', borderTop: `1px solid ${C.border}`, background: C.contentBg, flexShrink: 0 }}>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <input
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && void send()}
-                placeholder={`Message ${selected.name}…`}
-                style={{
-                  flex: 1, ...neu(true), padding: '10px 14px',
-                  fontSize: 13, color: C.text, border: 'none', outline: 'none',
-                }}
-              />
-              <button
-                onClick={send}
-                disabled={!input.trim() || sending}
-                style={{
-                  ...neu(), padding: '10px 14px', border: 'none',
-                  background: input.trim() ? C.accent : C.contentBg,
-                  color: input.trim() ? '#fff' : C.textMuted,
-                  cursor: input.trim() ? 'pointer' : 'default',
-                  boxShadow: input.trim() ? `0 2px 8px ${C.accent}44` : undefined,
-                }}
-              >
-                <Send size={16} />
-              </button>
-            </div>
-          </div>
+          {/* Input area */}
+          <MessageInput
+            placeholder={`Message ${selected.name}…`}
+            config={config}
+            channelId={selected.id}
+            onSend={content => {
+              setInput(content)
+              setTimeout(() => send(), 0)
+            }}
+            onTyping={sendTyping}
+            input={input}
+            setInput={setInput}
+            sendFn={send}
+            sending={sending}
+          />
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted, flexDirection: 'column', gap: 12 }}>
           <MessageSquare size={40} strokeWidth={1} />
-          <div>Select a conversation</div>
+          <div style={{ fontSize: 14 }}>Select a conversation</div>
+          <button onClick={() => setShowNewDm(true)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
+              ...neu(), border: 'none', cursor: 'pointer', color: C.accent, fontWeight: 600, fontSize: 13,
+            }}>
+            <Edit2 size={15} /> New Direct Message
+          </button>
         </div>
       )}
     </div>
   )
 }
 
-function ConvRow({ conv, selected, onClick }: { conv: Conversation; selected: boolean; onClick: () => void }) {
+function ConvRow({ conv, selected, auth, onClick }: { conv: Conversation; selected: boolean; auth: Auth; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       style={{
         width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-        padding: '8px 16px', border: 'none', textAlign: 'left',
+        padding: '7px 16px', border: 'none', textAlign: 'left',
         background: selected ? C.accentLight : 'transparent',
         cursor: 'pointer', borderLeft: selected ? `3px solid ${C.accent}` : '3px solid transparent',
       }}
     >
-      <div style={{
-        width: 30, height: 30, borderRadius: conv.type === 'channel' ? 8 : '50%',
-        background: selected ? C.accent : '#dde3ea',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 12, fontWeight: 700, color: selected ? '#fff' : C.textMuted,
-        flexShrink: 0,
-      }}>
-        {conv.type === 'channel' ? '#' : (conv.name[0] ?? '?').toUpperCase()}
-      </div>
+      {conv.type === 'dm' ? (
+        <Avatar url={conv.avatar} name={conv.name} size={28} />
+      ) : (
+        <div style={{
+          width: 28, height: 28, borderRadius: conv.type === 'channel' ? 6 : '50%',
+          background: selected ? C.accent : '#dde3ea',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 12, fontWeight: 700, color: selected ? '#fff' : C.textMuted, flexShrink: 0,
+        }}>
+          {conv.type === 'channel' ? '#' : (conv.name[0] ?? '?').toUpperCase()}
+        </div>
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, fontWeight: selected ? 600 : 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {conv.name}
@@ -752,7 +1079,334 @@ function ConvRow({ conv, selected, onClick }: { conv: Conversation; selected: bo
           </div>
         )}
       </div>
+      {(conv.unread ?? 0) > 0 && (
+        <div style={{
+          minWidth: 18, height: 18, borderRadius: 9, background: C.accent,
+          color: '#fff', fontSize: 10, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+        }}>
+          {conv.unread}
+        </div>
+      )}
     </button>
+  )
+}
+
+// ─── MessageInput (rich text, attachments, @mentions, calls) ─────────────────
+
+function MessageInput({ placeholder, config, channelId, onTyping, input, setInput, sendFn, sending }: {
+  placeholder: string; config: ApiConfig; channelId: string
+  onTyping: () => void; input: string; setInput: (v: string) => void
+  sendFn: () => void; sending: boolean
+  onSend?: (content: string) => void
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [mentionSearch, setMentionSearch] = useState<string | null>(null)
+  const [allUsers, setAllUsers] = useState<UserInfo[]>([])
+  const [mentionResults, setMentionResults] = useState<UserInfo[]>([])
+
+  // Load users once for @mention
+  useEffect(() => {
+    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => r.json())
+      .then((d: { users: UserInfo[] }) => setAllUsers(d.users))
+      .catch(() => {})
+  }, [config])
+
+  function autoResize() {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+  }
+
+  function handleInput(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const val = e.target.value
+    setInput(val)
+    autoResize()
+    onTyping()
+    // @mention detection
+    const cursor = e.target.selectionStart
+    const textBefore = val.slice(0, cursor)
+    const match = textBefore.match(/@(\w*)$/)
+    if (match) {
+      const q = match[1].toLowerCase()
+      setMentionSearch(q)
+      setMentionResults(allUsers.filter(u =>
+        (u.alias?.toLowerCase().includes(q) || u.username.toLowerCase().includes(q))
+      ).slice(0, 6))
+    } else {
+      setMentionSearch(null)
+      setMentionResults([])
+    }
+  }
+
+  function insertMention(user: UserInfo) {
+    const el = textareaRef.current
+    if (!el) return
+    const cursor = el.selectionStart
+    const textBefore = input.slice(0, cursor)
+    const atIdx = textBefore.lastIndexOf('@')
+    const name = user.alias ?? user.username
+    const newVal = input.slice(0, atIdx) + `@${name} ` + input.slice(cursor)
+    setInput(newVal)
+    setMentionSearch(null)
+    setMentionResults([])
+    setTimeout(() => { el.focus(); el.setSelectionRange(atIdx + name.length + 2, atIdx + name.length + 2) }, 0)
+  }
+
+  function wrapSelection(before: string, after: string) {
+    const el = textareaRef.current
+    if (!el) return
+    const start = el.selectionStart
+    const end = el.selectionEnd
+    const selected = input.slice(start, end)
+    const newVal = input.slice(0, start) + before + selected + after + input.slice(end)
+    setInput(newVal)
+    setTimeout(() => { el.focus(); el.setSelectionRange(start + before.length, end + before.length) }, 0)
+  }
+
+  function insertPrefix(prefix: string) {
+    const el = textareaRef.current
+    if (!el) return
+    const start = el.selectionStart
+    const lineStart = input.lastIndexOf('\n', start - 1) + 1
+    const newVal = input.slice(0, lineStart) + prefix + input.slice(lineStart)
+    setInput(newVal)
+    setTimeout(() => el.focus(), 0)
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file || !channelId) return
+    setUploading(true)
+    try {
+      // Send as a message with attachment notation
+      const url = URL.createObjectURL(file)
+      const content = `[📎 ${file.name}](${url})`
+      // Note: channel messages don't have attachment API, so we send filename as content
+      await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: `📎 ${file.name}` }),
+      })
+    } catch { /* ignore */ } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionResults.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter')) {
+      e.preventDefault(); return
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendFn()
+    }
+  }
+
+  return (
+    <div style={{ padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, background: C.contentBg, flexShrink: 0, position: 'relative' }}>
+      {/* @mention dropdown */}
+      {mentionResults.length > 0 && (
+        <div style={{
+          position: 'absolute', bottom: '100%', left: 16, right: 16,
+          background: C.white, borderRadius: 10, border: `1px solid ${C.border}`,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.15)', overflow: 'hidden', zIndex: 50,
+        }}>
+          {mentionResults.map(u => (
+            <button key={u.id} onClick={() => insertMention(u)}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+              }}>
+              <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={24} />
+              <span style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>{u.alias ?? u.username}</span>
+              <span style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Formatting toolbar */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        {[
+          { icon: <Bold size={13} />, action: () => wrapSelection('**', '**'), title: 'Bold' },
+          { icon: <Italic size={13} />, action: () => wrapSelection('*', '*'), title: 'Italic' },
+          { icon: <List size={13} />, action: () => insertPrefix('• '), title: 'Bullet list' },
+          { icon: <AtSign size={13} />, action: () => { setInput(input + '@'); setTimeout(() => textareaRef.current?.focus(), 0) }, title: 'Mention' },
+          { icon: <Paperclip size={13} />, action: () => fileRef.current?.click(), title: 'Attach file' },
+        ].map((btn, i) => (
+          <button key={i} onClick={btn.action} title={btn.title}
+            style={{
+              padding: '4px 8px', borderRadius: 6, border: 'none',
+              background: 'transparent', color: C.textMuted, cursor: 'pointer',
+              ...neu(),
+            }}>
+            {btn.icon}
+          </button>
+        ))}
+      </div>
+
+      <input ref={fileRef} type="file" hidden onChange={handleFile} />
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={handleInput}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          rows={1}
+          style={{
+            flex: 1, resize: 'none', ...neu(true), padding: '10px 14px',
+            fontSize: 13, color: C.text, border: 'none', outline: 'none',
+            lineHeight: 1.5, minHeight: 38, maxHeight: 120, overflow: 'auto',
+            fontFamily: 'inherit',
+          }}
+        />
+        <button
+          onClick={sendFn}
+          disabled={!input.trim() || sending || uploading}
+          style={{
+            ...neu(), padding: '10px 14px', border: 'none', flexShrink: 0,
+            background: input.trim() ? C.accent : C.contentBg,
+            color: input.trim() ? '#fff' : C.textMuted,
+            cursor: input.trim() ? 'pointer' : 'default',
+            boxShadow: input.trim() ? `0 2px 8px ${C.accent}44` : undefined,
+          }}
+        >
+          {sending ? <Loader size={16} /> : <Send size={16} />}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Call UI ─────────────────────────────────────────────────────────────────
+
+function CallWidget({ config, auth, targetUser, callType, onEnd }: {
+  config: ApiConfig; auth: Auth
+  targetUser: { id: string; name: string; avatar: string | null }
+  callType: 'audio' | 'video'
+  onEnd: () => void
+}) {
+  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>('calling')
+  const [muted, setMuted] = useState(false)
+  const [videoOff, setVideoOff] = useState(false)
+  const localVideo = useRef<HTMLVideoElement>(null)
+  const remoteVideo = useRef<HTMLVideoElement>(null)
+  const pc = useRef<RTCPeerConnection | null>(null)
+  const localStream = useRef<MediaStream | null>(null)
+
+  useEffect(() => {
+    startCall()
+    return () => { cleanup() }
+  }, [])
+
+  async function startCall() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true, video: callType === 'video',
+      })
+      localStream.current = stream
+      if (localVideo.current) localVideo.current.srcObject = stream
+
+      const peerConn = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+      pc.current = peerConn
+
+      stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
+
+      peerConn.ontrack = e => {
+        if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
+        setStatus('connected')
+      }
+
+      peerConn.onicecandidate = e => {
+        if (e.candidate) {
+          fetch(`${config.apiBase}/api/calls`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'ice', to: targetUser.id, candidate: e.candidate }),
+          }).catch(() => {})
+        }
+      }
+
+      const offer = await peerConn.createOffer()
+      await peerConn.setLocalDescription(offer)
+
+      await fetch(`${config.apiBase}/api/calls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'offer', to: targetUser.id, sdp: offer.sdp, callType }),
+      })
+    } catch { cleanup(); onEnd() }
+  }
+
+  function cleanup() {
+    pc.current?.close()
+    localStream.current?.getTracks().forEach(t => t.stop())
+    fetch(`${config.apiBase}/api/calls`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'end', to: targetUser.id }),
+    }).catch(() => {})
+  }
+
+  function toggleMute() {
+    localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
+    setMuted(!muted)
+  }
+
+  function toggleVideo() {
+    localStream.current?.getVideoTracks().forEach(t => { t.enabled = videoOff })
+    setVideoOff(!videoOff)
+  }
+
+  function hangup() { cleanup(); setStatus('ended'); onEnd() }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 200,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20,
+    }}>
+      {callType === 'video' ? (
+        <div style={{ position: 'relative', width: 480, height: 320, borderRadius: 16, overflow: 'hidden', background: '#000' }}>
+          <video ref={remoteVideo} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <video ref={localVideo} autoPlay playsInline muted style={{
+            position: 'absolute', bottom: 12, right: 12, width: 120, height: 90,
+            borderRadius: 8, objectFit: 'cover', border: '2px solid #fff',
+          }} />
+        </div>
+      ) : (
+        <div style={{ textAlign: 'center' }}>
+          <Avatar url={targetUser.avatar} name={targetUser.name} size={80} />
+          <div style={{ color: '#fff', fontWeight: 700, fontSize: 18, marginTop: 12 }}>{targetUser.name}</div>
+          <div style={{ color: '#94a3b8', fontSize: 13 }}>
+            {status === 'calling' ? 'Calling…' : status === 'connected' ? 'Connected' : 'Call ended'}
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 16 }}>
+        <button onClick={toggleMute}
+          style={{ width: 52, height: 52, borderRadius: '50%', border: 'none', cursor: 'pointer', background: muted ? C.danger : 'rgba(255,255,255,0.15)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {muted ? <MicOff size={20} /> : <Phone size={20} />}
+        </button>
+        {callType === 'video' && (
+          <button onClick={toggleVideo}
+            style={{ width: 52, height: 52, borderRadius: '50%', border: 'none', cursor: 'pointer', background: videoOff ? C.danger : 'rgba(255,255,255,0.15)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {videoOff ? <VideoOff size={20} /> : <Video size={20} />}
+          </button>
+        )}
+        <button onClick={hangup}
+          style={{ width: 52, height: 52, borderRadius: '50%', border: 'none', cursor: 'pointer', background: C.danger, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <PhoneOff size={22} />
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -773,6 +1427,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress'>('mine')
   const [projects, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
+  const [detailTask, setDetailTask] = useState<Task | null>(null)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -820,7 +1475,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   }, {})
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       {/* Toolbar */}
       <div style={{
         padding: '14px 24px', borderBottom: `1px solid ${C.border}`,
@@ -875,27 +1530,44 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {projTasks.map(task => (
-                  <TaskCard key={task.id} task={task} auth={auth} onDone={() => markDone(task.id)} />
+                  <TaskCard key={task.id} task={task} auth={auth} onDone={() => markDone(task.id)} onOpen={() => setDetailTask(task)} />
                 ))}
               </div>
             </div>
           ))
         )}
       </div>
+
+      {/* Task detail panel */}
+      {detailTask && (
+        <TaskDetailPanel
+          task={detailTask}
+          config={config}
+          auth={auth}
+          onClose={() => setDetailTask(null)}
+          onUpdated={(updated) => {
+            setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
+            setDetailTask(updated)
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function TaskCard({ task, auth, onDone }: { task: Task; auth: Auth; onDone: () => void }) {
+function TaskCard({ task, auth, onDone, onOpen }: { task: Task; auth: Auth; onDone: () => void; onOpen: () => void }) {
   const isDone = task.status === 'done' || task.status === 'cancelled'
   return (
-    <div style={{
-      ...neu(), padding: '12px 14px',
-      display: 'flex', alignItems: 'flex-start', gap: 12,
-      opacity: isDone ? 0.6 : 1,
-    }}>
+    <div
+      onClick={onOpen}
+      style={{
+        ...neu(), padding: '12px 14px',
+        display: 'flex', alignItems: 'flex-start', gap: 12,
+        opacity: isDone ? 0.6 : 1, cursor: 'pointer',
+      }}
+    >
       <button
-        onClick={() => !isDone && onDone()}
+        onClick={e => { e.stopPropagation(); if (!isDone) onDone() }}
         style={{
           width: 18, height: 18, borderRadius: 4, border: `2px solid ${isDone ? C.success : C.border}`,
           background: isDone ? C.success : 'transparent',
@@ -924,27 +1596,195 @@ function TaskCard({ task, auth, onDone }: { task: Task; auth: Auth; onDone: () =
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{
-            fontSize: 11, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted,
-            fontWeight: 600,
-          }}>
+          <span style={{ fontSize: 11, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, fontWeight: 600 }}>
             {TASK_STATUS_LABELS[task.status] ?? task.status}
           </span>
-          {task.assignee && (
-            <span style={{ fontSize: 11, color: C.textMuted }}>
-              → {task.assignee.alias ?? task.assignee.username}
-            </span>
-          )}
+          {task.assignee && <span style={{ fontSize: 11, color: C.textMuted }}>→ {task.assignee.alias ?? task.assignee.username}</span>}
           {task.dueDate && (
             <span style={{ fontSize: 11, color: new Date(task.dueDate) < new Date() ? C.danger : C.textMuted }}>
               📅 {new Date(task.dueDate).toLocaleDateString()}
             </span>
           )}
-          {task._count.comments > 0 && (
-            <span style={{ fontSize: 11, color: C.textMuted }}>
-              💬 {task._count.comments}
-            </span>
-          )}
+          {task._count.comments > 0 && <span style={{ fontSize: 11, color: C.textMuted }}>💬 {task._count.comments}</span>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TaskDetailPanel({ task, config, auth, onClose, onUpdated }: {
+  task: Task; config: ApiConfig; auth: Auth
+  onClose: () => void
+  onUpdated: (t: Task) => void
+}) {
+  const [detail, setDetail] = useState<Task>(task)
+  const [comments, setComments] = useState<TaskComment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [addingComment, setAddingComment] = useState(false)
+  const [savingStatus, setSavingStatus] = useState(false)
+
+  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
+    const res = await fetch(`${config.apiBase}${path}`, {
+      ...opts,
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  }, [config])
+
+  useEffect(() => {
+    apiFetch(`/api/tasks/${task.id}`)
+      .then((d: { task: Task }) => {
+        setDetail(d.task)
+        setComments(d.task.comments ?? [])
+      })
+      .catch(() => {})
+  }, [task.id, apiFetch])
+
+  async function setStatus(status: string) {
+    setSavingStatus(true)
+    try {
+      const d = await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ status }) }) as { task: Task }
+      setDetail(d.task)
+      onUpdated(d.task)
+    } catch { /* ignore */ } finally { setSavingStatus(false) }
+  }
+
+  async function addComment() {
+    if (!commentText.trim()) return
+    setAddingComment(true)
+    try {
+      const d = await apiFetch(`/api/tasks/${task.id}/comments`, { method: 'POST', body: JSON.stringify({ body: commentText.trim() }) }) as { comment: TaskComment }
+      setComments(prev => [...prev, d.comment])
+      setCommentText('')
+    } catch { /* ignore */ } finally { setAddingComment(false) }
+  }
+
+  const isDone = detail.status === 'done' || detail.status === 'cancelled'
+
+  return (
+    <div style={{
+      position: 'absolute', top: 0, right: 0, bottom: 0, width: '45%', minWidth: 340,
+      background: C.contentBg, borderLeft: `1px solid ${C.border}`,
+      boxShadow: '-8px 0 24px rgba(0,0,0,0.1)',
+      display: 'flex', flexDirection: 'column', zIndex: 10,
+    }}>
+      {/* Header */}
+      <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0, marginTop: 2 }}>
+          <X size={16} />
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>{detail.title}</div>
+          {detail.project && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{detail.project.name}</div>}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Status + Priority */}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Status</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
+                <button key={s} onClick={() => setStatus(s)} disabled={savingStatus}
+                  style={{
+                    padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
+                    color: detail.status === s ? '#fff' : C.textMuted,
+                    boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                  }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Description */}
+        {detail.description && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Description</div>
+            <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{detail.description}</div>
+          </div>
+        )}
+
+        {/* Assignee */}
+        {detail.assignee && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Assignee</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Avatar url={detail.assignee.avatarUrl} name={detail.assignee.alias ?? detail.assignee.username} size={26} />
+              <span style={{ fontSize: 13, color: C.text }}>{detail.assignee.alias ?? detail.assignee.username}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Due date */}
+        {detail.dueDate && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Due Date</div>
+            <div style={{ fontSize: 13, color: new Date(detail.dueDate) < new Date() && !isDone ? C.danger : C.text }}>
+              {new Date(detail.dueDate).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
+            </div>
+          </div>
+        )}
+
+        {/* Subtasks */}
+        {(detail.subtasks?.length ?? 0) > 0 && (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>Subtasks ({detail.subtasks!.length})</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {detail.subtasks!.map(sub => (
+                <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', ...neu(), borderRadius: 8 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 3, border: `2px solid ${sub.status === 'done' ? C.success : C.border}`, background: sub.status === 'done' ? C.success : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {sub.status === 'done' && <Check size={10} color="#fff" />}
+                  </div>
+                  <span style={{ fontSize: 12, color: C.text, textDecoration: sub.status === 'done' ? 'line-through' : 'none' }}>{sub.title}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Comments */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 }}>
+            Comments ({comments.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
+            {comments.map(c => (
+              <div key={c.id} style={{ display: 'flex', gap: 10 }}>
+                <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={26} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
+                    <span style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(c.createdAt)}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5, marginTop: 2, whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                  {c.attachmentName && <a href={`${config.apiBase}${c.attachmentUrl}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: C.accent }}>📎 {c.attachmentName}</a>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Add comment */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <textarea
+              value={commentText}
+              onChange={e => setCommentText(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && e.metaKey && void addComment()}
+              placeholder="Add a comment… (⌘+Enter)"
+              rows={2}
+              style={{
+                flex: 1, resize: 'none', ...neu(true), padding: '8px 10px',
+                fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button onClick={addComment} disabled={!commentText.trim() || addingComment}
+              style={{ ...neu(), padding: '8px 12px', border: 'none', color: C.accent, cursor: 'pointer', flexShrink: 0 }}>
+              {addingComment ? <Loader size={14} /> : <Send size={14} />}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -970,21 +1810,25 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState({ workMs: 0, breakMs: 0 })
+  const [screenshotCount, setScreenshotCount] = useState(0)
+  const [activityWindows, setActivityWindows] = useState<{ windowStart: string; activeSeconds: number; totalSeconds: number }[]>([])
 
-  useEffect(() => {
-    loadActivity()
-  }, [config])
+  useEffect(() => { loadActivity() }, [config])
 
   async function loadActivity() {
     setLoading(true)
     try {
-      const data = await fetch(`${config.apiBase}/api/bundy`, {
-        headers: { Authorization: `Bearer ${config.token}` }
-      }).then(r => r.json()) as { todayLogs: LogEntry[]; workMs?: number; breakMs?: number }
-      setLogs(data.todayLogs ?? [])
-      // Compute work/break ms from logs
+      const [bundyData, actData, ssData] = await Promise.all([
+        fetch(`${config.apiBase}/api/bundy`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()) as Promise<{ todayLogs: LogEntry[] }>,
+        fetch(`${config.apiBase}/api/user/activity-today`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()) as Promise<{ summaries: { windowStart: string; activeSeconds: number; totalSeconds: number }[] }>,
+        fetch(`${config.apiBase}/api/user/screenshots-today`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()).catch(() => ({ screenshots: [] })) as Promise<{ screenshots: unknown[] }>,
+      ])
+      setLogs(bundyData.todayLogs ?? [])
+      setActivityWindows(actData.summaries ?? [])
+      setScreenshotCount((ssData.screenshots ?? []).length)
+
       let workMs = 0, breakMs = 0, lastIn: number | null = null, lastBreak: number | null = null
-      for (const log of (data.todayLogs ?? [])) {
+      for (const log of (bundyData.todayLogs ?? [])) {
         const t = new Date(log.timestamp).getTime()
         if (log.action === 'CHECK_IN' || log.action === 'BACK') { lastIn = t; lastBreak = null }
         else if (log.action === 'BREAK') {
@@ -999,10 +1843,13 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
       if (lastIn != null) workMs += Date.now() - lastIn
       if (lastBreak != null) breakMs += Date.now() - lastBreak
       setStats({ workMs, breakMs })
-    } catch { /* offline */ } finally {
-      setLoading(false)
-    }
+    } catch { /* offline */ } finally { setLoading(false) }
   }
+
+  // Compute total active seconds
+  const totalActiveSeconds = activityWindows.reduce((s, w) => s + w.activeSeconds, 0)
+  const totalTrackedSeconds = activityWindows.reduce((s, w) => s + w.totalSeconds, 0)
+  const activePercent = totalTrackedSeconds > 0 ? Math.round((totalActiveSeconds / totalTrackedSeconds) * 100) : 0
 
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1013,21 +1860,38 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
         </button>
       </div>
 
-      {/* Stats */}
-      <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ ...card(), flex: 1, textAlign: 'center', padding: '16px 12px' }}>
-          <div style={{ fontSize: 11, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Work Time</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>
-            {formatMs(stats.workMs)}
-          </div>
+      {/* Stats grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
+          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Work Time</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>{formatMs(stats.workMs)}</div>
         </div>
-        <div style={{ ...card(), flex: 1, textAlign: 'center', padding: '16px 12px' }}>
-          <div style={{ fontSize: 11, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Break Time</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>
-            {formatMs(stats.breakMs)}
-          </div>
+        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
+          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Break Time</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>{formatMs(stats.breakMs)}</div>
+        </div>
+        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
+          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Screenshots</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.accent }}>{screenshotCount}</div>
         </div>
       </div>
+
+      {/* Activity rate */}
+      {totalTrackedSeconds > 0 && (
+        <div style={{ ...card() }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Active Rate</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>{activePercent}%</span>
+          </div>
+          <div style={{ height: 8, background: '#dde3ea', borderRadius: 4, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${activePercent}%`, background: C.accent, borderRadius: 4, transition: 'width 0.5s' }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+            <span style={{ fontSize: 11, color: C.textMuted }}>Active: {Math.round(totalActiveSeconds / 60)} min</span>
+            <span style={{ fontSize: 11, color: C.textMuted }}>Total tracked: {Math.round(totalTrackedSeconds / 60)} min</span>
+          </div>
+        </div>
+      )}
 
       {/* Timeline */}
       <div style={{ ...card() }}>
@@ -1035,9 +1899,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
         {loading ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}><Loader size={20} /></div>
         ) : logs.length === 0 ? (
-          <div style={{ color: C.textMuted, fontSize: 13, textAlign: 'center', padding: 20 }}>
-            No activity recorded today.
-          </div>
+          <div style={{ color: C.textMuted, fontSize: 13, textAlign: 'center', padding: 20 }}>No activity recorded today.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {[...logs].reverse().map((log, i) => (
@@ -1073,52 +1935,131 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
 
 // ─── Settings Panel ───────────────────────────────────────────────────────────
 
-function SettingsPanel({ auth, onLogout }: { auth: Auth; onLogout: () => void }) {
+function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConfig; onLogout: () => void }) {
   const [perms, setPerms] = useState<{ screen: string; accessibility: boolean } | null>(null)
   const [version, setVersion] = useState<string | null>(null)
   const [updateState, setUpdateState] = useState<{ version: string | null; percent: number | null; downloaded: boolean } | null>(null)
+  // Profile edit state
+  const [profile, setProfile] = useState<{ alias: string; email: string; phone: string; userStatus: string; avatarUrl: string | null } | null>(null)
+  const [editAlias, setEditAlias] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+  const [editPhone, setEditPhone] = useState('')
+  const [editStatus, setEditStatus] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveMsg, setSaveMsg] = useState('')
+  const avatarFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
     window.electronAPI.getVersion().then(setVersion).catch(() => {})
     window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
-  }, [])
+    // Load profile
+    fetch(`${config.apiBase}/api/user/profile`, {
+      headers: { Authorization: `Bearer ${config.token}` }
+    }).then(r => r.json()).then((d: { user: typeof profile }) => {
+      if (d.user) {
+        setProfile(d.user)
+        setEditAlias(d.user?.alias ?? '')
+        setEditEmail(d.user?.email ?? '')
+        setEditPhone(d.user?.phone ?? '')
+        setEditStatus(d.user?.userStatus ?? '')
+      }
+    }).catch(() => {})
+  }, [config])
 
   async function checkPerms() {
     const p = await window.electronAPI.checkPermissions()
     setPerms(p)
   }
 
+  async function saveProfile() {
+    setSaving(true)
+    setSaveMsg('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/user/profile`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: editAlias, email: editEmail, phone: editPhone, userStatus: editStatus }),
+      })
+      if (!res.ok) throw new Error('Failed')
+      setSaveMsg('Saved!')
+      setTimeout(() => setSaveMsg(''), 2000)
+    } catch { setSaveMsg('Failed to save') } finally { setSaving(false) }
+  }
+
+  async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const form = new FormData()
+    form.append('file', file)
+    try {
+      const res = await fetch(`${config.apiBase}/api/user/avatar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}` },
+        body: form,
+      })
+      const d = await res.json() as { user?: { avatarUrl: string } }
+      if (d.user?.avatarUrl) setProfile(p => p ? { ...p, avatarUrl: d.user!.avatarUrl } : p)
+    } catch { /* ignore */ }
+  }
+
   return (
     <div style={{ height: '100%', overflow: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>Settings</div>
 
-      {/* User info */}
+      {/* Profile edit */}
       <div style={{ ...card() }}>
-        <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.8 }}>Account</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: '50%',
-            background: `linear-gradient(135deg, ${C.accent}, #8b5cf6)`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: 18, fontWeight: 700,
-          }}>
-            {(auth.username[0] ?? '?').toUpperCase()}
+        <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, marginBottom: 14, textTransform: 'uppercase', letterSpacing: 0.8 }}>Profile</div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
+          {/* Avatar */}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <Avatar url={profile?.avatarUrl} name={profile?.alias ?? auth.username} size={60} />
+            <button onClick={() => avatarFileRef.current?.click()}
+              title="Change avatar"
+              style={{
+                position: 'absolute', bottom: 0, right: 0, width: 20, height: 20,
+                borderRadius: '50%', background: C.accent, border: 'none', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+              <Edit2 size={10} color="#fff" />
+            </button>
+            <input ref={avatarFileRef} type="file" accept="image/*" hidden onChange={handleAvatarChange} />
           </div>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{auth.username}</div>
             <div style={{ fontSize: 12, color: C.textMuted }}>{auth.role}</div>
           </div>
-          <button
-            onClick={onLogout}
-            style={{
-              marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 16px', ...neu(), border: 'none', cursor: 'pointer',
-              color: C.danger, fontWeight: 600, fontSize: 13,
-            }}
-          >
+          <button onClick={onLogout}
+            style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', ...neu(), border: 'none', cursor: 'pointer', color: C.danger, fontWeight: 600, fontSize: 13 }}>
             <LogOut size={15} /> Log Out
           </button>
+        </div>
+
+        {/* Editable fields */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[
+            { label: 'Display Name', value: editAlias, set: setEditAlias, placeholder: 'Your display name' },
+            { label: 'Email', value: editEmail, set: setEditEmail, placeholder: 'email@example.com' },
+            { label: 'Phone', value: editPhone, set: setEditPhone, placeholder: '+1234567890' },
+            { label: 'Status', value: editStatus, set: setEditStatus, placeholder: 'What are you working on?' },
+          ].map(({ label, value, set, placeholder }) => (
+            <div key={label}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>{label}</div>
+              <input
+                value={value}
+                onChange={e => set(e.target.value)}
+                placeholder={placeholder}
+                style={{ width: '100%', ...neu(true), padding: '8px 12px', fontSize: 13, color: C.text, border: 'none', outline: 'none', boxSizing: 'border-box' }}
+              />
+            </div>
+          ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+            <button onClick={saveProfile} disabled={saving}
+              style={{ padding: '8px 20px', ...neu(), border: 'none', background: C.accent, color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', borderRadius: 8 }}>
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+            {saveMsg && <span style={{ fontSize: 12, color: saveMsg.includes('Failed') ? C.danger : C.success }}>{saveMsg}</span>}
+          </div>
         </div>
       </div>
 
@@ -1126,24 +2067,14 @@ function SettingsPanel({ auth, onLogout }: { auth: Auth; onLogout: () => void })
       <div style={{ ...card() }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Permissions</div>
-          <button onClick={checkPerms} style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer' }}>
-            <RefreshCw size={13} />
-          </button>
+          <button onClick={checkPerms} style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer' }}><RefreshCw size={13} /></button>
         </div>
         {!perms ? (
           <div style={{ color: C.textMuted, fontSize: 12 }}>Checking permissions…</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <PermRow
-              label="Screen Recording"
-              granted={perms.screen === 'granted'}
-              onFix={() => window.electronAPI.openScreenRecordingSettings()}
-            />
-            <PermRow
-              label="Accessibility"
-              granted={perms.accessibility}
-              onFix={() => window.electronAPI.openAccessibilitySettings()}
-            />
+            <PermRow label="Screen Recording" granted={perms.screen === 'granted'} onFix={() => window.electronAPI.openScreenRecordingSettings()} />
+            <PermRow label="Accessibility" granted={perms.accessibility} onFix={() => window.electronAPI.openAccessibilitySettings()} />
           </div>
         )}
       </div>
@@ -1157,21 +2088,15 @@ function SettingsPanel({ auth, onLogout }: { auth: Auth; onLogout: () => void })
             <div style={{ fontSize: 12, color: C.textMuted }}>v{version ?? '…'}</div>
           </div>
           {updateState?.downloaded ? (
-            <button
-              onClick={() => window.electronAPI.installUpdate()}
-              style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.success, fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-            >
+            <button onClick={() => window.electronAPI.installUpdate()}
+              style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.success, fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
               Restart to Update v{updateState.version}
             </button>
           ) : updateState?.version ? (
-            <div style={{ fontSize: 12, color: C.accent }}>
-              Downloading v{updateState.version}… {updateState.percent ?? 0}%
-            </div>
+            <div style={{ fontSize: 12, color: C.accent }}>Downloading v{updateState.version}… {updateState.percent ?? 0}%</div>
           ) : (
-            <button
-              onClick={() => window.electronAPI.checkForUpdates()}
-              style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.textMuted, fontSize: 12, cursor: 'pointer' }}
-            >
+            <button onClick={() => window.electronAPI.checkForUpdates()}
+              style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.textMuted, fontSize: 12, cursor: 'pointer' }}>
               Check for Updates
             </button>
           )}
@@ -1189,10 +2114,7 @@ function PermRow({ label, granted, onFix }: { label: string; granted: boolean; o
         <span style={{ fontSize: 13, color: C.text }}>{label}</span>
       </div>
       {!granted && (
-        <button
-          onClick={onFix}
-          style={{ fontSize: 11, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
-        >
+        <button onClick={onFix} style={{ fontSize: 11, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
           Open Settings →
         </button>
       )}
@@ -1216,12 +2138,9 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
-      {/* Sidebar */}
       <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} />
 
-      {/* Content */}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        {/* Offline banner */}
         {!isOnline && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
@@ -1229,9 +2148,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
           }}>
             <WifiOff size={14} color={C.warning} />
-            <span style={{ color: '#92400e', fontWeight: 500 }}>
-              Server unreachable — changes will sync when reconnected
-            </span>
+            <span style={{ color: '#92400e', fontWeight: 500 }}>Server unreachable — changes will sync when reconnected</span>
           </div>
         )}
 
@@ -1255,13 +2172,13 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             <ActivityPanel config={apiConfig} />
           </div>
         )}
-        {tab === 'settings' && (
+        {tab === 'settings' && apiConfig && (
           <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
-            <SettingsPanel auth={auth} onLogout={onLogout} />
+            <SettingsPanel auth={auth} config={apiConfig} onLogout={onLogout} />
           </div>
         )}
         {/* Loading state while apiConfig is fetching for data panels */}
-        {(tab === 'messages' || tab === 'tasks' || tab === 'activity') && !apiConfig && (
+        {(tab === 'messages' || tab === 'tasks' || tab === 'activity' || tab === 'settings') && !apiConfig && (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted }}>
             <Loader size={24} />
           </div>
