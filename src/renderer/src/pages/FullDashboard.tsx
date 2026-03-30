@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Home, MessageSquare, CheckSquare, Activity, Settings,
-  LogOut, Play, Pause, RotateCcw, Square, Trash2,
+  LogOut, Play, Pause, RotateCcw, Square, Plus, Trash2,
   Send, Hash, Users, Circle,
   Check, AlertCircle, Loader, WifiOff, RefreshCw,
   Layers, Settings2,
@@ -49,6 +49,9 @@ interface Task {
   id: string; title: string; description: string | null
   status: string; priority: string
   dueDate: string | null; estimatedHours: number | null
+  createdBy: string
+  projectId: string | null
+  assigneeId: string | null
   project: { id: string; name: string; color: string } | null
   section: { id: string; name: string } | null
   assignee: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
@@ -3196,8 +3199,9 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress'>('mine')
-  const [, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
+  const [projects, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
   const [detailTask, setDetailTask] = useState<Task | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3273,6 +3277,16 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         >
           <RefreshCw size={15} />
         </button>
+        <button
+          onClick={() => setShowCreate(true)}
+          style={{
+            ...neu(), padding: '5px 12px', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 6,
+            color: '#fff', background: C.accent, borderRadius: 8, fontSize: 12, fontWeight: 600,
+          }}
+        >
+          <Plus size={14} /> New Task
+        </button>
       </div>
 
       {/* Task list */}
@@ -3314,10 +3328,29 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           task={detailTask}
           config={config}
           auth={auth}
+          projects={projects}
           onClose={() => setDetailTask(null)}
           onUpdated={(updated) => {
             setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
             setDetailTask(updated)
+          }}
+          onDeleted={(id) => {
+            setTasks(prev => prev.filter(t => t.id !== id))
+            setDetailTask(null)
+          }}
+        />
+      )}
+
+      {/* Create Task Modal */}
+      {showCreate && (
+        <CreateTaskModal
+          config={config}
+          auth={auth}
+          projects={projects}
+          onClose={() => setShowCreate(false)}
+          onCreated={(task) => {
+            setTasks(prev => [task, ...prev])
+            setShowCreate(false)
           }}
         />
       )}
@@ -3382,16 +3415,25 @@ function TaskCard({ task, auth: _auth, onDone, onOpen }: { task: Task; auth: Aut
   )
 }
 
-function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
+function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onDeleted }: {
   task: Task; config: ApiConfig; auth: Auth
+  projects: { id: string; name: string; color: string }[]
   onClose: () => void
   onUpdated: (t: Task) => void
+  onDeleted: (id: string) => void
 }) {
   const [detail, setDetail] = useState<Task>(task)
   const [comments, setComments] = useState<TaskComment[]>([])
   const [commentText, setCommentText] = useState('')
   const [addingComment, setAddingComment] = useState(false)
   const [savingStatus, setSavingStatus] = useState(false)
+  const [users, setUsers] = useState<UserInfo[]>([])
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [editTitle, setEditTitle] = useState(task.title)
+  const [editingDesc, setEditingDesc] = useState(false)
+  const [editDesc, setEditDesc] = useState(task.description ?? '')
+  const [deleting, setDeleting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3407,17 +3449,44 @@ function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
       .then((d: { task: Task }) => {
         setDetail(d.task)
         setComments(d.task.comments ?? [])
+        setEditTitle(d.task.title)
+        setEditDesc(d.task.description ?? '')
       })
+      .catch(() => {})
+    apiFetch('/api/users')
+      .then((d: { users: UserInfo[] }) => setUsers(d.users))
       .catch(() => {})
   }, [task.id, apiFetch])
 
-  async function setStatus(status: string) {
+  async function patchTask(data: Record<string, unknown>) {
     setSavingStatus(true)
     try {
-      const d = await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ status }) }) as { task: Task }
+      const d = await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
       setDetail(d.task)
       onUpdated(d.task)
-    } catch (err) { console.error('[TaskDetail] setStatus failed:', err) } finally { setSavingStatus(false) }
+    } catch (err) { console.error('[TaskDetail] patch failed:', err) } finally { setSavingStatus(false) }
+  }
+
+  async function saveTitle() {
+    const t = editTitle.trim()
+    if (!t || t === detail.title) { setEditingTitle(false); return }
+    await patchTask({ title: t })
+    setEditingTitle(false)
+  }
+
+  async function saveDesc() {
+    const d = editDesc.trim()
+    if (d === (detail.description ?? '')) { setEditingDesc(false); return }
+    await patchTask({ description: d || null })
+    setEditingDesc(false)
+  }
+
+  async function deleteTask() {
+    setDeleting(true)
+    try {
+      await apiFetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+      onDeleted(task.id)
+    } catch (err) { console.error('[TaskDetail] delete failed:', err) } finally { setDeleting(false) }
   }
 
   async function addComment() {
@@ -3430,7 +3499,7 @@ function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
     } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
   }
 
-  const isDone = detail.status === 'done' || detail.status === 'cancelled'
+  const canDelete = detail.createdBy === auth.userId || auth.role === 'admin'
 
   return (
     <div style={{
@@ -3445,60 +3514,194 @@ function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
           <X size={16} />
         </button>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>{detail.title}</div>
+          {editingTitle ? (
+            <input
+              value={editTitle}
+              onChange={e => setEditTitle(e.target.value)}
+              onBlur={saveTitle}
+              onKeyDown={e => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') { setEditTitle(detail.title); setEditingTitle(false) } }}
+              autoFocus
+              style={{
+                width: '100%', fontSize: 15, fontWeight: 700, color: C.text,
+                background: 'transparent', border: `1px solid ${C.accent}`, borderRadius: 6,
+                padding: '4px 8px', outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+          ) : (
+            <div
+              onClick={() => { setEditTitle(detail.title); setEditingTitle(true) }}
+              style={{ fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.3, cursor: 'pointer' }}
+              title="Click to edit title"
+            >
+              {detail.title}
+              <Edit2 size={11} style={{ marginLeft: 6, opacity: 0.4 }} />
+            </div>
+          )}
           {detail.project && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{detail.project.name}</div>}
         </div>
+        {canDelete && (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 4, flexShrink: 0, marginTop: 2 }}
+            title="Delete task"
+          >
+            <Trash2 size={15} />
+          </button>
+        )}
       </div>
 
+      {/* Delete confirmation */}
+      {confirmDelete && (
+        <div style={{
+          padding: '10px 16px', background: '#fef2f2', borderBottom: `1px solid ${C.danger}33`,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span style={{ fontSize: 12, color: C.danger, flex: 1 }}>Delete this task permanently?</span>
+          <button onClick={deleteTask} disabled={deleting}
+            style={{ padding: '4px 12px', borderRadius: 6, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1 }}>
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+          <button onClick={() => setConfirmDelete(false)}
+            style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer' }}>
+            Cancel
+          </button>
+        </div>
+      )}
+
       <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* Status + Priority */}
-        <div style={{ display: 'flex', gap: 10 }}>
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Status</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
-                <button key={s} onClick={() => setStatus(s)} disabled={savingStatus}
-                  style={{
-                    padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                    background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
-                    color: detail.status === s ? '#fff' : C.textMuted,
-                    boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
-                  }}>
-                  {l}
-                </button>
-              ))}
-            </div>
+        {/* Status */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Status</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
+              <button key={s} onClick={() => patchTask({ status: s })} disabled={savingStatus}
+                style={{
+                  padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                  background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
+                  color: detail.status === s ? '#fff' : C.textMuted,
+                  boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Priority */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Priority</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {(['urgent', 'high', 'medium', 'low'] as const).map(p => (
+              <button key={p} onClick={() => patchTask({ priority: p })} disabled={savingStatus}
+                style={{
+                  padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                  background: detail.priority === p ? PRIORITY_COLORS[p] : C.contentBg,
+                  color: detail.priority === p ? '#fff' : C.textMuted,
+                  boxShadow: detail.priority === p ? `0 2px 6px ${PRIORITY_COLORS[p]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                }}>
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Description */}
-        {detail.description && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Description</div>
-            <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{detail.description}</div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+            Description
+            {!editingDesc && (
+              <button onClick={() => setEditingDesc(true)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, marginLeft: 8, fontSize: 10 }}>
+                <Edit2 size={10} />
+              </button>
+            )}
           </div>
-        )}
+          {editingDesc ? (
+            <div>
+              <textarea
+                value={editDesc}
+                onChange={e => setEditDesc(e.target.value)}
+                rows={4}
+                autoFocus
+                style={{
+                  width: '100%', resize: 'vertical', ...neu(true), padding: '8px 10px',
+                  fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button onClick={saveDesc} disabled={savingStatus}
+                  style={{ padding: '4px 12px', borderRadius: 6, border: 'none', background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  Save
+                </button>
+                <button onClick={() => { setEditDesc(detail.description ?? ''); setEditingDesc(false) }}
+                  style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 11, cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              onClick={() => setEditingDesc(true)}
+              style={{ fontSize: 13, color: detail.description ? C.text : C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 20 }}
+            >
+              {detail.description || 'Click to add description…'}
+            </div>
+          )}
+        </div>
 
         {/* Assignee */}
-        {detail.assignee && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Assignee</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar url={detail.assignee.avatarUrl} name={detail.assignee.alias ?? detail.assignee.username} size={26} />
-              <span style={{ fontSize: 13, color: C.text }}>{detail.assignee.alias ?? detail.assignee.username}</span>
-            </div>
-          </div>
-        )}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Assignee</div>
+          <select
+            value={detail.assigneeId ?? ''}
+            onChange={e => patchTask({ assigneeId: e.target.value || null })}
+            disabled={savingStatus}
+            style={{
+              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            <option value="">Unassigned</option>
+            {users.map(u => (
+              <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Project */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Project</div>
+          <select
+            value={detail.projectId ?? ''}
+            onChange={e => patchTask({ projectId: e.target.value || null })}
+            disabled={savingStatus}
+            style={{
+              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            <option value="">No Project</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
 
         {/* Due date */}
-        {detail.dueDate && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Due Date</div>
-            <div style={{ fontSize: 13, color: new Date(detail.dueDate) < new Date() && !isDone ? C.danger : C.text }}>
-              {new Date(detail.dueDate).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
-            </div>
-          </div>
-        )}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Due Date</div>
+          <input
+            type="date"
+            value={detail.dueDate ? new Date(detail.dueDate).toISOString().split('T')[0] : ''}
+            onChange={e => patchTask({ dueDate: e.target.value || null })}
+            disabled={savingStatus}
+            style={{
+              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          />
+        </div>
 
         {/* Subtasks */}
         {(detail.subtasks?.length ?? 0) > 0 && (
@@ -3555,6 +3758,172 @@ function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
               {addingComment ? <Loader size={14} /> : <Send size={14} />}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Create Task Modal ────────────────────────────────────────────────────────
+
+function CreateTaskModal({ config, auth, projects, onClose, onCreated }: {
+  config: ApiConfig; auth: Auth
+  projects: { id: string; name: string; color: string }[]
+  onClose: () => void
+  onCreated: (task: Task) => void
+}) {
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [status, setStatus] = useState('todo')
+  const [priority, setPriority] = useState('medium')
+  const [projectId, setProjectId] = useState('')
+  const [assigneeId, setAssigneeId] = useState(auth.userId)
+  const [dueDate, setDueDate] = useState('')
+  const [users, setUsers] = useState<UserInfo[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    fetch(`${config.apiBase}/api/users`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+    })
+      .then(r => r.json())
+      .then((d: { users: UserInfo[] }) => setUsers(d.users))
+      .catch(() => {})
+  }, [config])
+
+  async function handleCreate() {
+    if (!title.trim()) { setError('Title is required'); return }
+    setSaving(true)
+    setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim() || null,
+          status,
+          priority,
+          projectId: projectId || null,
+          assigneeId: assigneeId || null,
+          dueDate: dueDate || null,
+        }),
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+      const d = await res.json() as { task: Task }
+      onCreated(d.task)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create task') } finally { setSaving(false) }
+  }
+
+  const fieldStyle = {
+    ...neu(true), padding: '8px 10px', fontSize: 12, color: C.text,
+    border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit',
+    boxSizing: 'border-box' as const,
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
+      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        width: 460, maxHeight: '85vh', overflow: 'auto',
+        background: C.contentBg, borderRadius: 14,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>New Task</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Title */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Title *</div>
+            <input
+              value={title} onChange={e => setTitle(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void handleCreate()}
+              placeholder="Task title…" autoFocus
+              style={fieldStyle}
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Description</div>
+            <textarea
+              value={description} onChange={e => setDescription(e.target.value)}
+              placeholder="Optional description…" rows={3}
+              style={{ ...fieldStyle, resize: 'vertical' }}
+            />
+          </div>
+
+          {/* Status + Priority row */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Status</div>
+              <select value={status} onChange={e => setStatus(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
+                {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
+                  <option key={s} value={s}>{l}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Priority</div>
+              <select value={priority} onChange={e => setPriority(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
+                {['urgent', 'high', 'medium', 'low'].map(p => (
+                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Project + Assignee row */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Project</div>
+              <select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
+                <option value="">No Project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Assignee</div>
+              <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
+                <option value="">Unassigned</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Due Date */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Due Date</div>
+            <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} style={fieldStyle} />
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+          <button onClick={onClose}
+            style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={handleCreate} disabled={saving || !title.trim()}
+            style={{
+              padding: '8px 20px', borderRadius: 8, border: 'none',
+              background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              opacity: saving || !title.trim() ? 0.5 : 1,
+            }}>
+            {saving ? 'Creating…' : 'Create Task'}
+          </button>
         </div>
       </div>
     </div>
