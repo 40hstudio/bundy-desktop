@@ -363,7 +363,7 @@ function HomePanel({ auth }: { auth: Auth }) {
   }
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
 
       {/* Timer Card */}
       <div style={{ ...card(), textAlign: 'center', padding: '28px 24px' }}>
@@ -1344,7 +1344,7 @@ function MessagesPanel({ config, auth, acceptedCall }: {
   const selectedTyping = selected ? (typingMap[selected.id] ?? []) : []
 
   return (
-    <div style={{ height: '100%', display: 'flex', overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
       {showNewConv && <NewConvModal config={config} auth={auth} onClose={() => setShowNewConv(false)} onCreated={handleCreated} />}
       {showSettings && selected && <ChannelSettingsModal config={config} auth={auth} conv={selected} onClose={() => setShowSettings(false)} />}
       {activeCall && (
@@ -2055,7 +2055,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   }, {})
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
       {/* Toolbar */}
       <div style={{
         padding: '14px 24px', borderBottom: `1px solid ${C.border}`,
@@ -2432,7 +2432,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
   const activePercent = totalTrackedSeconds > 0 ? Math.round((totalActiveSeconds / totalTrackedSeconds) * 100) : 0
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>Today's Activity</div>
         <button onClick={loadActivity} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
@@ -2584,7 +2584,7 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
   }
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>Settings</div>
 
       {/* Profile edit */}
@@ -2761,7 +2761,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         )}
 
         {tab === 'home' && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
             <HomePanel auth={auth} />
           </div>
         )}
@@ -2771,6 +2771,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             position: 'absolute',
             top: isOnline ? 0 : 36,
             left: 0, right: 0, bottom: 0,
+            display: 'flex', flexDirection: 'column',
             visibility: tab === 'messages' ? 'visible' : 'hidden',
             pointerEvents: tab === 'messages' ? 'auto' : 'none',
           }}>
@@ -2778,17 +2779,17 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           </div>
         )}
         {tab === 'tasks' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column' }}>
             <TasksPanel config={apiConfig} auth={auth} />
           </div>
         )}
         {tab === 'activity' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
             <ActivityPanel config={apiConfig} />
           </div>
         )}
         {tab === 'settings' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
             <SettingsPanel auth={auth} config={apiConfig} onLogout={onLogout} />
           </div>
         )}
