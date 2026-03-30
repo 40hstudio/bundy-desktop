@@ -101,6 +101,10 @@ const api = {
     ipcRenderer.invoke('send-crash-report', note),
   openFullWindow: (): Promise<void> =>
     ipcRenderer.invoke('open-full-window'),
+  getWindowMode: (): Promise<'popup' | 'full'> =>
+    ipcRenderer.invoke('get-window-mode'),
+  getApiConfig: (): Promise<{ apiBase: string; token: string }> =>
+    ipcRenderer.invoke('get-api-config'),
   onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: { isOnline: boolean; queuedCount: number }): void => cb(state)
     ipcRenderer.on('online-state', handler)

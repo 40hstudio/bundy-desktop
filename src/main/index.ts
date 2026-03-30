@@ -5,7 +5,6 @@ import {
   Menu,
   nativeImage,
   powerMonitor,
-  session,
   shell,
   systemPreferences,
   Tray
@@ -14,14 +13,15 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import store from './store'
-import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, createWebSession, type BundyStatus } from './api'
+import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, type BundyStatus } from './api'
 import { startScreenshots, stopScreenshots } from './screenshot'
 import { startActivity, stopActivity } from './activity'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
 
 let tray: Tray | null = null
 let popupWin: BrowserWindow | null = null
-let fullWin: BrowserWindow | null = null
+let fullNativeWin: BrowserWindow | null = null
+const fullWindowIds = new Set<number>()
 let statusPollerTimer: NodeJS.Timeout | null = null
 let pendingUpdateVersion: string | null = null
 let pendingDownloadPercent: number | null = null
@@ -209,53 +209,45 @@ function broadcastOnlineState(): void {
 
 // ─── Full-window mode ──────────────────────────────────────────────────────────
 
+// ─── Native full-window mode ───────────────────────────────────────────────────
+
 async function openFullWindow(): Promise<void> {
-  const apiBase = store.get('apiBase') || 'https://bundy.40h.studio'
-  const targetUrl = `${apiBase}/dashboard`
+  if (fullNativeWin && !fullNativeWin.isDestroyed()) {
+    if (!fullNativeWin.isVisible()) fullNativeWin.show()
+    fullNativeWin.focus()
+    return
+  }
 
-  if (store.get('desktopToken')) {
-    try {
-      const { jwt, maxAge } = await createWebSession()
-      const hostname = new URL(apiBase).hostname
-      // Remove any stale cookie, then inject the fresh JWT directly into the
-      // Electron session BEFORE navigation — guarantees the cookie is present
-      // when the page's JS runs fetch('/api/auth/session').
-      await session.defaultSession.cookies.remove(apiBase, 'bundy_session').catch(() => {})
-      await session.defaultSession.cookies.set({
-        url: apiBase,
-        name: 'bundy_session',
-        value: jwt,
-        domain: hostname,
-        path: '/',
-        httpOnly: true,
-        secure: apiBase.startsWith('https://'),
-        sameSite: 'lax',
-        expirationDate: Math.floor((Date.now() + maxAge * 1000) / 1000)
-      })
-    } catch {
-      // Fallback: load without cookie — user will see login page
+  fullNativeWin = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 18 },
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
     }
+  })
+
+  fullWindowIds.add(fullNativeWin.webContents.id)
+
+  fullNativeWin.on('closed', () => {
+    if (fullNativeWin) fullWindowIds.delete(fullNativeWin.webContents.id)
+    fullNativeWin = null
+  })
+
+  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+    await fullNativeWin.loadURL(process.env.ELECTRON_RENDERER_URL + '#full')
+  } else {
+    await fullNativeWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'full' })
   }
 
-  if (!fullWin || fullWin.isDestroyed()) {
-    fullWin = new BrowserWindow({
-      width: 1100,
-      height: 700,
-      minWidth: 900,
-      minHeight: 600,
-      titleBarStyle: 'hiddenInset',
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true
-      }
-    })
-    fullWin.on('closed', () => { fullWin = null })
-  }
-
-  void fullWin.loadURL(targetUrl)
-  if (!fullWin.isVisible()) fullWin.show()
-  fullWin.focus()
+  fullNativeWin.show()
+  fullNativeWin.focus()
 }
 
 // ─── Status polling → push to renderer ────────────────────────────────────────
@@ -386,6 +378,8 @@ ipcMain.handle('login', async (_event, shortToken: string) => {
   store.set('username', result.username)
   store.set('role', result.role)
   startPoller()
+  // Open the full dashboard after login
+  void openFullWindow()
   return result
 })
 
@@ -479,6 +473,23 @@ ipcMain.handle('install-update', () => {
 })
 
 ipcMain.handle('open-full-window', () => void openFullWindow())
+
+ipcMain.handle('get-window-mode', (event) => {
+  return fullWindowIds.has(event.sender.id) ? 'full' : 'popup'
+})
+
+ipcMain.handle('get-api-config', async () => {
+  const token = store.get('desktopToken')
+  const remote = store.get('apiBase') || 'https://bundy.40h.studio'
+  let apiBase = remote
+  try {
+    const r = await fetch('http://localhost:3000/api/auth/session', {
+      signal: AbortSignal.timeout(1000)
+    })
+    if (r.status === 200 || r.status === 401) apiBase = 'http://localhost:3000'
+  } catch { /* use remote */ }
+  return { apiBase, token }
+})
 
 ipcMain.handle('send-crash-report', async (_event, note: string) => {
   await sendUserReport(note)
@@ -580,9 +591,9 @@ app.whenReady().then(() => {
   tray.setToolTip('Bundy')
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open Bundy', click: togglePopup },
+    { label: 'Open Dashboard', click: () => void openFullWindow() },
+    { label: 'Open Mini Panel', click: togglePopup },
     { type: 'separator' },
-    { label: 'Open Full Dashboard', click: () => void openFullWindow() },
     {
       label: 'Open in Browser',
       click: () => void shell.openExternal(store.get('apiBase') || 'https://bundy.40h.studio')
@@ -591,12 +602,14 @@ app.whenReady().then(() => {
     { label: 'Quit', click: () => app.quit() }
   ])
 
-  tray.on('click', togglePopup)
+  tray.on('click', () => void openFullWindow())
   tray.on('right-click', () => tray?.popUpContextMenu(contextMenu))
 
   // Auto-start services if token already stored
   if (store.get('desktopToken')) {
     startPoller()
+    // Open the full dashboard as the primary interface on startup
+    void openFullWindow()
 
     // If we restarted after an automatic update, resume the user's session.
     // The flag is only set when quitting via quitAndInstall — not on lid close

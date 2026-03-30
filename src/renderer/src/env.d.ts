@@ -26,6 +26,8 @@ declare global {
       onTokenExpired: (cb: () => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
       openFullWindow: () => Promise<void>
+      getWindowMode: () => Promise<'popup' | 'full'>
+      getApiConfig: () => Promise<{ apiBase: string; token: string }>
       onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void) => () => void
       onSyncToast: (cb: (data: { count: number }) => void) => () => void
       getDailyPlan: () => Promise<DailyPlanData | null>

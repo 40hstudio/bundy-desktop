@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
+import FullDashboard from './pages/FullDashboard'
 
 interface Auth {
   userId: string
@@ -10,10 +11,15 @@ interface Auth {
 
 export default function App(): JSX.Element {
   const [auth, setAuth] = useState<Auth | null | undefined>(undefined)
+  const [windowMode, setWindowMode] = useState<'popup' | 'full' | null>(null)
 
   useEffect(() => {
-    window.electronAPI.getStoredAuth().then((stored) => {
+    Promise.all([
+      window.electronAPI.getStoredAuth(),
+      window.electronAPI.getWindowMode(),
+    ]).then(([stored, mode]) => {
       setAuth(stored)
+      setWindowMode(mode)
     })
   }, [])
 
@@ -24,7 +30,7 @@ export default function App(): JSX.Element {
     })
   }, [])
 
-  if (auth === undefined) {
+  if (auth === undefined || windowMode === null) {
     return (
       <div
         style={{
@@ -40,17 +46,24 @@ export default function App(): JSX.Element {
     )
   }
 
+  const handleLogin = (a: Auth) => setAuth(a)
+  const handleLogout = () => {
+    window.electronAPI.logout()
+    setAuth(null)
+  }
+
   if (!auth) {
-    return <Login onLogin={(a) => setAuth(a)} />
+    return <Login onLogin={handleLogin} />
+  }
+
+  if (windowMode === 'full') {
+    return <FullDashboard auth={auth} onLogout={handleLogout} />
   }
 
   return (
     <Dashboard
       auth={auth}
-      onLogout={() => {
-        window.electronAPI.logout()
-        setAuth(null)
-      }}
+      onLogout={handleLogout}
     />
   )
 }

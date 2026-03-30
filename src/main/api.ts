@@ -180,8 +180,9 @@ export async function breakOnQuit(): Promise<void> {
 }
 
 /** Exchange the desktop Bearer token for a one-time session URL (30 s TTL). */
-export async function createWebSession(): Promise<{ jwt: string; maxAge: number }> {
-  const res = await fetch(`${baseUrl()}/api/desktop/web-session`, {
+export async function createWebSession(overrideBase?: string): Promise<{ jwt: string; maxAge: number }> {
+  const base = overrideBase ?? baseUrl()
+  const res = await fetch(`${base}/api/desktop/web-session`, {
     method: 'POST',
     headers: { ...authHeader() }
   })
