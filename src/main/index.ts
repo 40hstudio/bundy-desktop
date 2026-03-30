@@ -233,6 +233,11 @@ async function openFullWindow(): Promise<void> {
     }
   })
 
+  // Allow microphone + camera for WebRTC calls
+  fullNativeWin.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(['media', 'microphone', 'camera', 'audioCapture', 'videoCapture'].includes(permission))
+  })
+
   fullWindowIds.add(fullNativeWin.webContents.id)
 
   fullNativeWin.on('closed', () => {

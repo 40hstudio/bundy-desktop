@@ -1816,28 +1816,35 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
   offerSdp?: string
 }) {
   const isReceiver = !!offerSdp
-  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>(isReceiver ? 'calling' : 'calling')
+  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>('calling')
   const [muted, setMuted] = useState(false)
   const [videoOff, setVideoOff] = useState(false)
   const localVideo = useRef<HTMLVideoElement>(null)
   const remoteVideo = useRef<HTMLVideoElement>(null)
   const pc = useRef<RTCPeerConnection | null>(null)
   const localStream = useRef<MediaStream | null>(null)
+  // Buffer ICE candidates that arrive before setRemoteDescription completes
+  const iceBuffer = useRef<RTCIceCandidateInit[]>([])
+  const remoteDescSet = useRef(false)
 
   useEffect(() => {
+    const ctrl = new AbortController()
+    listenForSignals(ctrl)
     if (isReceiver) {
       answerCall()
     } else {
       startCall()
     }
-    // Listen for answer/ice from caller (receiver side) or from callee (caller side)
-    const ctrl = new AbortController()
-    listenForSignals(ctrl)
     return () => { ctrl.abort(); cleanup(false) }
   }, [])
 
   async function setupPeer(stream: MediaStream) {
-    const peerConn = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+    const peerConn = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ]
+    })
     pc.current = peerConn
     stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
     peerConn.ontrack = e => {
@@ -1856,6 +1863,14 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
     return peerConn
   }
 
+  async function drainIceBuffer(peerConn: RTCPeerConnection) {
+    remoteDescSet.current = true
+    for (const c of iceBuffer.current) {
+      try { await peerConn.addIceCandidate(new RTCIceCandidate(c)) } catch { /* ignore */ }
+    }
+    iceBuffer.current = []
+  }
+
   async function startCall() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' })
@@ -1869,7 +1884,10 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
         headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'offer', to: targetUser.id, sdp: offer.sdp, callType }),
       })
-    } catch { cleanup(true); onEnd() }
+    } catch (err) {
+      console.error('[CallWidget] startCall failed:', err)
+      cleanup(true); onEnd()
+    }
   }
 
   async function answerCall() {
@@ -1879,6 +1897,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
       if (localVideo.current) localVideo.current.srcObject = stream
       const peerConn = await setupPeer(stream)
       await peerConn.setRemoteDescription({ type: 'offer', sdp: offerSdp! })
+      await drainIceBuffer(peerConn)
       const answer = await peerConn.createAnswer()
       await peerConn.setLocalDescription(answer)
       await fetch(`${config.apiBase}/api/calls`, {
@@ -1886,8 +1905,10 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
         headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'answer', to: targetUser.id, sdp: answer.sdp }),
       })
-      setStatus('connected')
-    } catch { cleanup(true); onEnd() }
+    } catch (err) {
+      console.error('[CallWidget] answerCall failed:', err)
+      cleanup(true); onEnd()
+    }
   }
 
   function listenForSignals(ctrl: AbortController) {
@@ -1913,8 +1934,13 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
             const payload = JSON.parse(datM[1]) as { from?: string; sdp?: string; candidate?: RTCIceCandidateInit }
             if (ev === 'call-answer' && !isReceiver && pc.current) {
               await pc.current.setRemoteDescription({ type: 'answer', sdp: payload.sdp! })
-            } else if (ev === 'call-ice' && pc.current && payload.candidate) {
-              await pc.current.addIceCandidate(new RTCIceCandidate(payload.candidate))
+              await drainIceBuffer(pc.current)
+            } else if (ev === 'call-ice' && payload.candidate) {
+              if (remoteDescSet.current && pc.current) {
+                try { await pc.current.addIceCandidate(new RTCIceCandidate(payload.candidate)) } catch { /* ignore */ }
+              } else {
+                iceBuffer.current.push(payload.candidate)
+              }
             } else if (ev === 'call-end') {
               cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000)
             }

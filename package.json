@@ -1,6 +1,6 @@
 {
   "name": "bundy-desktop",
-  "version": "1.2.32",
+  "version": "1.2.33",
   "description": "Bundy Clock – macOS menu bar app",
   "main": "out/main/index.js",
   "author": "40h Studio",
