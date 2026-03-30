@@ -82,6 +82,13 @@ interface TaskProject {
   _count?: { tasks: number }
 }
 interface LogEntry { id: string; action: string; timestamp: string }
+interface PlanItem {
+  id: string
+  project: { id: string; name: string }
+  details: string
+  status: string
+  outcome: string | null
+}
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 
@@ -156,6 +163,40 @@ function timeAgo(iso: string): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
   return new Date(iso).toLocaleDateString()
+}
+
+function insertMarkdownAt(
+  ta: HTMLTextAreaElement,
+  setContent: (v: string) => void,
+  prefix: string,
+  suffix = ''
+): void {
+  const { selectionStart: s, selectionEnd: e, value } = ta
+  const selected = value.slice(s, e)
+  const newVal = value.slice(0, s) + prefix + selected + suffix + value.slice(e)
+  setContent(newVal)
+  requestAnimationFrame(() => {
+    ta.setSelectionRange(s + prefix.length, s + prefix.length + selected.length)
+    ta.focus()
+  })
+}
+
+function simpleMarkdown(md: string): string {
+  return md
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3 style="font-size:0.88em;font-weight:700;margin:6px 0 2px">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 style="font-size:1em;font-weight:700;margin:8px 0 3px">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 style="font-size:1.1em;font-weight:700;margin:10px 0 4px">$1</h1>')
+    .replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:2px solid #888;padding-left:7px;margin:3px 0;opacity:0.65">$1</blockquote>')
+    .replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid rgba(128,128,128,0.3);margin:8px 0">')
+    .replace(/^[*-] (.+)$/gm, '<li style="margin-left:16px;list-style:disc">$1</li>')
+    .replace(/^\d+\. (.+)$/gm, '<li style="margin-left:16px;list-style:decimal">$1</li>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/_(.+?)_/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(128,128,128,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.85em">$1</code>')
+    .replace(/\n/g, '<br>')
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -284,6 +325,17 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
   const [actioning, setActioning] = useState(false)
   const [snapshotAt] = useState(Date.now())
 
+  // Clock-out report modal state
+  const [planItems, setPlanItems] = useState<PlanItem[]>([])
+  const [confirmItems, setConfirmItems] = useState<Array<{ itemId: string; status: string; outcome: string }>>([])
+  const [clockOutStep, setClockOutStep] = useState<'plan' | 'report'>('plan')
+  const [showReportModal, setShowReportModal] = useState(false)
+  const [reportContent, setReportContent] = useState('')
+  const [reportSubmitting, setReportSubmitting] = useState(false)
+  const [reportError, setReportError] = useState('')
+  const [showPreview, setShowPreview] = useState(false)
+  const reportTextareaRef = useRef<HTMLTextAreaElement>(null)
+
   const displayMs = useStatusTicker(
     status?.elapsedMs ?? 0,
     status?.isTracking ?? false,
@@ -295,6 +347,13 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
       const s = await window.electronAPI.getStatus()
       setStatus(s)
     } catch { /* offline */ }
+  }, [])
+
+  const loadPlan = useCallback(async () => {
+    try {
+      const plan = await window.electronAPI.getDailyPlan()
+      setPlanItems(plan?.items ?? [])
+    } catch { /* non-fatal */ }
   }, [])
 
   const loadTasks = useCallback(async () => {
@@ -316,11 +375,22 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
   useEffect(() => {
     load()
     loadTasks()
+    loadPlan()
     const unsub = window.electronAPI.onStatusUpdate((s) => setStatus(s))
-    return () => { unsub() }
-  }, [load, loadTasks])
+    const unsubPlan = window.electronAPI.onPlanUpdate((plan) => setPlanItems(plan.items ?? []))
+    return () => { unsub(); unsubPlan() }
+  }, [load, loadTasks, loadPlan])
+
+  function openClockOutModal() {
+    setReportContent('')
+    setReportError('')
+    setConfirmItems(planItems.map(i => ({ itemId: i.id, status: i.status, outcome: '' })))
+    setClockOutStep(planItems.length > 0 ? 'plan' : 'report')
+    setShowReportModal(true)
+  }
 
   async function doAction(action: string) {
+    if (action === 'clock-out') { openClockOutModal(); return }
     setActioning(true)
     try {
       await window.electronAPI.doAction(action)
@@ -488,6 +558,218 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
           )}
         </div>
       </div>
+
+      {/* Clock-out Report Modal */}
+      {showReportModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          WebkitAppRegion: 'no-drag',
+        } as React.CSSProperties} onClick={() => { setShowReportModal(false); setShowPreview(false) }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            ...neu(), width: 500, maxHeight: '80vh', overflowY: 'auto', padding: 24,
+            display: 'flex', flexDirection: 'column', gap: 16,
+          }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>
+                {clockOutStep === 'plan' ? '📋 Confirm Plan Status' : '🔴 Clock Out Report'}
+              </span>
+              <button
+                onClick={() => { setShowReportModal(false); setShowPreview(false) }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}
+              ><X size={16} /></button>
+            </div>
+
+            {/* ─── Step 1: Plan Confirmation ─── */}
+            {clockOutStep === 'plan' && (
+              <>
+                <div style={{ fontSize: 12, color: C.textMuted }}>
+                  Update the status of each task before clocking out.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {planItems.map((item, idx) => {
+                    const ci = confirmItems[idx]
+                    if (!ci) return null
+                    return (
+                      <div key={item.id} style={{ ...neu(true), padding: 12, borderRadius: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>{item.project.name}</span>
+                          <span style={{ fontSize: 11, color: C.textMuted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {item.details}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {([
+                            { value: 'completed', label: '✅ Done', color: C.success },
+                            { value: 'continued', label: '🔁 To be continued', color: C.warning },
+                            { value: 'planned', label: '📌 Haven\'t started', color: C.textMuted },
+                            { value: 'blocked', label: '🚫 Blocked', color: C.danger },
+                          ] as const).map(opt => (
+                            <button
+                              key={opt.value}
+                              onClick={() => setConfirmItems(prev => prev.map((c, i) => i === idx ? { ...c, status: opt.value } : c))}
+                              style={{
+                                fontSize: 11, padding: '4px 10px', borderRadius: 8, cursor: 'pointer',
+                                border: 'none',
+                                ...(ci.status === opt.value ? neu() : { background: 'transparent' }),
+                                color: ci.status === opt.value ? opt.color : C.textMuted,
+                                fontWeight: ci.status === opt.value ? 600 : 400,
+                              }}
+                            >{opt.label}</button>
+                          ))}
+                        </div>
+                        <input
+                          value={ci.outcome}
+                          onChange={e => setConfirmItems(prev => prev.map((c, i) => i === idx ? { ...c, outcome: e.target.value } : c))}
+                          placeholder="Outcome note (optional)"
+                          style={{
+                            ...neu(true), fontSize: 11, padding: '6px 10px', border: 'none', outline: 'none',
+                            color: C.text, width: '100%', boxSizing: 'border-box', fontFamily: 'inherit',
+                          }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => { setShowReportModal(false); setShowPreview(false) }}
+                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
+                    Cancel
+                  </button>
+                  <button onClick={() => setClockOutStep('report')}
+                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.accent }}>
+                    Next →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ─── Step 2: Report Editor ─── */}
+            {clockOutStep === 'report' && (
+              <>
+                {/* Write / Preview tabs */}
+                <div style={{ ...neu(true), display: 'flex', borderRadius: 10, padding: 3, gap: 3 }}>
+                  {(['Write', 'Preview'] as const).map(t => (
+                    <button key={t} onClick={() => setShowPreview(t === 'Preview')}
+                      style={{
+                        flex: 1, padding: '6px', fontSize: 12, fontWeight: 600, border: 'none', borderRadius: 8, cursor: 'pointer',
+                        ...(!showPreview === (t === 'Write') ? neu() : { background: 'transparent' }),
+                        color: !showPreview === (t === 'Write') ? C.text : C.textMuted,
+                      }}>{t}</button>
+                  ))}
+                </div>
+
+                {/* Formatting toolbar */}
+                {!showPreview && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {([
+                      { label: 'B', prefix: '**', suffix: '**', title: 'Bold', style: { fontWeight: 700 } as React.CSSProperties },
+                      { label: 'I', prefix: '_', suffix: '_', title: 'Italic', style: { fontStyle: 'italic' } as React.CSSProperties },
+                      { label: '~~', prefix: '~~', suffix: '~~', title: 'Strikethrough', style: { textDecoration: 'line-through' } as React.CSSProperties },
+                      { label: 'H1', prefix: '# ', suffix: '', title: 'Heading 1', style: {} as React.CSSProperties },
+                      { label: 'H2', prefix: '## ', suffix: '', title: 'Heading 2', style: {} as React.CSSProperties },
+                      { label: '•', prefix: '\n- ', suffix: '', title: 'Bullet list', style: {} as React.CSSProperties },
+                      { label: '1.', prefix: '\n1. ', suffix: '', title: 'Numbered list', style: {} as React.CSSProperties },
+                      { label: '`c`', prefix: '`', suffix: '`', title: 'Inline code', style: { fontFamily: 'monospace' } as React.CSSProperties },
+                    ]).map(({ label, prefix, suffix, title, style: btnStyle }) => (
+                      <button key={title} title={title} onClick={() => {
+                        if (reportTextareaRef.current) insertMarkdownAt(reportTextareaRef.current, setReportContent, prefix, suffix)
+                      }}
+                        style={{
+                          ...neu(), padding: '4px 8px', fontSize: 11, border: 'none', cursor: 'pointer', borderRadius: 6,
+                          fontFamily: 'SF Mono, Menlo, monospace', ...btnStyle,
+                        }}>{label}</button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Editor */}
+                {!showPreview ? (
+                  <textarea
+                    ref={reportTextareaRef}
+                    value={reportContent}
+                    onChange={e => setReportContent(e.target.value)}
+                    onKeyDown={e => {
+                      const ta = e.currentTarget
+                      if (e.key === 'Tab') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '  ', ''); return }
+                      const mod = e.ctrlKey || e.metaKey
+                      if (mod && e.key === 'b') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '**', '**') }
+                      else if (mod && e.key === 'i') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '_', '_') }
+                    }}
+                    placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
+                    rows={8}
+                    style={{
+                      width: '100%', borderRadius: 10, padding: 12, fontSize: 13, fontFamily: 'SF Mono, Menlo, monospace',
+                      ...neu(true), border: 'none', outline: 'none', color: C.text,
+                      resize: 'none', boxSizing: 'border-box', lineHeight: 1.6,
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    width: '100%', minHeight: 160, borderRadius: 10, padding: 12, fontSize: 13,
+                    ...neu(true), color: C.text, boxSizing: 'border-box', lineHeight: 1.6, overflowY: 'auto',
+                  }}
+                    dangerouslySetInnerHTML={{
+                      __html: reportContent.trim() ? simpleMarkdown(reportContent) : '<span style="opacity:0.4">Nothing to preview yet…</span>'
+                    }}
+                  />
+                )}
+
+                {/* Footer stats */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <span style={{ fontSize: 11, color: C.textMuted }}>
+                    {reportContent.split(/\s+/).filter(Boolean).length} words
+                  </span>
+                </div>
+
+                {reportError && <div style={{ fontSize: 12, color: C.danger }}>{reportError}</div>}
+
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : (setShowReportModal(false), setShowPreview(false)) }}
+                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
+                    {planItems.length > 0 ? '← Back' : 'Cancel'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!reportContent.trim()) return
+                      setReportSubmitting(true)
+                      setReportError('')
+                      try {
+                        await window.electronAPI.submitReportWithPlan(
+                          reportContent.trim(),
+                          confirmItems.map(ci => ({
+                            itemId: ci.itemId,
+                            status: ci.status,
+                            ...(ci.outcome.trim() ? { outcome: ci.outcome.trim() } : {}),
+                          }))
+                        )
+                        setShowReportModal(false)
+                        setShowPreview(false)
+                        setReportContent('')
+                        await loadPlan()
+                        const s = await window.electronAPI.getStatus()
+                        setStatus(s)
+                      } catch (err: unknown) {
+                        setReportError(err instanceof Error ? err.message : 'Failed to submit')
+                      } finally {
+                        setReportSubmitting(false)
+                      }
+                    }}
+                    disabled={!reportContent.trim() || reportSubmitting}
+                    style={{
+                      flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer',
+                      fontSize: 13, fontWeight: 700, color: C.danger,
+                      opacity: (!reportContent.trim() || reportSubmitting) ? 0.5 : 1,
+                    }}>
+                    {reportSubmitting ? 'Submitting…' : 'Submit & Clock Out'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -3235,6 +3517,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [viewMode, setViewMode] = useState<'list' | 'board'>('list')
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverCol, setDragOverCol] = useState<string | null>(null)
+  const [dragOverSection, setDragOverSection] = useState<string | null>(null)
   const [showProjectFilter, setShowProjectFilter] = useState(false)
   const [editProject, setEditProject] = useState<TaskProject | null>(null)
   const [showManageSections, setShowManageSections] = useState(false)
@@ -3290,6 +3573,29 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
     } catch {
       // Revert on error
       setTasks(prev => prev.map(t => t.id === dragId ? { ...t, status: task.status } : t))
+    }
+  }
+
+  async function handleSectionDrop(targetSectionName: string) {
+    if (!dragId) return
+    setDragOverSection(null)
+    const task = tasks.find(t => t.id === dragId)
+    if (!task) { setDragId(null); return }
+    const targetSection = sections.find(s => s.name === targetSectionName)
+    const targetSectionId = targetSection?.id ?? null
+    if (task.sectionId === targetSectionId) { setDragId(null); return }
+    // Optimistic update
+    setTasks(prev => prev.map(t => t.id === dragId ? {
+      ...t,
+      sectionId: targetSectionId,
+      section: targetSection ? { id: targetSection.id, name: targetSection.name } : null,
+    } : t))
+    setDragId(null)
+    try {
+      await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ sectionId: targetSectionId }) })
+    } catch {
+      // Revert on error
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, sectionId: task.sectionId, section: task.section } : t))
     }
   }
 
@@ -3588,6 +3894,14 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                 tasks={groupTasks}
                 auth={auth}
                 onOpen={id => setDetailTaskId(id)}
+                canDropSection={!!selectedProjectId && sections.length > 0}
+                isDropOver={dragOverSection === groupName}
+                onDragOver={() => setDragOverSection(groupName)}
+                onDragLeave={() => setDragOverSection(null)}
+                onDrop={() => handleSectionDrop(groupName)}
+                onDragStartTask={id => setDragId(id)}
+                onDragEndTask={() => setDragId(null)}
+                draggingId={dragId}
               />
             ))}
           </div>
@@ -3677,13 +3991,26 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
 
 // ─── Task List Group ──────────────────────────────────────────────────────────
 
-function TaskListGroup({ name, tasks, auth, onOpen }: {
+function TaskListGroup({ name, tasks, auth, onOpen, canDropSection, isDropOver, onDragOver, onDragLeave, onDrop, onDragStartTask, onDragEndTask, draggingId }: {
   name: string; tasks: Task[]; auth: Auth; onOpen: (id: string) => void
+  canDropSection?: boolean; isDropOver?: boolean
+  onDragOver?: () => void; onDragLeave?: () => void; onDrop?: () => void
+  onDragStartTask?: (id: string) => void; onDragEndTask?: () => void; draggingId?: string | null
 }) {
   const [collapsed, setCollapsed] = useState(false)
 
   return (
-    <div>
+    <div
+      onDragOver={canDropSection ? (e) => { e.preventDefault(); onDragOver?.() } : undefined}
+      onDragLeave={canDropSection ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave?.() } : undefined}
+      onDrop={canDropSection ? (e) => { e.preventDefault(); onDrop?.() } : undefined}
+      style={{
+        borderRadius: 10, padding: canDropSection ? 4 : 0,
+        border: canDropSection ? `2px ${isDropOver ? 'solid' : 'dashed'} ${isDropOver ? C.accent : 'transparent'}` : 'none',
+        background: isDropOver ? C.accentLight : 'transparent',
+        transition: 'all 0.15s',
+      }}
+    >
       <button
         onClick={() => setCollapsed(!collapsed)}
         style={{
@@ -3699,8 +4026,17 @@ function TaskListGroup({ name, tasks, auth, onOpen }: {
       {!collapsed && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {tasks.map(task => (
-            <TaskListRow key={task.id} task={task} auth={auth} onOpen={() => onOpen(task.id)} />
+            <TaskListRow
+              key={task.id} task={task} auth={auth} onOpen={() => onOpen(task.id)}
+              draggable={canDropSection}
+              onDragStart={() => onDragStartTask?.(task.id)}
+              onDragEnd={() => onDragEndTask?.()}
+              isDragging={draggingId === task.id}
+            />
           ))}
+          {tasks.length === 0 && isDropOver && (
+            <div style={{ textAlign: 'center', padding: 8, fontSize: 11, color: C.accent }}>↩ drop here</div>
+          )}
         </div>
       )}
     </div>
@@ -3709,18 +4045,25 @@ function TaskListGroup({ name, tasks, auth, onOpen }: {
 
 // ─── Task List Row ────────────────────────────────────────────────────────────
 
-function TaskListRow({ task, auth: _auth, onOpen }: { task: Task; auth: Auth; onOpen: () => void }) {
+function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStart, onDragEnd, isDragging }: {
+  task: Task; auth: Auth; onOpen: () => void
+  draggable?: boolean; onDragStart?: () => void; onDragEnd?: () => void; isDragging?: boolean
+}) {
   const isDone = task.status === 'done'
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
 
   return (
     <div
       onClick={onOpen}
+      draggable={canDrag}
+      onDragStart={canDrag ? (e) => { onDragStart?.(); e.dataTransfer.effectAllowed = 'move' } : undefined}
+      onDragEnd={canDrag ? () => onDragEnd?.() : undefined}
       style={{
         ...neu(), padding: '10px 14px',
-        display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
-        opacity: isDone ? 0.6 : 1,
+        display: 'flex', alignItems: 'center', gap: 12, cursor: canDrag ? 'grab' : 'pointer',
+        opacity: isDragging ? 0.4 : isDone ? 0.6 : 1,
         borderLeft: `3px solid ${PRIORITY_COLORS[task.priority] ?? C.border}`,
+        transition: 'opacity 0.15s',
       }}
     >
       {/* Status dot */}
@@ -3808,6 +4151,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   const [activeTab, setActiveTab] = useState<'detail' | 'comments' | 'activity'>('detail')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const commentTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const [detailSections, setDetailSections] = useState<TaskSection[]>([])
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3834,6 +4178,14 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       setUsers(userData.users)
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
   }, [taskId, apiFetch])
+
+  // Load sections when project changes
+  useEffect(() => {
+    if (!detail?.projectId) { setDetailSections([]); return }
+    apiFetch(`/api/tasks/sections?projectId=${detail.projectId}`)
+      .then((d: { sections: TaskSection[] }) => setDetailSections(d.sections))
+      .catch(() => setDetailSections([]))
+  }, [detail?.projectId, apiFetch])
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
     if (!detail) return
@@ -4200,7 +4552,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                 <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Project</div>
                 <select
                   value={detail.projectId ?? ''}
-                  onChange={e => patchTask({ projectId: e.target.value || null }, 'project')}
+                  onChange={e => patchTask({ projectId: e.target.value || null, sectionId: null }, 'project')}
                   disabled={savingField === 'project'}
                   style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
                 >
@@ -4208,6 +4560,23 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
+              {/* Section — only shown when a project is selected */}
+              {detail.projectId && detailSections.length > 0 && (
+                <div style={{ gridColumn: 'span 2' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <Layers size={10} /> Section
+                  </div>
+                  <select
+                    value={detail.sectionId ?? ''}
+                    onChange={e => patchTask({ sectionId: e.target.value || null }, 'section')}
+                    disabled={savingField === 'section'}
+                    style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                  >
+                    <option value="">No Section</option>
+                    {detailSections.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* Multi-assignees */}
