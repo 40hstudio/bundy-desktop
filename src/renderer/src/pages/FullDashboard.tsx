@@ -8,7 +8,9 @@ import {
   UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
   MicOff, PhoneOff, Edit2, X,
   Bold, Italic, List, ExternalLink, FileText, PhoneIncoming,
-  Mic, Maximize2, Minimize2, Move, Search
+  Mic, Maximize2, Minimize2, Move, Search,
+  Flag, GitBranch, Calendar, Clock, FolderPlus,
+  LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -48,21 +50,36 @@ interface ChatMessage {
 interface Task {
   id: string; title: string; description: string | null
   status: string; priority: string
-  dueDate: string | null; estimatedHours: number | null
+  dueDate: string | null; startDate?: string | null; estimatedHours: number | null
   createdBy: string
   projectId: string | null
   assigneeId: string | null
+  sectionId?: string | null
+  order?: number
   project: { id: string; name: string; color: string } | null
   section: { id: string; name: string } | null
   assignee: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
+  creator?: { id: string; username: string; alias: string | null; avatarUrl: string | null }
   multiAssignees?: { user: UserInfo }[]
   comments?: TaskComment[]
   subtasks?: Task[]
+  activities?: TaskActivityItem[]
   _count: { comments: number; subtasks: number }
 }
 interface TaskComment {
   id: string; body: string; createdAt: string; attachmentUrl: string | null; attachmentName: string | null
   user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+}
+interface TaskActivityItem {
+  id: string; type: string; oldVal: string | null; newVal: string | null; createdAt: string
+  user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+}
+interface TaskSection {
+  id: string; name: string; order: number; projectId: string
+}
+interface TaskProject {
+  id: string; name: string; color: string; clientName: string | null; description?: string | null
+  _count?: { tasks: number }
 }
 interface LogEntry { id: string; action: string; timestamp: string }
 
@@ -3186,22 +3203,39 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
 // ─── Tasks Panel ──────────────────────────────────────────────────────────────
 
 const TASK_STATUS_LABELS: Record<string, string> = {
-  todo: 'To Do', 'in-progress': 'In Progress', done: 'Done', cancelled: 'Cancelled'
+  todo: 'To Do', 'in-progress': 'In Progress', review: 'Review', done: 'Done', blocked: 'Blocked'
 }
 const TASK_STATUS_COLORS: Record<string, string> = {
-  todo: C.textMuted, 'in-progress': C.accent, done: C.success, cancelled: '#9ca3af'
+  todo: C.textMuted, 'in-progress': C.accent, review: '#8b5cf6', done: C.success, blocked: C.danger
+}
+const TASK_BOARD_COLS = [
+  { key: 'todo', label: 'To Do' },
+  { key: 'in-progress', label: 'In Progress' },
+  { key: 'review', label: 'Review' },
+  { key: 'done', label: 'Done' },
+  { key: 'blocked', label: 'Blocked' },
+]
+const PRIORITY_LABELS: Record<string, string> = {
+  urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'None'
 }
 const PRIORITY_COLORS: Record<string, string> = {
-  urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e'
+  urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e', none: '#9ca3af'
 }
 
 function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress'>('mine')
-  const [projects, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
-  const [detailTask, setDetailTask] = useState<Task | null>(null)
+  const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress' | 'overdue'>('mine')
+  const [projects, setProjects] = useState<TaskProject[]>([])
+  const [sections, setSections] = useState<TaskSection[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [showCreateProject, setShowCreateProject] = useState(false)
+  const [viewMode, setViewMode] = useState<'list' | 'board'>('list')
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null)
+  const [showProjectFilter, setShowProjectFilter] = useState(false)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3219,134 +3253,340 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
       if (filter === 'mine') params.set('assigneeId', 'me')
       if (filter === 'todo') params.set('status', 'todo')
       if (filter === 'in-progress') params.set('status', 'in-progress')
+      if (filter === 'overdue') params.set('dueDate', 'overdue')
+      if (selectedProjectId) params.set('projectId', selectedProjectId)
       const [taskData, projData] = await Promise.all([
         apiFetch(`/api/tasks?${params.toString()}`) as Promise<{ tasks: Task[] }>,
-        apiFetch('/api/tasks/projects') as Promise<{ projects: { id: string; name: string; color: string }[] }>,
+        apiFetch('/api/tasks/projects') as Promise<{ projects: TaskProject[] }>,
       ])
       setTasks(taskData.tasks)
       setProjects(projData.projects)
+      // load sections if project is selected
+      if (selectedProjectId) {
+        const secData = await apiFetch(`/api/tasks/sections?projectId=${selectedProjectId}`) as { sections: TaskSection[] }
+        setSections(secData.sections)
+      } else {
+        setSections([])
+      }
     } catch { /* offline */ } finally {
       setLoading(false)
     }
-  }, [apiFetch, filter])
+  }, [apiFetch, filter, selectedProjectId])
 
   useEffect(() => { load() }, [load])
 
-  async function markDone(taskId: string) {
+  async function handleDrop(targetStatus: string) {
+    if (!dragId) return
+    setDragOverCol(null)
+    const task = tasks.find(t => t.id === dragId)
+    if (!task || task.status === targetStatus) { setDragId(null); return }
+    // Optimistic update
+    setTasks(prev => prev.map(t => t.id === dragId ? { ...t, status: targetStatus } : t))
+    setDragId(null)
     try {
-      await apiFetch(`/api/tasks/${taskId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'done' }),
-      })
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'done' } : t))
-    } catch { /* offline */ }
+      await apiFetch(`/api/tasks/${dragId}`, { method: 'PATCH', body: JSON.stringify({ status: targetStatus }) })
+    } catch {
+      // Revert on error
+      setTasks(prev => prev.map(t => t.id === dragId ? { ...t, status: task.status } : t))
+    }
   }
 
-  const grouped = tasks.reduce<Record<string, Task[]>>((acc, t) => {
-    const key = t.project?.name ?? 'No Project'
-    ;(acc[key] ??= []).push(t)
-    return acc
-  }, {})
+  // Group tasks
+  const grouped = (() => {
+    if (viewMode === 'board') return {} // board does its own grouping
+    if (selectedProjectId && sections.length > 0) {
+      const groups: Record<string, Task[]> = {}
+      for (const sec of sections) groups[sec.name] = []
+      groups['No Section'] = []
+      for (const t of tasks) {
+        const secName = t.section?.name ?? 'No Section'
+        ;(groups[secName] ??= []).push(t)
+      }
+      return groups
+    }
+    // Default: group by project
+    return tasks.reduce<Record<string, Task[]>>((acc, t) => {
+      const key = t.project?.name ?? 'No Project'
+      ;(acc[key] ??= []).push(t)
+      return acc
+    }, {})
+  })()
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId)
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
       {/* Toolbar */}
       <div style={{
-        padding: '14px 24px', borderBottom: `1px solid ${C.border}`,
-        background: C.contentBg, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+        padding: '10px 20px', borderBottom: `1px solid ${C.border}`,
+        background: C.contentBg, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap',
       }}>
-        <span style={{ fontWeight: 700, fontSize: 14, color: C.text, marginRight: 8 }}>Tasks</span>
-        {(['all', 'mine', 'todo', 'in-progress'] as const).map(f => (
+        {/* Title + project filter */}
+        <span style={{ fontWeight: 700, fontSize: 14, color: C.text, marginRight: 4 }}>Tasks</span>
+
+        {/* Project filter dropdown */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setShowProjectFilter(!showProjectFilter)}
+            style={{
+              ...neu(), padding: '4px 10px', border: 'none', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: 11, color: selectedProjectId ? C.accent : C.textMuted, fontWeight: 500,
+            }}
+          >
+            <Filter size={11} />
+            {selectedProject ? selectedProject.name : 'All Projects'}
+            <ChevronRight size={10} style={{ transform: showProjectFilter ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+          </button>
+          {showProjectFilter && (
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 50,
+              background: C.contentBg, borderRadius: 10, boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
+              border: `1px solid ${C.border}`, minWidth: 200, padding: 6, maxHeight: 300, overflow: 'auto',
+            }}>
+              <button
+                onClick={() => { setSelectedProjectId(''); setShowProjectFilter(false) }}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px', borderRadius: 6,
+                  border: 'none', cursor: 'pointer', fontSize: 12, background: !selectedProjectId ? C.accentLight : 'transparent',
+                  color: !selectedProjectId ? C.accent : C.text, fontWeight: !selectedProjectId ? 600 : 400,
+                }}
+              >
+                All Projects
+              </button>
+              {projects.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => { setSelectedProjectId(p.id); setShowProjectFilter(false) }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '7px 10px',
+                    borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12,
+                    background: selectedProjectId === p.id ? C.accentLight : 'transparent',
+                    color: selectedProjectId === p.id ? C.accent : C.text,
+                    fontWeight: selectedProjectId === p.id ? 600 : 400,
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                  {p._count?.tasks != null && <span style={{ fontSize: 10, color: C.textMuted }}>{p._count.tasks}</span>}
+                </button>
+              ))}
+              <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>
+                <button
+                  onClick={() => { setShowCreateProject(true); setShowProjectFilter(false) }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '7px 10px',
+                    borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, color: C.accent, background: 'transparent',
+                  }}
+                >
+                  <FolderPlus size={12} /> New Project
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ width: 1, height: 20, background: C.border }} />
+
+        {/* Status filters */}
+        {(['all', 'mine', 'todo', 'in-progress', 'overdue'] as const).map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}
             style={{
-              padding: '5px 12px', borderRadius: 20, border: 'none',
-              background: filter === f ? C.accent : C.contentBg,
+              padding: '4px 10px', borderRadius: 16, border: 'none',
+              background: filter === f ? C.accent : 'transparent',
               color: filter === f ? '#fff' : C.textMuted,
-              fontSize: 12, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
-              boxShadow: filter === f ? `0 2px 6px ${C.accent}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+              fontSize: 11, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
+              ...(filter === f ? {} : {}),
             }}
           >
-            {f === 'in-progress' ? 'In Progress' : f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === 'in-progress' ? 'In Progress' : f === 'overdue' ? 'Overdue' : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
-        <button
-          onClick={load}
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}
-        >
-          <RefreshCw size={15} />
+
+        <div style={{ flex: 1 }} />
+
+        {/* View toggle */}
+        <div style={{ display: 'flex', background: C.cardBg, borderRadius: 8, padding: 2 }}>
+          <button onClick={() => setViewMode('list')} style={{
+            padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+            background: viewMode === 'list' ? C.contentBg : 'transparent',
+            color: viewMode === 'list' ? C.accent : C.textMuted,
+            boxShadow: viewMode === 'list' ? '1px 1px 3px #a3b1c6, -1px -1px 3px #ffffff' : 'none',
+          }}>
+            <LayoutList size={14} />
+          </button>
+          <button onClick={() => setViewMode('board')} style={{
+            padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+            background: viewMode === 'board' ? C.contentBg : 'transparent',
+            color: viewMode === 'board' ? C.accent : C.textMuted,
+            boxShadow: viewMode === 'board' ? '1px 1px 3px #a3b1c6, -1px -1px 3px #ffffff' : 'none',
+          }}>
+            <LayoutGrid size={14} />
+          </button>
+        </div>
+
+        <button onClick={load} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
+          <RefreshCw size={14} />
         </button>
         <button
           onClick={() => setShowCreate(true)}
           style={{
-            ...neu(), padding: '5px 12px', border: 'none', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 12px', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 5,
             color: '#fff', background: C.accent, borderRadius: 8, fontSize: 12, fontWeight: 600,
+            boxShadow: `0 2px 8px ${C.accent}44`,
           }}
         >
-          <Plus size={14} /> New Task
+          <Plus size={13} /> New Task
         </button>
       </div>
 
-      {/* Task list */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+      {/* Main content */}
+      <div style={{ flex: 1, overflow: 'auto', padding: viewMode === 'board' ? '16px 12px' : 16 }}>
         {loading ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}>
             <Loader size={24} />
           </div>
         ) : tasks.length === 0 ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}>
-            <CheckSquare size={40} strokeWidth={1} />
-            <div style={{ marginTop: 12 }}>No tasks found</div>
+            <CheckSquare size={40} strokeWidth={1} style={{ opacity: 0.4, margin: '0 auto' }} />
+            <div style={{ marginTop: 12, fontSize: 13 }}>No tasks found</div>
+            <button onClick={() => setShowCreate(true)} style={{
+              marginTop: 12, padding: '6px 14px', borderRadius: 8, border: 'none',
+              background: C.accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}>Create your first task</button>
+          </div>
+        ) : viewMode === 'board' ? (
+          /* ─── Board View (Kanban) ─── */
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${TASK_BOARD_COLS.length}, 1fr)`, gap: 10, minHeight: '100%' }}>
+            {TASK_BOARD_COLS.map(col => {
+              const colTasks = tasks.filter(t => t.status === col.key)
+              const isOver = dragOverCol === col.key
+              return (
+                <div key={col.key} style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                  {/* Column header */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: TASK_STATUS_COLORS[col.key] }} />
+                    <span style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{col.label}</span>
+                    {colTasks.length > 0 && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, background: C.accentLight, borderRadius: 10, padding: '1px 6px' }}>
+                        {colTasks.length}
+                      </span>
+                    )}
+                  </div>
+                  {/* Drop zone */}
+                  <div
+                    onDragOver={e => { e.preventDefault(); setDragOverCol(col.key) }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCol(null) }}
+                    onDrop={e => { e.preventDefault(); handleDrop(col.key) }}
+                    style={{
+                      flex: 1, borderRadius: 12, padding: 6, display: 'flex', flexDirection: 'column', gap: 6,
+                      border: `2px ${isOver ? 'solid' : 'dashed'} ${isOver ? C.accent : C.border}`,
+                      background: isOver ? C.accentLight : 'transparent',
+                      transition: 'all 0.15s ease',
+                      minHeight: 80,
+                    }}
+                  >
+                    {colTasks.map(task => (
+                      <div
+                        key={task.id}
+                        draggable
+                        onDragStart={e => { setDragId(task.id); e.dataTransfer.effectAllowed = 'move' }}
+                        onDragEnd={() => setDragId(null)}
+                        onClick={() => setDetailTaskId(task.id)}
+                        style={{
+                          ...neu(), padding: '10px 12px', cursor: 'pointer',
+                          opacity: dragId === task.id ? 0.4 : 1,
+                          transition: 'opacity 0.15s',
+                        }}
+                      >
+                        {/* Project badge + assignee */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          {task.project ? (
+                            <span style={{ fontSize: 9, fontWeight: 600, color: task.project.color, background: task.project.color + '18', borderRadius: 4, padding: '1px 5px' }}>
+                              {task.project.name}
+                            </span>
+                          ) : <span />}
+                          {task.assignee && (
+                            <Avatar url={task.assignee.avatarUrl} name={task.assignee.alias ?? task.assignee.username} size={20} />
+                          )}
+                        </div>
+                        {/* Title */}
+                        <div style={{
+                          fontSize: 12, color: C.text, lineHeight: 1.4, marginBottom: 6,
+                          textDecoration: task.status === 'done' ? 'line-through' : 'none',
+                          opacity: task.status === 'done' ? 0.6 : 1,
+                          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden',
+                        }}>
+                          {task.title}
+                        </div>
+                        {/* Meta row */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: PRIORITY_COLORS[task.priority] ?? C.textMuted }} />
+                          <span style={{ fontSize: 9, color: C.textMuted }}>{PRIORITY_LABELS[task.priority] ?? task.priority}</span>
+                          {task.dueDate && (
+                            <span style={{ fontSize: 9, color: new Date(task.dueDate) < new Date() && task.status !== 'done' ? C.danger : C.textMuted, marginLeft: 'auto' }}>
+                              {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          )}
+                          {task._count.subtasks > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><GitBranch size={8} />{task._count.subtasks}</span>}
+                          {task._count.comments > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><MessageSquare size={8} />{task._count.comments}</span>}
+                        </div>
+                      </div>
+                    ))}
+                    {colTasks.length === 0 && (
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: C.textMuted, opacity: 0.4, padding: 12 }}>
+                        {isOver ? '↩ drop here' : 'empty'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         ) : (
-          Object.entries(grouped).map(([projName, projTasks]) => (
-            <div key={projName} style={{ marginBottom: 24 }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '0 4px',
-              }}>
-                <Layers size={13} color={C.textMuted} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                  {projName}
-                </span>
-                <span style={{ fontSize: 11, color: C.textMuted }}>({projTasks.length})</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {projTasks.map(task => (
-                  <TaskCard key={task.id} task={task} auth={auth} onDone={() => markDone(task.id)} onOpen={() => setDetailTask(task)} />
-                ))}
-              </div>
-            </div>
-          ))
+          /* ─── List View ─── */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {Object.entries(grouped).map(([groupName, groupTasks]) => (
+              <TaskListGroup
+                key={groupName}
+                name={groupName}
+                tasks={groupTasks}
+                auth={auth}
+                onOpen={id => setDetailTaskId(id)}
+              />
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Task detail panel */}
-      {detailTask && (
-        <TaskDetailPanel
-          task={detailTask}
+      {/* Overlays */}
+      {detailTaskId && (
+        <TaskDetailDrawer
+          taskId={detailTaskId}
           config={config}
           auth={auth}
           projects={projects}
-          onClose={() => setDetailTask(null)}
+          onClose={() => setDetailTaskId(null)}
           onUpdated={(updated) => {
             setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
-            setDetailTask(updated)
           }}
           onDeleted={(id) => {
             setTasks(prev => prev.filter(t => t.id !== id))
-            setDetailTask(null)
+            setDetailTaskId(null)
           }}
         />
       )}
 
-      {/* Create Task Modal */}
       {showCreate && (
         <CreateTaskModal
           config={config}
           auth={auth}
           projects={projects}
+          sections={sections}
+          selectedProjectId={selectedProjectId}
           onClose={() => setShowCreate(false)}
           onCreated={(task) => {
             setTasks(prev => [task, ...prev])
@@ -3354,86 +3594,159 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           }}
         />
       )}
+
+      {showCreateProject && (
+        <CreateProjectModal
+          config={config}
+          onClose={() => setShowCreateProject(false)}
+          onCreated={(proj) => {
+            setProjects(prev => [...prev, proj])
+            setSelectedProjectId(proj.id)
+            setShowCreateProject(false)
+          }}
+        />
+      )}
+
+      {/* Click-away for project filter */}
+      {showProjectFilter && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setShowProjectFilter(false)} />
+      )}
     </div>
   )
 }
 
-function TaskCard({ task, auth: _auth, onDone, onOpen }: { task: Task; auth: Auth; onDone: () => void; onOpen: () => void }) {
-  const isDone = task.status === 'done' || task.status === 'cancelled'
+// ─── Task List Group ──────────────────────────────────────────────────────────
+
+function TaskListGroup({ name, tasks, auth, onOpen }: {
+  name: string; tasks: Task[]; auth: Auth; onOpen: (id: string) => void
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+
+  return (
+    <div>
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px', marginBottom: 8,
+          background: 'none', border: 'none', cursor: 'pointer', width: '100%',
+        }}
+      >
+        <ChevronRight size={12} color={C.textMuted} style={{ transform: collapsed ? 'none' : 'rotate(90deg)', transition: 'transform 0.15s' }} />
+        <Layers size={12} color={C.textMuted} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{name}</span>
+        <span style={{ fontSize: 10, color: C.textMuted }}>({tasks.length})</span>
+      </button>
+      {!collapsed && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {tasks.map(task => (
+            <TaskListRow key={task.id} task={task} auth={auth} onOpen={() => onOpen(task.id)} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Task List Row ────────────────────────────────────────────────────────────
+
+function TaskListRow({ task, auth: _auth, onOpen }: { task: Task; auth: Auth; onOpen: () => void }) {
+  const isDone = task.status === 'done'
+  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
+
   return (
     <div
       onClick={onOpen}
       style={{
-        ...neu(), padding: '12px 14px',
-        display: 'flex', alignItems: 'flex-start', gap: 12,
-        opacity: isDone ? 0.6 : 1, cursor: 'pointer',
+        ...neu(), padding: '10px 14px',
+        display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+        opacity: isDone ? 0.6 : 1,
+        borderLeft: `3px solid ${PRIORITY_COLORS[task.priority] ?? C.border}`,
       }}
     >
-      <button
-        onClick={e => { e.stopPropagation(); if (!isDone) onDone() }}
-        style={{
-          width: 18, height: 18, borderRadius: 4, border: `2px solid ${isDone ? C.success : C.border}`,
-          background: isDone ? C.success : 'transparent',
-          cursor: isDone ? 'default' : 'pointer', flexShrink: 0, marginTop: 2,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}
-      >
-        {isDone && <Check size={12} color="#fff" />}
-      </button>
+      {/* Status dot */}
+      <span style={{
+        width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+        background: TASK_STATUS_COLORS[task.status] ?? C.textMuted,
+      }} />
 
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <span style={{
-            fontSize: 13, fontWeight: 600, color: C.text,
-            textDecoration: isDone ? 'line-through' : 'none',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {task.title}
-          </span>
-          {task.priority !== 'medium' && (
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-              background: PRIORITY_COLORS[task.priority] ?? C.textMuted,
-            }} title={task.priority} />
-          )}
-        </div>
+      {/* Title */}
+      <span style={{
+        flex: 1, fontSize: 13, fontWeight: 500, color: C.text, minWidth: 0,
+        textDecoration: isDone ? 'line-through' : 'none',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>
+        {task.title}
+      </span>
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, fontWeight: 600 }}>
-            {TASK_STATUS_LABELS[task.status] ?? task.status}
-          </span>
-          {task.assignee && <span style={{ fontSize: 11, color: C.textMuted }}>→ {task.assignee.alias ?? task.assignee.username}</span>}
-          {task.dueDate && (
-            <span style={{ fontSize: 11, color: new Date(task.dueDate) < new Date() ? C.danger : C.textMuted }}>
-              📅 {new Date(task.dueDate).toLocaleDateString()}
-            </span>
-          )}
-          {task._count.comments > 0 && <span style={{ fontSize: 11, color: C.textMuted }}>💬 {task._count.comments}</span>}
-        </div>
-      </div>
+      {/* Due date */}
+      {task.dueDate && (
+        <span style={{
+          fontSize: 10, color: isOverdue ? C.danger : C.textMuted, flexShrink: 0,
+          display: 'flex', alignItems: 'center', gap: 3, fontWeight: isOverdue ? 600 : 400,
+        }}>
+          <Calendar size={10} />
+          {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        </span>
+      )}
+
+      {/* Counts */}
+      {task._count.subtasks > 0 && (
+        <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <GitBranch size={10} /> {task._count.subtasks}
+        </span>
+      )}
+      {task._count.comments > 0 && (
+        <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <MessageSquare size={10} /> {task._count.comments}
+        </span>
+      )}
+
+      {/* Status badge */}
+      <span style={{
+        fontSize: 10, fontWeight: 600, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted,
+        background: (TASK_STATUS_COLORS[task.status] ?? C.textMuted) + '18',
+        borderRadius: 10, padding: '2px 8px', flexShrink: 0,
+      }}>
+        {TASK_STATUS_LABELS[task.status] ?? task.status}
+      </span>
+
+      {/* Assignee */}
+      {task.assignee && (
+        <Avatar url={task.assignee.avatarUrl} name={task.assignee.alias ?? task.assignee.username} size={22} />
+      )}
     </div>
   )
 }
 
-function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onDeleted }: {
-  task: Task; config: ApiConfig; auth: Auth
-  projects: { id: string; name: string; color: string }[]
+// ─── Task Detail Drawer ───────────────────────────────────────────────────────
+
+function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, onDeleted }: {
+  taskId: string; config: ApiConfig; auth: Auth
+  projects: TaskProject[]
   onClose: () => void
   onUpdated: (t: Task) => void
   onDeleted: (id: string) => void
 }) {
-  const [detail, setDetail] = useState<Task>(task)
+  const [detail, setDetail] = useState<Task | null>(null)
+  const [loadingDetail, setLoadingDetail] = useState(true)
   const [comments, setComments] = useState<TaskComment[]>([])
+  const [activities, setActivities] = useState<TaskActivityItem[]>([])
   const [commentText, setCommentText] = useState('')
+  const [commentAttach, setCommentAttach] = useState<File | null>(null)
   const [addingComment, setAddingComment] = useState(false)
-  const [savingStatus, setSavingStatus] = useState(false)
+  const [savingField, setSavingField] = useState<string | null>(null)
   const [users, setUsers] = useState<UserInfo[]>([])
   const [editingTitle, setEditingTitle] = useState(false)
-  const [editTitle, setEditTitle] = useState(task.title)
+  const [editTitle, setEditTitle] = useState('')
   const [editingDesc, setEditingDesc] = useState(false)
-  const [editDesc, setEditDesc] = useState(task.description ?? '')
-  const [deleting, setDeleting] = useState(false)
+  const [editDesc, setEditDesc] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
+  const [addingSubtask, setAddingSubtask] = useState(false)
+  const [activeTab, setActiveTab] = useState<'detail' | 'comments' | 'activity'>('detail')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const commentTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3444,76 +3757,161 @@ function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onD
     return res.json()
   }, [config])
 
+  // Load task detail
   useEffect(() => {
-    apiFetch(`/api/tasks/${task.id}`)
-      .then((d: { task: Task }) => {
-        setDetail(d.task)
-        setComments(d.task.comments ?? [])
-        setEditTitle(d.task.title)
-        setEditDesc(d.task.description ?? '')
-      })
-      .catch(() => {})
-    apiFetch('/api/users')
-      .then((d: { users: UserInfo[] }) => setUsers(d.users))
-      .catch(() => {})
-  }, [task.id, apiFetch])
+    setLoadingDetail(true)
+    Promise.all([
+      apiFetch(`/api/tasks/${taskId}`),
+      apiFetch('/api/users'),
+    ]).then(([taskData, userData]: [{ task: Task }, { users: UserInfo[] }]) => {
+      setDetail(taskData.task)
+      setComments(taskData.task.comments ?? [])
+      setActivities(taskData.task.activities ?? [])
+      setEditTitle(taskData.task.title)
+      setEditDesc(taskData.task.description ?? '')
+      setUsers(userData.users)
+    }).catch(() => {}).finally(() => setLoadingDetail(false))
+  }, [taskId, apiFetch])
 
-  async function patchTask(data: Record<string, unknown>) {
-    setSavingStatus(true)
+  async function patchTask(data: Record<string, unknown>, fieldName?: string) {
+    if (!detail) return
+    setSavingField(fieldName ?? null)
     try {
-      const d = await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
+      const d = await apiFetch(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
       setDetail(d.task)
+      setComments(d.task.comments ?? comments)
+      setActivities(d.task.activities ?? activities)
       onUpdated(d.task)
-    } catch (err) { console.error('[TaskDetail] patch failed:', err) } finally { setSavingStatus(false) }
+    } catch (err) { console.error('[TaskDetail] patch failed:', err) } finally { setSavingField(null) }
   }
 
   async function saveTitle() {
     const t = editTitle.trim()
-    if (!t || t === detail.title) { setEditingTitle(false); return }
-    await patchTask({ title: t })
+    if (!t || !detail || t === detail.title) { setEditingTitle(false); return }
+    await patchTask({ title: t }, 'title')
     setEditingTitle(false)
   }
 
   async function saveDesc() {
     const d = editDesc.trim()
-    if (d === (detail.description ?? '')) { setEditingDesc(false); return }
-    await patchTask({ description: d || null })
+    if (!detail || d === (detail.description ?? '')) { setEditingDesc(false); return }
+    await patchTask({ description: d || null }, 'description')
     setEditingDesc(false)
+  }
+
+  async function addComment() {
+    if (!commentText.trim() && !commentAttach) return
+    setAddingComment(true)
+    try {
+      if (commentAttach) {
+        // Multipart form data for attachment
+        const formData = new FormData()
+        if (commentText.trim()) formData.append('body', commentText.trim())
+        formData.append('attachment', commentAttach)
+        const res = await fetch(`${config.apiBase}/api/tasks/${taskId}/comments`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}` },
+          body: formData,
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const d = await res.json() as { comment: TaskComment }
+        setComments(prev => [...prev, d.comment])
+      } else {
+        const d = await apiFetch(`/api/tasks/${taskId}/comments`, {
+          method: 'POST', body: JSON.stringify({ body: commentText.trim() }),
+        }) as { comment: TaskComment }
+        setComments(prev => [...prev, d.comment])
+      }
+      setCommentText('')
+      setCommentAttach(null)
+    } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
   }
 
   async function deleteTask() {
     setDeleting(true)
     try {
-      await apiFetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
-      onDeleted(task.id)
+      await apiFetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
+      onDeleted(taskId)
     } catch (err) { console.error('[TaskDetail] delete failed:', err) } finally { setDeleting(false) }
   }
 
-  async function addComment() {
-    if (!commentText.trim()) return
-    setAddingComment(true)
+  async function createSubtask() {
+    if (!newSubtaskTitle.trim() || !detail) return
+    setAddingSubtask(true)
     try {
-      const d = await apiFetch(`/api/tasks/${task.id}/comments`, { method: 'POST', body: JSON.stringify({ body: commentText.trim() }) }) as { comment: TaskComment }
-      setComments(prev => [...prev, d.comment])
-      setCommentText('')
-    } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
+      const d = await apiFetch('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: newSubtaskTitle.trim(),
+          parentTaskId: taskId,
+          projectId: detail.projectId,
+          assigneeId: detail.assigneeId,
+        }),
+      }) as { task: Task }
+      setDetail(prev => prev ? { ...prev, subtasks: [...(prev.subtasks ?? []), d.task], _count: { ...prev._count, subtasks: prev._count.subtasks + 1 } } : prev)
+      onUpdated({ ...detail, _count: { ...detail._count, subtasks: detail._count.subtasks + 1 } })
+      setNewSubtaskTitle('')
+    } catch (err) { console.error('[TaskDetail] createSubtask failed:', err) } finally { setAddingSubtask(false) }
   }
 
-  const canDelete = detail.createdBy === auth.userId || auth.role === 'admin'
+  async function toggleSubtask(subId: string, currentStatus: string) {
+    const newStatus = currentStatus === 'done' ? 'todo' : 'done'
+    // Optimistic
+    setDetail(prev => prev ? {
+      ...prev,
+      subtasks: (prev.subtasks ?? []).map(s => s.id === subId ? { ...s, status: newStatus } : s),
+    } : prev)
+    try {
+      await apiFetch(`/api/tasks/${subId}`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) })
+    } catch {
+      // Revert
+      setDetail(prev => prev ? {
+        ...prev,
+        subtasks: (prev.subtasks ?? []).map(s => s.id === subId ? { ...s, status: currentStatus } : s),
+      } : prev)
+    }
+  }
+
+  function insertMarkdown(wrap: [string, string]) {
+    const ta = commentTextareaRef.current
+    if (!ta) return
+    const s = ta.selectionStart, e = ta.selectionEnd
+    const sel = commentText.slice(s, e) || 'text'
+    const before = commentText.slice(0, s), after = commentText.slice(e)
+    setCommentText(before + wrap[0] + sel + wrap[1] + after)
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(s + wrap[0].length, s + wrap[0].length + sel.length) }, 0)
+  }
+
+  const canDelete = detail ? (detail.createdBy === auth.userId || auth.role === 'admin') : false
+
+  if (loadingDetail) {
+    return (
+      <div style={{
+        position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
+        background: C.contentBg, borderLeft: `1px solid ${C.border}`,
+        boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
+      }}>
+        <Loader size={24} color={C.accent} />
+      </div>
+    )
+  }
+
+  if (!detail) return null
 
   return (
     <div style={{
-      position: 'absolute', top: 0, right: 0, bottom: 0, width: '45%', minWidth: 340,
+      position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
       background: C.contentBg, borderLeft: `1px solid ${C.border}`,
-      boxShadow: '-8px 0 24px rgba(0,0,0,0.1)',
+      boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
       display: 'flex', flexDirection: 'column', zIndex: 10,
     }}>
       {/* Header */}
-      <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0, marginTop: 2 }}>
+      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0, marginTop: 1 }}>
           <X size={16} />
         </button>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           {editingTitle ? (
             <input
               value={editTitle}
@@ -3531,21 +3929,26 @@ function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onD
             <div
               onClick={() => { setEditTitle(detail.title); setEditingTitle(true) }}
               style={{ fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.3, cursor: 'pointer' }}
-              title="Click to edit title"
+              title="Click to edit"
             >
               {detail.title}
-              <Edit2 size={11} style={{ marginLeft: 6, opacity: 0.4 }} />
+              <Edit2 size={10} style={{ marginLeft: 6, opacity: 0.3, verticalAlign: 'middle' }} />
             </div>
           )}
-          {detail.project && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{detail.project.name}</div>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            {detail.project && (
+              <span style={{ fontSize: 10, fontWeight: 600, color: detail.project.color, background: detail.project.color + '18', borderRadius: 4, padding: '1px 6px' }}>
+                {detail.project.name}
+              </span>
+            )}
+            <span style={{ fontSize: 10, color: C.textMuted }}>
+              by {detail.creator?.alias ?? detail.creator?.username ?? '—'}
+            </span>
+          </div>
         </div>
         {canDelete && (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 4, flexShrink: 0, marginTop: 2 }}
-            title="Delete task"
-          >
-            <Trash2 size={15} />
+          <button onClick={() => setConfirmDelete(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 4, flexShrink: 0 }} title="Delete">
+            <Trash2 size={14} />
           </button>
         )}
       </div>
@@ -3554,211 +3957,403 @@ function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onD
       {confirmDelete && (
         <div style={{
           padding: '10px 16px', background: '#fef2f2', borderBottom: `1px solid ${C.danger}33`,
-          display: 'flex', alignItems: 'center', gap: 10,
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
         }}>
           <span style={{ fontSize: 12, color: C.danger, flex: 1 }}>Delete this task permanently?</span>
-          <button onClick={deleteTask} disabled={deleting}
-            style={{ padding: '4px 12px', borderRadius: 6, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1 }}>
-            {deleting ? 'Deleting…' : 'Delete'}
-          </button>
-          <button onClick={() => setConfirmDelete(false)}
-            style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer' }}>
-            Cancel
-          </button>
+          <button onClick={deleteTask} disabled={deleting} style={{
+            padding: '4px 12px', borderRadius: 6, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1
+          }}>{deleting ? 'Deleting…' : 'Delete'}</button>
+          <button onClick={() => setConfirmDelete(false)} style={{
+            padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer'
+          }}>Cancel</button>
         </div>
       )}
 
-      <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* Status */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Status</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
-              <button key={s} onClick={() => patchTask({ status: s })} disabled={savingStatus}
-                style={{
-                  padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                  background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
-                  color: detail.status === s ? '#fff' : C.textMuted,
-                  boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
-                }}>
-                {l}
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Tabs */}
+      <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        {([
+          { key: 'detail' as const, label: 'Details', icon: <AlignLeft size={12} /> },
+          { key: 'comments' as const, label: `Comments (${comments.length})`, icon: <MessageSquare size={12} /> },
+          { key: 'activity' as const, label: 'Activity', icon: <Activity size={12} /> },
+        ]).map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            style={{
+              flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+              fontSize: 11, fontWeight: activeTab === tab.key ? 600 : 400,
+              color: activeTab === tab.key ? C.accent : C.textMuted,
+              background: 'transparent',
+              borderBottom: activeTab === tab.key ? `2px solid ${C.accent}` : '2px solid transparent',
+            }}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
 
-        {/* Priority */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Priority</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {(['urgent', 'high', 'medium', 'low'] as const).map(p => (
-              <button key={p} onClick={() => patchTask({ priority: p })} disabled={savingStatus}
-                style={{
-                  padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                  background: detail.priority === p ? PRIORITY_COLORS[p] : C.contentBg,
-                  color: detail.priority === p ? '#fff' : C.textMuted,
-                  boxShadow: detail.priority === p ? `0 2px 6px ${PRIORITY_COLORS[p]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
-                }}>
-                {p.charAt(0).toUpperCase() + p.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Description */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
-            Description
-            {!editingDesc && (
-              <button onClick={() => setEditingDesc(true)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, marginLeft: 8, fontSize: 10 }}>
-                <Edit2 size={10} />
-              </button>
-            )}
-          </div>
-          {editingDesc ? (
+      {/* Tab content */}
+      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        {activeTab === 'detail' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Status */}
             <div>
-              <textarea
-                value={editDesc}
-                onChange={e => setEditDesc(e.target.value)}
-                rows={4}
-                autoFocus
-                style={{
-                  width: '100%', resize: 'vertical', ...neu(true), padding: '8px 10px',
-                  fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit',
-                  boxSizing: 'border-box',
-                }}
-              />
-              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                <button onClick={saveDesc} disabled={savingStatus}
-                  style={{ padding: '4px 12px', borderRadius: 6, border: 'none', background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                  Save
-                </button>
-                <button onClick={() => { setEditDesc(detail.description ?? ''); setEditingDesc(false) }}
-                  style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 11, cursor: 'pointer' }}>
-                  Cancel
-                </button>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Status</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
+                  <button key={s} onClick={() => patchTask({ status: s }, 'status')} disabled={savingField === 'status'}
+                    style={{
+                      padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                      background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
+                      color: detail.status === s ? '#fff' : C.textMuted,
+                      boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                      transition: 'all 0.15s',
+                    }}>
+                    {l}
+                  </button>
+                ))}
               </div>
             </div>
-          ) : (
-            <div
-              onClick={() => setEditingDesc(true)}
-              style={{ fontSize: 13, color: detail.description ? C.text : C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 20 }}
-            >
-              {detail.description || 'Click to add description…'}
+
+            {/* Priority */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Priority</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                {Object.entries(PRIORITY_LABELS).map(([p, l]) => (
+                  <button key={p} onClick={() => patchTask({ priority: p }, 'priority')} disabled={savingField === 'priority'}
+                    style={{
+                      padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                      display: 'flex', alignItems: 'center', gap: 4,
+                      background: detail.priority === p ? PRIORITY_COLORS[p] : C.contentBg,
+                      color: detail.priority === p ? '#fff' : C.textMuted,
+                      boxShadow: detail.priority === p ? `0 2px 6px ${PRIORITY_COLORS[p]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                      transition: 'all 0.15s',
+                    }}>
+                    <Flag size={9} /> {l}
+                  </button>
+                ))}
+              </div>
             </div>
-          )}
-        </div>
 
-        {/* Assignee */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Assignee</div>
-          <select
-            value={detail.assigneeId ?? ''}
-            onChange={e => patchTask({ assigneeId: e.target.value || null })}
-            disabled={savingStatus}
-            style={{
-              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
-              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            <option value="">Unassigned</option>
-            {users.map(u => (
-              <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Project */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Project</div>
-          <select
-            value={detail.projectId ?? ''}
-            onChange={e => patchTask({ projectId: e.target.value || null })}
-            disabled={savingStatus}
-            style={{
-              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
-              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            <option value="">No Project</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Due date */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>Due Date</div>
-          <input
-            type="date"
-            value={detail.dueDate ? new Date(detail.dueDate).toISOString().split('T')[0] : ''}
-            onChange={e => patchTask({ dueDate: e.target.value || null })}
-            disabled={savingStatus}
-            style={{
-              ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
-              border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          />
-        </div>
-
-        {/* Subtasks */}
-        {(detail.subtasks?.length ?? 0) > 0 && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>Subtasks ({detail.subtasks!.length})</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {detail.subtasks!.map(sub => (
-                <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', ...neu(), borderRadius: 8 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: 3, border: `2px solid ${sub.status === 'done' ? C.success : C.border}`, background: sub.status === 'done' ? C.success : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {sub.status === 'done' && <Check size={10} color="#fff" />}
+            {/* Description */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <AlignLeft size={10} /> Description
+              </div>
+              {editingDesc ? (
+                <div>
+                  <textarea
+                    value={editDesc}
+                    onChange={e => setEditDesc(e.target.value)}
+                    rows={5} autoFocus
+                    style={{
+                      width: '100%', resize: 'vertical', ...neu(true), padding: '8px 10px',
+                      fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit',
+                      boxSizing: 'border-box', lineHeight: 1.6,
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button onClick={saveDesc} disabled={savingField === 'description'} style={{
+                      padding: '4px 12px', borderRadius: 6, border: 'none', background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer'
+                    }}>Save</button>
+                    <button onClick={() => { setEditDesc(detail.description ?? ''); setEditingDesc(false) }} style={{
+                      padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 11, cursor: 'pointer'
+                    }}>Cancel</button>
                   </div>
-                  <span style={{ fontSize: 12, color: C.text, textDecoration: sub.status === 'done' ? 'line-through' : 'none' }}>{sub.title}</span>
                 </div>
-              ))}
+              ) : (
+                <div onClick={() => setEditingDesc(true)}
+                  style={{ fontSize: 13, color: detail.description ? C.text : C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}>
+                  {detail.description || 'Click to add description…'}
+                </div>
+              )}
+            </div>
+
+            {/* Meta grid: dates, hours, assignee, project */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Calendar size={10} /> Start Date
+                </div>
+                <input
+                  type="date"
+                  value={detail.startDate ? new Date(detail.startDate).toISOString().split('T')[0] : ''}
+                  onChange={e => patchTask({ startDate: e.target.value || null }, 'startDate')}
+                  disabled={savingField === 'startDate'}
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Calendar size={10} /> Due Date
+                </div>
+                <input
+                  type="date"
+                  value={detail.dueDate ? new Date(detail.dueDate).toISOString().split('T')[0] : ''}
+                  onChange={e => patchTask({ dueDate: e.target.value || null }, 'dueDate')}
+                  disabled={savingField === 'dueDate'}
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Clock size={10} /> Est. Hours
+                </div>
+                <input
+                  type="number" min={0} step={0.5}
+                  value={detail.estimatedHours ?? ''}
+                  onChange={e => patchTask({ estimatedHours: e.target.value ? parseFloat(e.target.value) : null }, 'estimatedHours')}
+                  placeholder="e.g. 4"
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Assignee</div>
+                <select
+                  value={detail.assigneeId ?? ''}
+                  onChange={e => patchTask({ assigneeId: e.target.value || null }, 'assignee')}
+                  disabled={savingField === 'assignee'}
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  <option value="">Unassigned</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Project</div>
+                <select
+                  value={detail.projectId ?? ''}
+                  onChange={e => patchTask({ projectId: e.target.value || null }, 'project')}
+                  disabled={savingField === 'project'}
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  <option value="">No Project</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Multi-assignees */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Users size={10} /> Additional Assignees
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {(detail.multiAssignees ?? []).map(({ user: u }) => (
+                  <div key={u.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 5, ...neu(), padding: '4px 8px', borderRadius: 16,
+                  }}>
+                    <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={18} />
+                    <span style={{ fontSize: 11, color: C.text }}>{u.alias ?? u.username}</span>
+                    <button
+                      onClick={() => patchTask({ removeAssigneeIds: [u.id] })}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 0, display: 'flex' }}
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ))}
+                {(detail.multiAssignees ?? []).length === 0 && (
+                  <span style={{ fontSize: 11, color: C.textMuted, opacity: 0.5 }}>No additional assignees</span>
+                )}
+              </div>
+              <select
+                value=""
+                onChange={e => { if (e.target.value) patchTask({ addAssigneeIds: [e.target.value] }) }}
+                style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                <option value="">+ Add assignee…</option>
+                {users
+                  .filter(u => !(detail.multiAssignees ?? []).some(a => a.user.id === u.id) && u.id !== detail.assigneeId)
+                  .map(u => <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>)}
+              </select>
+            </div>
+
+            {/* Subtasks */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <GitBranch size={10} /> Subtasks ({detail.subtasks?.length ?? 0})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                {(detail.subtasks ?? []).map(sub => {
+                  const subDone = sub.status === 'done'
+                  return (
+                    <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, ...neu(), padding: '7px 10px', borderRadius: 8 }}>
+                      <button
+                        onClick={() => toggleSubtask(sub.id, sub.status)}
+                        style={{
+                          width: 16, height: 16, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
+                          border: `2px solid ${subDone ? C.success : C.border}`,
+                          background: subDone ? C.success : 'transparent',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}
+                      >
+                        {subDone && <Check size={10} color="#fff" />}
+                      </button>
+                      <span style={{ flex: 1, fontSize: 12, color: C.text, textDecoration: subDone ? 'line-through' : 'none', opacity: subDone ? 0.5 : 1 }}>
+                        {sub.title}
+                      </span>
+                      {sub.assignee && <Avatar url={sub.assignee.avatarUrl} name={sub.assignee.alias ?? sub.assignee.username} size={18} />}
+                    </div>
+                  )
+                })}
+                {(detail.subtasks ?? []).length === 0 && (
+                  <div style={{ fontSize: 11, color: C.textMuted, opacity: 0.4, padding: '4px 0' }}>No subtasks yet</div>
+                )}
+              </div>
+              {/* Add subtask */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  value={newSubtaskTitle}
+                  onChange={e => setNewSubtaskTitle(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && newSubtaskTitle.trim()) createSubtask() }}
+                  placeholder="Add subtask…"
+                  style={{ flex: 1, ...neu(true), padding: '6px 10px', fontSize: 11, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit' }}
+                />
+                <button
+                  onClick={createSubtask}
+                  disabled={addingSubtask || !newSubtaskTitle.trim()}
+                  style={{ ...neu(), padding: '6px 10px', border: 'none', cursor: 'pointer', color: C.accent, fontSize: 11, fontWeight: 600, opacity: !newSubtaskTitle.trim() ? 0.4 : 1 }}
+                >
+                  {addingSubtask ? '…' : <Plus size={12} />}
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Comments */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 10 }}>
-            Comments ({comments.length})
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
-            {comments.map(c => (
-              <div key={c.id} style={{ display: 'flex', gap: 10 }}>
-                <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={26} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
-                    <span style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(c.createdAt)}</span>
+        {activeTab === 'comments' && (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Comment list */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
+              {comments.length === 0 && (
+                <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 20, fontSize: 12 }}>No comments yet</div>
+              )}
+              {comments.map(c => (
+                <div key={c.id} style={{ display: 'flex', gap: 10 }}>
+                  <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={28} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
+                      <span style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(c.createdAt)}</span>
+                    </div>
+                    <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 2, whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                    {c.attachmentName && (
+                      <a
+                        href={`${config.apiBase}${c.attachmentUrl}`}
+                        target="_blank" rel="noreferrer"
+                        style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}
+                      >
+                        <FileText size={11} /> {c.attachmentName}
+                      </a>
+                    )}
                   </div>
-                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5, marginTop: 2, whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                  {c.attachmentName && <a href={`${config.apiBase}${c.attachmentUrl}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: C.accent }}>📎 {c.attachmentName}</a>}
                 </div>
+              ))}
+            </div>
+
+            {/* Markdown toolbar */}
+            <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+              {[
+                { label: 'B', title: 'Bold', wrap: ['**', '**'] as [string, string] },
+                { label: 'I', title: 'Italic', wrap: ['*', '*'] as [string, string] },
+                { label: 'S', title: 'Strikethrough', wrap: ['~~', '~~'] as [string, string] },
+                { label: '<>', title: 'Code', wrap: ['`', '`'] as [string, string] },
+              ].map(item => (
+                <button key={item.label} title={item.title}
+                  onMouseDown={e => { e.preventDefault(); insertMarkdown(item.wrap) }}
+                  style={{
+                    ...neu(), padding: '3px 7px', border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 700, color: C.textMuted,
+                  }}
+                >{item.label}</button>
+              ))}
+              <button title="Bullet list"
+                onMouseDown={e => { e.preventDefault(); setCommentText(prev => prev + (prev.endsWith('\n') || !prev ? '' : '\n') + '- ') }}
+                style={{ ...neu(), padding: '3px 7px', border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 700, color: C.textMuted }}
+              ><List size={10} /></button>
+            </div>
+
+            {/* Attachment preview */}
+            {commentAttach && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                ...neu(), borderRadius: 8, marginBottom: 6,
+              }}>
+                <FileText size={12} color={C.accent} />
+                <span style={{ flex: 1, fontSize: 11, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{commentAttach.name}</span>
+                <button onClick={() => setCommentAttach(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={12} /></button>
               </div>
-            ))}
+            )}
+
+            {/* Comment input */}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <textarea
+                ref={commentTextareaRef}
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addComment() } }}
+                placeholder="Add a comment… (Shift+Enter for newline)"
+                rows={3}
+                style={{
+                  flex: 1, resize: 'none', ...neu(true), padding: '8px 10px',
+                  fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+                }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <input ref={fileInputRef} type="file" style={{ display: 'none' }} accept="*/*"
+                  onChange={e => {
+                    const f = e.target.files?.[0]
+                    if (!f) return
+                    if (f.size > 15 * 1024 * 1024) { alert('File must be under 15MB'); return }
+                    setCommentAttach(f)
+                    e.target.value = ''
+                  }}
+                />
+                <button onClick={() => fileInputRef.current?.click()} title="Attach file (max 15MB)" style={{
+                  ...neu(), padding: 6, border: 'none', cursor: 'pointer', color: C.textMuted,
+                }}><Paperclip size={13} /></button>
+                <button onClick={addComment} disabled={(!commentText.trim() && !commentAttach) || addingComment} style={{
+                  ...neu(), padding: 6, border: 'none', cursor: 'pointer', color: C.accent,
+                  opacity: (!commentText.trim() && !commentAttach) ? 0.4 : 1,
+                }}>{addingComment ? <Loader size={13} /> : <Send size={13} />}</button>
+              </div>
+            </div>
           </div>
-          {/* Add comment */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <textarea
-              value={commentText}
-              onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && e.metaKey && void addComment()}
-              placeholder="Add a comment… (⌘+Enter)"
-              rows={2}
-              style={{
-                flex: 1, resize: 'none', ...neu(true), padding: '8px 10px',
-                fontSize: 12, color: C.text, border: 'none', outline: 'none', fontFamily: 'inherit',
-              }}
-            />
-            <button onClick={addComment} disabled={!commentText.trim() || addingComment}
-              style={{ ...neu(), padding: '8px 12px', border: 'none', color: C.accent, cursor: 'pointer', flexShrink: 0 }}>
-              {addingComment ? <Loader size={14} /> : <Send size={14} />}
-            </button>
+        )}
+
+        {activeTab === 'activity' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {activities.length === 0 && (
+              <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 20, fontSize: 12 }}>No activity yet</div>
+            )}
+            {activities.map(a => {
+              const actorName = a.user?.alias ?? a.user?.username ?? 'Someone'
+              const label = (() => {
+                if (a.type === 'created') return 'created this task'
+                if (a.type === 'status') return `changed status to ${TASK_STATUS_LABELS[a.newVal ?? ''] ?? a.newVal}`
+                if (a.type === 'priority') return `set priority to ${PRIORITY_LABELS[a.newVal ?? ''] ?? a.newVal}`
+                if (a.type === 'assigned') return a.newVal ? `assigned to ${a.newVal}` : 'unassigned'
+                if (a.type === 'due') return a.newVal ? `set due date to ${new Date(a.newVal).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'removed due date'
+                if (a.type === 'title') return `renamed to "${a.newVal}"`
+                if (a.type === 'section') return a.newVal ? `moved to section "${a.newVal}"` : 'removed from section'
+                return `updated ${a.type}`
+              })()
+              return (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <Avatar url={a.user?.avatarUrl ?? null} name={actorName} size={22} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: 12, color: C.text }}>
+                      <span style={{ fontWeight: 700 }}>{actorName}</span>{' '}{label}
+                    </span>
+                    <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>{timeAgo(a.createdAt)}</div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
-        </div>
+        )}
       </div>
     </div>
   )
@@ -3766,9 +4361,11 @@ function TaskDetailPanel({ task, config, auth, projects, onClose, onUpdated, onD
 
 // ─── Create Task Modal ────────────────────────────────────────────────────────
 
-function CreateTaskModal({ config, auth, projects, onClose, onCreated }: {
+function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, onClose, onCreated }: {
   config: ApiConfig; auth: Auth
-  projects: { id: string; name: string; color: string }[]
+  projects: TaskProject[]
+  sections: TaskSection[]
+  selectedProjectId: string
   onClose: () => void
   onCreated: (task: Task) => void
 }) {
@@ -3776,26 +4373,36 @@ function CreateTaskModal({ config, auth, projects, onClose, onCreated }: {
   const [description, setDescription] = useState('')
   const [status, setStatus] = useState('todo')
   const [priority, setPriority] = useState('medium')
-  const [projectId, setProjectId] = useState('')
+  const [projectId, setProjectId] = useState(selectedProjectId)
+  const [sectionId, setSectionId] = useState('')
   const [assigneeId, setAssigneeId] = useState(auth.userId)
   const [dueDate, setDueDate] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [estimatedHours, setEstimatedHours] = useState('')
   const [users, setUsers] = useState<UserInfo[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [projectSections, setProjectSections] = useState<TaskSection[]>(sections)
 
   useEffect(() => {
-    fetch(`${config.apiBase}/api/users`, {
-      headers: { Authorization: `Bearer ${config.token}` },
-    })
-      .then(r => r.json())
-      .then((d: { users: UserInfo[] }) => setUsers(d.users))
-      .catch(() => {})
+    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => r.json()).then((d: { users: UserInfo[] }) => setUsers(d.users)).catch(() => {})
   }, [config])
+
+  // Load sections when project changes
+  useEffect(() => {
+    if (projectId) {
+      fetch(`${config.apiBase}/api/tasks/sections?projectId=${projectId}`, { headers: { Authorization: `Bearer ${config.token}` } })
+        .then(r => r.json()).then((d: { sections: TaskSection[] }) => setProjectSections(d.sections)).catch(() => {})
+    } else {
+      setProjectSections([])
+      setSectionId('')
+    }
+  }, [projectId, config])
 
   async function handleCreate() {
     if (!title.trim()) { setError('Title is required'); return }
-    setSaving(true)
-    setError('')
+    setSaving(true); setError('')
     try {
       const res = await fetch(`${config.apiBase}/api/tasks`, {
         method: 'POST',
@@ -3803,21 +4410,23 @@ function CreateTaskModal({ config, auth, projects, onClose, onCreated }: {
         body: JSON.stringify({
           title: title.trim(),
           description: description.trim() || null,
-          status,
-          priority,
+          status, priority,
           projectId: projectId || null,
+          sectionId: sectionId || null,
           assigneeId: assigneeId || null,
           dueDate: dueDate || null,
+          startDate: startDate || null,
+          estimatedHours: estimatedHours ? parseFloat(estimatedHours) : null,
         }),
       })
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed'); }
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
       const d = await res.json() as { task: Task }
       onCreated(d.task)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create task') } finally { setSaving(false) }
   }
 
   const fieldStyle = {
-    ...neu(true), padding: '8px 10px', fontSize: 12, color: C.text,
+    ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
     border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit',
     boxSizing: 'border-box' as const,
   }
@@ -3826,104 +4435,205 @@ function CreateTaskModal({ config, auth, projects, onClose, onCreated }: {
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
       background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
-    >
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
-        width: 460, maxHeight: '85vh', overflow: 'auto',
+        width: 480, maxHeight: '85vh', overflow: 'auto',
         background: C.contentBg, borderRadius: 14,
         boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>New Task</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
-            <X size={18} />
-          </button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={18} /></button>
         </div>
 
         {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Title */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Title *</div>
-            <input
-              value={title} onChange={e => setTitle(e.target.value)}
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Title *</div>
+            <input value={title} onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && void handleCreate()}
-              placeholder="Task title…" autoFocus
-              style={fieldStyle}
-            />
+              placeholder="Task title…" autoFocus style={fieldStyle} />
           </div>
 
-          {/* Description */}
           <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Description</div>
-            <textarea
-              value={description} onChange={e => setDescription(e.target.value)}
-              placeholder="Optional description…" rows={3}
-              style={{ ...fieldStyle, resize: 'vertical' }}
-            />
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Description</div>
+            <textarea value={description} onChange={e => setDescription(e.target.value)}
+              placeholder="Optional description…" rows={3} style={{ ...fieldStyle, resize: 'vertical' }} />
           </div>
 
-          {/* Status + Priority row */}
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Status</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Status</div>
               <select value={status} onChange={e => setStatus(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
-                {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => (
-                  <option key={s} value={s}>{l}</option>
-                ))}
+                {Object.entries(TASK_STATUS_LABELS).map(([s, l]) => <option key={s} value={s}>{l}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Priority</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Priority</div>
               <select value={priority} onChange={e => setPriority(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
-                {['urgent', 'high', 'medium', 'low'].map(p => (
-                  <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
-                ))}
+                {Object.entries(PRIORITY_LABELS).map(([p, l]) => <option key={p} value={p}>{l}</option>)}
               </select>
             </div>
           </div>
 
-          {/* Project + Assignee row */}
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Project</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Project</div>
               <select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
                 <option value="">No Project</option>
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
+            {projectSections.length > 0 && (
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Section</div>
+                <select value={sectionId} onChange={e => setSectionId(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
+                  <option value="">No Section</option>
+                  {projectSections.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Assignee</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Assignee</div>
               <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)} style={{ ...fieldStyle, cursor: 'pointer' }}>
                 <option value="">Unassigned</option>
                 {users.map(u => <option key={u.id} value={u.id}>{u.alias ?? u.username}</option>)}
               </select>
             </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Est. Hours</div>
+              <input type="number" min={0} step={0.5} value={estimatedHours}
+                onChange={e => setEstimatedHours(e.target.value)} placeholder="e.g. 4" style={fieldStyle} />
+            </div>
           </div>
 
-          {/* Due Date */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Due Date</div>
-            <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} style={fieldStyle} />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Start Date</div>
+              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={fieldStyle} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Due Date</div>
+              <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} style={fieldStyle} />
+            </div>
           </div>
         </div>
 
-        {/* Actions */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
-          <button onClick={onClose}
-            style={{ padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer' }}>
-            Cancel
-          </button>
-          <button onClick={handleCreate} disabled={saving || !title.trim()}
-            style={{
-              padding: '8px 20px', borderRadius: 8, border: 'none',
-              background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              opacity: saving || !title.trim() ? 0.5 : 1,
-            }}>
-            {saving ? 'Creating…' : 'Create Task'}
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+          <button onClick={onClose} style={{
+            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+          }}>Cancel</button>
+          <button onClick={handleCreate} disabled={saving || !title.trim()} style={{
+            padding: '8px 20px', borderRadius: 8, border: 'none',
+            background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            opacity: saving || !title.trim() ? 0.5 : 1,
+          }}>{saving ? 'Creating…' : 'Create Task'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Create Project Modal ─────────────────────────────────────────────────────
+
+function CreateProjectModal({ config, onClose, onCreated }: {
+  config: ApiConfig
+  onClose: () => void
+  onCreated: (proj: TaskProject) => void
+}) {
+  const [name, setName] = useState('')
+  const [clientName, setClientName] = useState('')
+  const [color, setColor] = useState('#6c5ce7')
+  const [description, setDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const PRESET_COLORS = ['#6c5ce7', '#00b894', '#fdcb6e', '#e17055', '#0984e3', '#d63031', '#e84393', '#00cec9', '#636e72', '#2d3436']
+
+  async function handleCreate() {
+    if (!name.trim()) { setError('Name is required'); return }
+    setSaving(true); setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/projects`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          clientName: clientName.trim() || null,
+          color,
+          description: description.trim() || null,
+        }),
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      const d = await res.json() as { project: TaskProject }
+      onCreated(d.project)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create project') } finally { setSaving(false) }
+  }
+
+  const fieldStyle = {
+    ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+    border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit',
+    boxSizing: 'border-box' as const,
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
+      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        width: 400, background: C.contentBg, borderRadius: 14,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>New Project</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={18} /></button>
+        </div>
+
+        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Client Name</div>
+            <input value={clientName} onChange={e => setClientName(e.target.value)}
+              placeholder="e.g. Acme Corp" style={fieldStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Project Name *</div>
+            <input value={name} onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void handleCreate()}
+              placeholder="e.g. Website Redesign" autoFocus style={fieldStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Description</div>
+            <textarea value={description} onChange={e => setDescription(e.target.value)}
+              placeholder="Optional…" rows={2} style={{ ...fieldStyle, resize: 'vertical' }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>Color</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {PRESET_COLORS.map(c => (
+                <button key={c} onClick={() => setColor(c)} style={{
+                  width: 24, height: 24, borderRadius: '50%', border: color === c ? '2px solid #1e293b' : '2px solid transparent',
+                  background: c, cursor: 'pointer', boxShadow: color === c ? `0 0 0 2px ${c}44` : 'none',
+                }} />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+          <button onClick={onClose} style={{
+            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+          }}>Cancel</button>
+          <button onClick={handleCreate} disabled={saving || !name.trim()} style={{
+            padding: '8px 20px', borderRadius: 8, border: 'none',
+            background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            opacity: saving || !name.trim() ? 0.5 : 1,
+          }}>{saving ? 'Creating…' : 'Create Project'}</button>
         </div>
       </div>
     </div>
