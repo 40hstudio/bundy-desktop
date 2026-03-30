@@ -525,14 +525,19 @@ function Avatar({ url, name, size = 30, radius = '50%' }: { url?: string | null;
 
 // ─── Messages Panel ───────────────────────────────────────────────────────────
 
-// Sub-modal: New DM / channel picker
+// Sub-modal: New DM / Group / Channel
 function NewConvModal({ config, auth, onClose, onCreated }: {
   config: ApiConfig; auth: Auth
   onClose: () => void; onCreated: (id: string) => void
 }) {
+  const [mode, setMode] = useState<'dm' | 'group' | 'channel'>('dm')
   const [users, setUsers] = useState<UserInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [selected, setSelected] = useState<string[]>([])
+  const [name, setName] = useState('')
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState('')
 
   useEffect(() => {
     fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
@@ -542,18 +547,42 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
       .finally(() => setLoading(false))
   }, [config, auth.userId])
 
-  async function startDm(userId: string) {
-    setBusy(true)
-    try {
-      const res = await fetch(`${config.apiBase}/api/channels`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'dm', partnerId: userId }),
-      })
-      const d = await res.json() as { channel?: { id: string } }
-      if (d.channel?.id) { onCreated(d.channel.id); onClose() }
-    } catch { /* ignore */ } finally { setBusy(false) }
+  const filtered = users.filter(u =>
+    (u.alias ?? u.username).toLowerCase().includes(search.toLowerCase()) ||
+    u.username.toLowerCase().includes(search.toLowerCase())
+  )
+
+  async function create() {
+    if (mode === 'dm') {
+      if (selected.length !== 1) { setError('Pick one person'); return }
+      setBusy(true)
+      try {
+        const res = await fetch(`${config.apiBase}/api/channels`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'dm', partnerId: selected[0] }),
+        })
+        const d = await res.json() as { channel?: { id: string } }
+        if (d.channel?.id) { onCreated(d.channel.id); onClose() }
+      } catch { setError('Failed to create') } finally { setBusy(false) }
+    } else {
+      if (!name.trim()) { setError('Name is required'); return }
+      if (mode === 'group' && selected.length === 0) { setError('Pick at least one member'); return }
+      setBusy(true)
+      try {
+        const res = await fetch(`${config.apiBase}/api/channels`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: mode, name: name.trim(), memberIds: selected }),
+        })
+        const d = await res.json() as { channel?: { id: string } }
+        if (d.channel?.id) { onCreated(d.channel.id); onClose() }
+        else setError('Failed to create')
+      } catch { setError('Failed to create') } finally { setBusy(false) }
+    }
   }
+
+  const modeLabels = { dm: 'Direct Message', group: 'Group Chat', channel: 'Channel' }
 
   return (
     <div style={{
@@ -561,31 +590,83 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: C.contentBg, borderRadius: 14, padding: 20, width: 320,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+        background: C.contentBg, borderRadius: 14, padding: 20, width: 360,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.4)', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
       }} onClick={e => e.stopPropagation()}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>New Direct Message</span>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>New Conversation</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={16} /></button>
         </div>
+
+        {/* Mode tabs */}
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          {(['dm', 'group', 'channel'] as const).map(m => (
+            <button key={m} onClick={() => { setMode(m); setSelected([]); setName(''); setError('') }}
+              style={{
+                flex: 1, padding: '6px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                background: mode === m ? C.accent : C.contentBg,
+                color: mode === m ? '#fff' : C.textMuted,
+                boxShadow: mode === m ? `0 2px 6px ${C.accent}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #fff',
+              }}>
+              {modeLabels[m]}
+            </button>
+          ))}
+        </div>
+
+        {/* Name field for group/channel */}
+        {(mode === 'group' || mode === 'channel') && (
+          <input value={name} onChange={e => setName(e.target.value)} placeholder={mode === 'channel' ? 'channel-name' : 'Group name'}
+            style={{ ...neu(true), padding: '8px 12px', fontSize: 13, color: C.text, border: 'none', outline: 'none', marginBottom: 10, borderRadius: 8 }} />
+        )}
+
+        {/* Search */}
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search people…"
+          style={{ ...neu(true), padding: '7px 12px', fontSize: 12, color: C.text, border: 'none', outline: 'none', marginBottom: 10, borderRadius: 8 }} />
+
+        {/* User list */}
         {loading ? <div style={{ textAlign: 'center', padding: 20 }}><Loader size={20} /></div> : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflow: 'auto' }}>
-            {users.map(u => (
-              <button key={u.id} onClick={() => startDm(u.id)} disabled={busy}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                  background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 8,
-                  textAlign: 'left',
-                }}>
-                <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={32} />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{u.alias ?? u.username}</div>
-                  <div style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</div>
-                </div>
-              </button>
-            ))}
+          <div style={{ overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {filtered.map(u => {
+              const isSel = selected.includes(u.id)
+              return (
+                <button key={u.id}
+                  onClick={() => {
+                    if (mode === 'dm') {
+                      setSelected([u.id])
+                    } else {
+                      setSelected(prev => isSel ? prev.filter(id => id !== u.id) : [...prev, u.id])
+                    }
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                    background: isSel ? C.accentLight : 'transparent', borderRadius: 8,
+                    border: isSel ? `1px solid ${C.accent}` : '1px solid transparent',
+                    cursor: 'pointer', textAlign: 'left',
+                  }}>
+                  <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={30} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{u.alias ?? u.username}</div>
+                    <div style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</div>
+                  </div>
+                  {isSel && <Check size={14} color={C.accent} />}
+                </button>
+              )
+            })}
           </div>
         )}
+
+        {error && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{error}</div>}
+
+        {/* Create button */}
+        <button onClick={create} disabled={busy || (mode === 'dm' && selected.length === 0)}
+          style={{
+            marginTop: 12, padding: '10px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
+            background: C.accent, color: '#fff', fontWeight: 700, fontSize: 13,
+            opacity: busy ? 0.7 : 1,
+          }}>
+          {busy ? 'Creating…' : `Create ${modeLabels[mode]}`}
+        </button>
       </div>
     </div>
   )
@@ -694,12 +775,14 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
-  const [showNewDm, setShowNewDm] = useState(false)
+  const [showNewConv, setShowNewConv] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  const [typingUsers, setTypingUsers] = useState<string[]>([])
-  const typingTimer = useRef<NodeJS.Timeout | null>(null)
+  // Per-channel typing: Map<channelId, string[]>
+  const [typingMap, setTypingMap] = useState<Record<string, string[]>>({})
+  // Active call state
+  const [activeCall, setActiveCall] = useState<{ targetUser: { id: string; name: string; avatar: string | null }; callType: 'audio' | 'video' } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const typingTimers = useRef<Record<string, NodeJS.Timeout>>({})
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -763,23 +846,25 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         id: m.id, content: m.content, createdAt: m.createdAt, editedAt: m.editedAt,
         sender: m.sender, reads: m.reads,
       })))
+      // Clear unread for this channel immediately
+      setChannels(prev => prev.map(c => c.id === conv.id ? { ...c, unread: 0 } : c))
+      // Mark as read on server
+      fetch(`${config.apiBase}/api/channels/${conv.id}/read`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}` },
+      }).catch(() => {})
     } catch { setMessages([]) } finally {
       setLoadingMsgs(false)
     }
-  }, [apiFetch])
+  }, [apiFetch, config])
 
-  // SSE for real-time messages + typing
+  // SSE for real-time messages + typing + read
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   useEffect(() => {
-    const es = new EventSource(`${config.apiBase}/api/bundy/stream`, {
-      // @ts-ignore — headers not in standard EventSource but Electron supports fetch-based SSE
-    })
-    // Use fetch-based SSE for auth
     const ctrl = new AbortController()
     let buf = ''
-    const sseUrl = `${config.apiBase}/api/bundy/stream`
-    fetch(sseUrl, {
+    fetch(`${config.apiBase}/api/bundy/stream`, {
       headers: { Authorization: `Bearer ${config.token}` },
       signal: ctrl.signal,
     }).then(async res => {
@@ -800,7 +885,9 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           try {
             const payload = JSON.parse(dataMatch[1])
             if (ev === 'channel-message') {
-              if (selectedRef.current?.id === payload.channelId) {
+              const channelId = payload.channelId as string
+              const isCurrentChannel = selectedRef.current?.id === channelId
+              if (isCurrentChannel) {
                 setMessages(prev => {
                   if (prev.some(m => m.id === payload.id)) return prev
                   return [...prev, {
@@ -809,18 +896,60 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                     sender: {
                       id: payload.senderId,
                       username: payload.senderName,
-                      alias: payload.senderName,
+                      alias: payload.senderAlias ?? payload.senderName,
                       avatarUrl: payload.senderAvatar ?? null,
                     },
                     reads: [],
                   }]
                 })
+                // Mark as read since we're viewing it
+                fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${config.token}` },
+                }).catch(() => {})
+              } else if (payload.senderId !== auth.userId) {
+                // Not our own message in another channel — increment unread + notify
+                setChannels(prev => prev.map(c =>
+                  c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
+                ))
+                // Desktop notification
+                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                  void new Notification(`New message`, {
+                    body: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`,
+                    silent: false,
+                  })
+                } else if (typeof Notification !== 'undefined' && Notification.permission !== 'denied') {
+                  Notification.requestPermission()
+                }
               }
-              loadChannels()
+              // Update last message in sidebar
+              setChannels(prev => prev.map(c =>
+                c.id === channelId
+                  ? { ...c, lastMessage: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`, lastTime: payload.createdAt }
+                  : c
+              ))
             } else if (ev === 'channel-typing') {
-              if (selectedRef.current?.id === payload.channelId && payload.userId !== auth.userId) {
-                setTypingUsers(prev => prev.includes(payload.userName) ? prev : [...prev, payload.userName])
-                setTimeout(() => setTypingUsers(prev => prev.filter(n => n !== payload.userName)), 3000)
+              const channelId = payload.channelId as string
+              if (payload.userId !== auth.userId) {
+                const userName = payload.userName as string
+                setTypingMap(prev => {
+                  const cur = prev[channelId] ?? []
+                  if (cur.includes(userName)) return prev
+                  return { ...prev, [channelId]: [...cur, userName] }
+                })
+                // Clear this user's typing after 3s
+                const timerKey = `${channelId}:${userName}`
+                if (typingTimers.current[timerKey]) clearTimeout(typingTimers.current[timerKey])
+                typingTimers.current[timerKey] = setTimeout(() => {
+                  setTypingMap(prev => {
+                    const cur = (prev[channelId] ?? []).filter(n => n !== userName)
+                    if (cur.length === 0) {
+                      const { [channelId]: _, ...rest } = prev
+                      return rest
+                    }
+                    return { ...prev, [channelId]: cur }
+                  })
+                }, 3000)
               }
             } else if (ev === 'channel-read') {
               setMessages(prev => prev.map(m =>
@@ -828,6 +957,12 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                   ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
                   : m
               ))
+              // Clear unread badge when WE read it (our userId matches)
+              if (payload.userId === auth.userId) {
+                setChannels(prev => prev.map(c =>
+                  c.id === payload.channelId ? { ...c, unread: 0 } : c
+                ))
+              }
             }
           } catch { /* ignore parse errors */ }
         }
@@ -836,23 +971,40 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
     return () => ctrl.abort()
   }, [config, auth.userId, loadChannels])
 
+  // Request notification permission once
+  useEffect(() => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }, [])
+
   useEffect(() => { loadChannels() }, [loadChannels])
 
   useEffect(() => {
     if (!selected) return
     loadMessages(selected)
-    if (pollRef.current) clearInterval(pollRef.current)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [selected, loadMessages])
+
+  // After new channel created, open it
+  function handleCreated(id: string) {
+    loadChannels().then(() => {
+      setChannels(prev => {
+        const ch = prev.find(c => c.id === id)
+        if (ch) setSelected(ch)
+        return prev
+      })
+    })
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null)
   function sendTyping() {
     if (!selected) return
-    if (typingTimer.current) return // debounce
-    typingTimer.current = setTimeout(() => { typingTimer.current = null }, 2000)
+    if (typingTimerRef.current) return
+    typingTimerRef.current = setTimeout(() => { typingTimerRef.current = null }, 2000)
     fetch(`${config.apiBase}/api/channels/${selected.id}/typing`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
@@ -870,7 +1022,11 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         body: JSON.stringify({ content }),
       })
       await loadMessages(selected)
-      await loadChannels()
+      setChannels(prev => prev.map(c =>
+        c.id === selected.id
+          ? { ...c, lastMessage: `${auth.username}: ${content}`, lastTime: new Date().toISOString() }
+          : c
+      ))
     } catch { /* offline */ } finally {
       setSending(false)
     }
@@ -880,69 +1036,111 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const groupList = channels.filter(c => c.type === 'group')
   const dmList = channels.filter(c => c.type === 'dm')
 
-  // Format message content with bold/italic/lists
+  // Render markdown-like content with selectable text
   function renderContent(text: string) {
     const lines = text.split('\n')
     return lines.map((line, li) => {
-      let out = line
+      // Replace [text](url) with anchor tags (open externally via electron shell)
+      const withLinks = line.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, label, url) => {
+        const safeUrl = encodeURI(url)
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;cursor:pointer" onclick="event.preventDefault();window.open('${safeUrl}','_blank')">${label}</a>`
+      })
+      const out = withLinks
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
         .replace(/\*(.+?)\*/g, '<em>$1</em>')
-        .replace(/^• /, '• ')
-      return <div key={li} dangerouslySetInnerHTML={{ __html: out }} style={{ lineHeight: 1.5 }} />
+      return <div key={li} dangerouslySetInnerHTML={{ __html: out || '&nbsp;' }} style={{ lineHeight: 1.5, userSelect: 'text', WebkitUserSelect: 'text' }} />
     })
   }
 
+  const selectedTyping = selected ? (typingMap[selected.id] ?? []) : []
+
   return (
-    <div style={{ height: '100%', display: 'flex' }}>
-      {showNewDm && <NewConvModal config={config} auth={auth} onClose={() => setShowNewDm(false)} onCreated={id => { loadChannels(); setSelected(channels.find(c => c.id === id) ?? null) }} />}
+    <div style={{ height: '100%', display: 'flex', overflow: 'hidden' }}>
+      {showNewConv && <NewConvModal config={config} auth={auth} onClose={() => setShowNewConv(false)} onCreated={handleCreated} />}
       {showSettings && selected && <ChannelSettingsModal config={config} auth={auth} conv={selected} onClose={() => setShowSettings(false)} />}
+      {activeCall && (
+        <CallWidget
+          config={config}
+          auth={auth}
+          targetUser={activeCall.targetUser}
+          callType={activeCall.callType}
+          onEnd={() => setActiveCall(null)}
+        />
+      )}
 
       {/* Conversations sidebar */}
       <div style={{
         width: 240, height: '100%', borderRight: `1px solid ${C.border}`,
-        background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0,
+        background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
       }}>
-        <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Messages</span>
-          <button onClick={() => setShowNewDm(true)} title="New Direct Message"
+          <button onClick={() => setShowNewConv(true)} title="New Conversation"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4 }}>
             <Edit2 size={15} />
           </button>
         </div>
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
           {channelList.length > 0 && (
             <>
               <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
-              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
+              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} onClick={() => setSelected(c)} />)}
             </>
           )}
           {groupList.length > 0 && (
             <>
               <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Groups</div>
-              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
+              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} onClick={() => setSelected(c)} />)}
             </>
           )}
           {dmList.length > 0 && (
             <>
               <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Direct Messages</div>
-              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} onClick={() => setSelected(c)} />)}
+              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} onClick={() => setSelected(c)} />)}
             </>
+          )}
+          {channels.length === 0 && (
+            <div style={{ padding: '20px 16px', color: C.textMuted, fontSize: 12, textAlign: 'center' }}>
+              No conversations yet.<br />
+              <button onClick={() => setShowNewConv(true)} style={{ marginTop: 8, background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>+ Start one</button>
+            </div>
           )}
         </div>
       </div>
 
       {/* Message thread */}
       {selected ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{
-            padding: '12px 20px', borderBottom: `1px solid ${C.border}`,
+            padding: '10px 16px', borderBottom: `1px solid ${C.border}`,
             background: C.contentBg, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
           }}>
             {selected.type === 'channel' && <Hash size={16} color={C.textMuted} />}
             {selected.type === 'group' && <Users size={16} color={C.textMuted} />}
             {selected.type === 'dm' && <Avatar url={selected.avatar} name={selected.name} size={28} />}
             <span style={{ fontWeight: 700, fontSize: 14, color: C.text, flex: 1 }}>{selected.name}</span>
+            {/* Call buttons for DMs */}
+            {selected.type === 'dm' && selected.partnerId && (() => {
+              const partner = selected.members.find(m => m.userId === selected.partnerId)
+              const targetUser = {
+                id: selected.partnerId,
+                name: partner?.user.alias ?? partner?.user.username ?? selected.name,
+                avatar: selected.avatar ?? null,
+              }
+              return (
+                <>
+                  <button onClick={() => setActiveCall({ targetUser, callType: 'audio' })} title="Audio call"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
+                    <Phone size={16} />
+                  </button>
+                  <button onClick={() => setActiveCall({ targetUser, callType: 'video' })} title="Video call"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
+                    <Video size={16} />
+                  </button>
+                </>
+              )
+            })()}
             {selected.type !== 'dm' && (
               <button onClick={() => setShowSettings(true)} title="Manage members"
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
@@ -952,7 +1150,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {loadingMsgs && messages.length === 0 && (
               <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}>
                 <Loader size={18} />
@@ -960,8 +1158,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
             )}
             {messages.map((msg, i) => {
               const isMe = msg.sender.id === auth.userId
-              const prevMsg = messages[i - 1]
-              const showHeader = prevMsg?.sender.id !== msg.sender.id
+              const showHeader = messages[i - 1]?.sender.id !== msg.sender.id
               const senderName = msg.sender.alias ?? msg.sender.username
               const isRead = msg.reads?.some(r => r.userId !== auth.userId)
               return (
@@ -982,11 +1179,13 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                         color: isMe ? '#fff' : C.text, fontSize: 13,
                         borderBottomRightRadius: isMe ? 4 : 12,
                         borderBottomLeftRadius: isMe ? 12 : 4,
+                        userSelect: 'text', WebkitUserSelect: 'text',
+                        cursor: 'text',
                       }}>
                         {renderContent(msg.content)}
                       </div>
                       {isMe && (
-                        <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+                        <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2, userSelect: 'none' }}>
                           {formatTime(msg.createdAt)}
                           {isRead ? ' · Read' : ' · Sent'}
                           {msg.editedAt && ' · Edited'}
@@ -997,31 +1196,30 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                 </div>
               )
             })}
-            {typingUsers.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+            {/* Typing indicator for current channel */}
+            {selectedTyping.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', paddingLeft: 8 }}>
                 <div style={{ display: 'flex', gap: 3 }}>
-                  {[0,1,2].map(i => (
+                  {[0, 1, 2].map(i => (
                     <span key={i} style={{
                       width: 6, height: 6, borderRadius: '50%', background: C.textMuted,
-                      animation: `bounce 1.2s ${i*0.2}s infinite`,
+                      display: 'inline-block', animation: `bounce 1.2s ${i * 0.2}s infinite`,
                     }} />
                   ))}
                 </div>
-                <span style={{ fontSize: 11, color: C.textMuted }}>{typingUsers.join(', ')} is typing…</span>
+                <span style={{ fontSize: 11, color: C.textMuted }}>
+                  {selectedTyping.join(', ')} {selectedTyping.length === 1 ? 'is' : 'are'} typing…
+                </span>
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input area */}
+          {/* Input */}
           <MessageInput
             placeholder={`Message ${selected.name}…`}
             config={config}
             channelId={selected.id}
-            onSend={content => {
-              setInput(content)
-              setTimeout(() => send(), 0)
-            }}
             onTyping={sendTyping}
             input={input}
             setInput={setInput}
@@ -1033,12 +1231,12 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted, flexDirection: 'column', gap: 12 }}>
           <MessageSquare size={40} strokeWidth={1} />
           <div style={{ fontSize: 14 }}>Select a conversation</div>
-          <button onClick={() => setShowNewDm(true)}
+          <button onClick={() => setShowNewConv(true)}
             style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
               ...neu(), border: 'none', cursor: 'pointer', color: C.accent, fontWeight: 600, fontSize: 13,
             }}>
-            <Edit2 size={15} /> New Direct Message
+            <Edit2 size={15} /> New Conversation
           </button>
         </div>
       )}
@@ -1046,7 +1244,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   )
 }
 
-function ConvRow({ conv, selected, auth, onClick }: { conv: Conversation; selected: boolean; auth: Auth; onClick: () => void }) {
+function ConvRow({ conv, selected, typingUsers, onClick }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -1058,7 +1256,15 @@ function ConvRow({ conv, selected, auth, onClick }: { conv: Conversation; select
       }}
     >
       {conv.type === 'dm' ? (
-        <Avatar url={conv.avatar} name={conv.name} size={28} />
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <Avatar url={conv.avatar} name={conv.name} size={28} />
+          {typingUsers.length > 0 && (
+            <span style={{
+              position: 'absolute', bottom: -2, right: -2, width: 10, height: 10,
+              borderRadius: '50%', background: C.accent, border: `2px solid ${C.contentBg}`,
+            }} />
+          )}
+        </div>
       ) : (
         <div style={{
           width: 28, height: 28, borderRadius: conv.type === 'channel' ? 6 : '50%',
@@ -1070,20 +1276,25 @@ function ConvRow({ conv, selected, auth, onClick }: { conv: Conversation; select
         </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: selected ? 600 : 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 12, fontWeight: selected || (conv.unread ?? 0) > 0 ? 600 : 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {conv.name}
         </div>
-        {conv.lastMessage && (
+        {typingUsers.length > 0 ? (
+          <div style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            typing…
+          </div>
+        ) : conv.lastMessage ? (
           <div style={{ fontSize: 11, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {conv.lastMessage}
           </div>
-        )}
+        ) : null}
       </div>
-      {(conv.unread ?? 0) > 0 && (
+      {(conv.unread ?? 0) > 0 && !selected && (
         <div style={{
           minWidth: 18, height: 18, borderRadius: 9, background: C.accent,
           color: '#fff', fontSize: 10, fontWeight: 700,
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+          flexShrink: 0,
         }}>
           {conv.unread}
         </div>
@@ -1103,7 +1314,7 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
-  const [mentionSearch, setMentionSearch] = useState<string | null>(null)
+  const [, setMentionSearch] = useState<string | null>(null)
   const [allUsers, setAllUsers] = useState<UserInfo[]>([])
   const [mentionResults, setMentionResults] = useState<UserInfo[]>([])
 
@@ -1149,7 +1360,8 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
     const cursor = el.selectionStart
     const textBefore = input.slice(0, cursor)
     const atIdx = textBefore.lastIndexOf('@')
-    const name = user.alias ?? user.username
+    // Always use @username (not alias) so notifications can match
+    const name = user.username
     const newVal = input.slice(0, atIdx) + `@${name} ` + input.slice(cursor)
     setInput(newVal)
     setMentionSearch(null)
@@ -1183,16 +1395,24 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
     if (!file || !channelId) return
     setUploading(true)
     try {
-      // Send as a message with attachment notation
-      const url = URL.createObjectURL(file)
-      const content = `[📎 ${file.name}](${url})`
-      // Note: channel messages don't have attachment API, so we send filename as content
+      // Upload file to server so it persists cross-process
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch(`${config.apiBase}/api/channels/${channelId}/attachments`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}` },
+        body: form,
+      })
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+      const { url, filename } = await res.json() as { url: string; filename: string }
+      // Send a message with a clickable attachment link
+      const content = `[📎 ${filename}](${config.apiBase}${url})`
       await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: `📎 ${file.name}` }),
+        body: JSON.stringify({ content }),
       })
-    } catch { /* ignore */ } finally {
+    } catch { /* ignore upload errors */ } finally {
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ''
     }
