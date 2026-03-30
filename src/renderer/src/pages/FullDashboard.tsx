@@ -1851,10 +1851,23 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
     pc.current = peerConn
     stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
     peerConn.ontrack = e => {
+      const remoteStream = e.streams[0]
+      if (!remoteStream) return
       if (callType === 'video') {
-        if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
+        if (remoteVideo.current) {
+          remoteVideo.current.srcObject = remoteStream
+          remoteVideo.current.play().catch(err => console.error('[CallWidget] remoteVideo.play() failed:', err))
+        }
+        // Also pipe audio track to audio element as fallback
+        if (remoteAudio.current) {
+          remoteAudio.current.srcObject = remoteStream
+          remoteAudio.current.play().catch(() => {})
+        }
       } else {
-        if (remoteAudio.current) remoteAudio.current.srcObject = e.streams[0]
+        if (remoteAudio.current) {
+          remoteAudio.current.srcObject = remoteStream
+          remoteAudio.current.play().catch(err => console.error('[CallWidget] remoteAudio.play() failed:', err))
+        }
       }
       setStatus('connected')
     }
