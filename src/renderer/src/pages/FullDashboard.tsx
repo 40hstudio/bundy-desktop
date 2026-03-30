@@ -1370,7 +1370,7 @@ function MessagesPanel({ config, auth, acceptedCall }: {
             <Edit2 size={15} />
           </button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {channelList.length > 0 && (
             <>
               <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
@@ -1440,7 +1440,7 @@ function MessagesPanel({ config, auth, acceptedCall }: {
           </div>
 
           {/* Messages */}
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {loadingMsgs && messages.length === 0 && (
               <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}>
                 <Loader size={18} />
