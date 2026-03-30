@@ -710,7 +710,7 @@ function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
 
   return (
     <div
-      onClick={() => window.open(url, '_blank')}
+      onClick={() => window.electronAPI.openExternal(url)}
       style={{
         marginTop: 6, borderRadius: 8, border: `1px solid ${C.border}`,
         overflow: 'hidden', background: '#f8faff', cursor: 'pointer',
@@ -739,9 +739,9 @@ function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
 
 // ─── Message content renderer ─────────────────────────────────────────────────
 
-// Parses text with [label](url) markdown links and bare https:// URLs,
-// returning proper React elements so links are clickable.
-function parseContent(text: string): React.ReactNode {
+// Parses text with [label](url) markdown links and bare https:// URLs.
+// isMe controls link colour so it's readable on both blue and white bubbles.
+function parseContent(text: string, isMe = false): React.ReactNode {
   const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
   const result: React.ReactNode[] = []
   let cursor = 0
@@ -754,17 +754,27 @@ function parseContent(text: string): React.ReactNode {
     }
     const label = m[1] ?? m[3]
     const url = m[2] ?? m[3]
-    result.push(
-      <a
-        key={keyIdx++}
-        href={url}
-        onClick={e => { e.preventDefault(); window.open(url, '_blank') }}
-        style={{ color: C.accent, textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all', WebkitUserSelect: 'text', userSelect: 'text' }}
-      >
-        {label}
-        {' '}<ExternalLink size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />
-      </a>
-    )
+    const linkColor = isMe ? 'rgba(255,255,255,0.9)' : C.accent
+    if (isImageUrl(url)) {
+      result.push(
+        <img key={keyIdx++} src={url} alt={label ?? ''} onClick={() => window.electronAPI.openExternal(url)}
+          style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, display: 'block', marginTop: 4, cursor: 'pointer' }}
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+        />
+      )
+    } else {
+      result.push(
+        <a
+          key={keyIdx++}
+          href={url}
+          onClick={e => { e.preventDefault(); window.electronAPI.openExternal(url) }}
+          style={{ color: linkColor, textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all', WebkitUserSelect: 'text', userSelect: 'text' }}
+        >
+          {label}
+          {' '}<ExternalLink size={10} style={{ display: 'inline', verticalAlign: 'middle' }} />
+        </a>
+      )
+    }
     cursor = m.index + m[0].length
   }
   if (cursor < text.length) result.push(formatInline(text.slice(cursor), keyIdx++))
@@ -779,12 +789,12 @@ function formatInline(text: string, key?: number): React.ReactNode {
 }
 
 // Renders message content, handling lines, links, bold/italic
-function renderMessageContent(text: string): React.ReactNode {
+function renderMessageContent(text: string, isMe = false): React.ReactNode {
   return (
     <div style={{ userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }}>
       {text.split('\n').map((line, li) => (
         <div key={li} style={{ lineHeight: 1.5, minHeight: li === 0 ? undefined : '1.5em', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-          {line ? parseContent(line) : <br />}
+          {line ? parseContent(line, isMe) : <br />}
         </div>
       ))}
     </div>
@@ -802,27 +812,58 @@ function extractUrls(text: string): string[] {
 
 // Inline image attachment (when message content matches attachment pattern)
 function InlineAttachment({ content, isMe }: { content: string; isMe: boolean; config?: ApiConfig }) {
-  const match = content.match(/^\[📎 ([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/)
+  // Match [📎 filename](url) — allow any characters in filename including _ and spaces
+  const match = content.match(/^\[📎\s([^\]]+?)\]\((https?:\/\/\S+?)\)\s*$/)
   if (!match) return null
   const [, filename, url] = match
+  const cleanUrl = url.trim()
   const [expanded, setExpanded] = useState(false)
+  const [imgError, setImgError] = useState(false)
+  const [imgLoaded, setImgLoaded] = useState(false)
 
-  if (isImageUrl(url)) {
+  if (isImageUrl(cleanUrl)) {
+    if (imgError) {
+      // Fallback to download card when image fails
+      return (
+        <div
+          onClick={() => window.electronAPI.openExternal(cleanUrl)}
+          style={{
+            marginTop: 4, display: 'flex', alignItems: 'center', gap: 10,
+            padding: '8px 12px', borderRadius: 8,
+            background: isMe ? 'rgba(255,255,255,0.15)' : '#f0f4ff',
+            border: `1px solid ${isMe ? 'rgba(255,255,255,0.3)' : C.border}`,
+            cursor: 'pointer',
+          }}
+        >
+          <FileText size={18} color={isMe ? 'rgba(255,255,255,0.9)' : C.accent} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: isMe ? '#fff' : C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>
+          <ExternalLink size={12} color={isMe ? 'rgba(255,255,255,0.7)' : C.textMuted} />
+        </div>
+      )
+    }
     return (
       <div style={{ marginTop: 4 }}>
+        {!imgLoaded && !imgError && (
+          <div style={{ width: '100%', height: 100, borderRadius: 8, background: isMe ? 'rgba(255,255,255,0.1)' : '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Loader size={18} color={isMe ? 'rgba(255,255,255,0.5)' : C.textMuted} />
+          </div>
+        )}
         <img
-          src={url}
+          src={cleanUrl}
           alt={filename}
+          loading="lazy"
           onClick={() => setExpanded(!expanded)}
+          onLoad={() => setImgLoaded(true)}
+          onError={() => setImgError(true)}
           style={{
             maxWidth: '100%', maxHeight: expanded ? 400 : 180,
-            objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', display: 'block',
+            objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in',
+            display: imgLoaded ? 'block' : 'none',
           }}
-          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
         />
-        {expanded && (
+        {expanded && imgLoaded && (
           <button
-            onClick={() => window.open(url, '_blank')}
+            onClick={() => window.electronAPI.openExternal(cleanUrl)}
             style={{ marginTop: 4, fontSize: 10, color: isMe ? 'rgba(255,255,255,0.8)' : C.accent, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
           >
             <ExternalLink size={10} /> Open full size
@@ -831,15 +872,15 @@ function InlineAttachment({ content, isMe }: { content: string; isMe: boolean; c
       </div>
     )
   }
-  if (isVideoUrl(url)) {
+  if (isVideoUrl(cleanUrl)) {
     return (
-      <video controls src={url} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginTop: 4, display: 'block' }} />
+      <video controls src={cleanUrl} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginTop: 4, display: 'block' }} />
     )
   }
   // Generic file card
   return (
     <div
-      onClick={() => window.open(url, '_blank')}
+      onClick={() => window.electronAPI.openExternal(cleanUrl)}
       style={{
         marginTop: 4, display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px 12px', borderRadius: 8,
@@ -997,7 +1038,11 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
   )
 }
 
-function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
+function MessagesPanel({ config, auth, acceptedCall }: {
+  config: ApiConfig; auth: Auth
+  /** Set when user accepts an incoming call from IncomingCallOverlay */
+  acceptedCall?: IncomingCallPayload | null
+}) {
   const [channels, setChannels] = useState<Conversation[]>([])
   const [selected, setSelected] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -1009,7 +1054,24 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   // Per-channel typing: Map<channelId, string[]>
   const [typingMap, setTypingMap] = useState<Record<string, string[]>>({})
   // Active call state
-  const [activeCall, setActiveCall] = useState<{ targetUser: { id: string; name: string; avatar: string | null }; callType: 'audio' | 'video' } | null>(null)
+  const [activeCall, setActiveCall] = useState<{
+    targetUser: { id: string; name: string; avatar: string | null }
+    callType: 'audio' | 'video'
+    offerSdp?: string
+  } | null>(null)
+
+  // When parent accepts an incoming call, open the CallWidget in answer mode
+  const acceptedCallRef = useRef<IncomingCallPayload | null | undefined>(null)
+  useEffect(() => {
+    if (acceptedCall && acceptedCall !== acceptedCallRef.current) {
+      acceptedCallRef.current = acceptedCall
+      setActiveCall({
+        targetUser: { id: acceptedCall.from, name: acceptedCall.fromName, avatar: acceptedCall.fromAvatar },
+        callType: acceptedCall.callType,
+        offerSdp: acceptedCall.sdp,
+      })
+    }
+  }, [acceptedCall])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimers = useRef<Record<string, NodeJS.Timeout>>({})
 
@@ -1291,6 +1353,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           auth={auth}
           targetUser={activeCall.targetUser}
           callType={activeCall.callType}
+          offerSdp={activeCall.offerSdp}
           onEnd={() => setActiveCall(null)}
         />
       )}
@@ -1388,7 +1451,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
               const showHeader = messages[i - 1]?.sender.id !== msg.sender.id
               const senderName = msg.sender.alias ?? msg.sender.username
               const isRead = msg.reads?.some(r => r.userId !== auth.userId)
-              const isAttachment = /^\[📎 [^\]]+\]\(https?:\/\/[^\s)]+\)$/.test(msg.content)
+              const isAttachment = /^\[📎\s[^\]]+?\]\(https?:\/\/\S+?\)\s*$/.test(msg.content)
               const plainUrls = isAttachment ? [] : extractUrls(msg.content).filter(u => !isImageUrl(u))
               return (
                 <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}>
@@ -1414,7 +1477,7 @@ function MessagesPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                           wordBreak: 'break-word', overflowWrap: 'break-word',
                           userSelect: 'text', WebkitUserSelect: 'text',
                         }}>
-                          {renderMessageContent(msg.content)}
+                          {renderMessageContent(msg.content, isMe)}
                         </div>
                       )}
                       {plainUrls.map((url, ui) => (
@@ -1744,13 +1807,16 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
 
 // ─── Call UI ─────────────────────────────────────────────────────────────────
 
-function CallWidget({ config, auth, targetUser, callType, onEnd }: {
+function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp }: {
   config: ApiConfig; auth: Auth
   targetUser: { id: string; name: string; avatar: string | null }
   callType: 'audio' | 'video'
   onEnd: () => void
+  /** When set, this widget is the RECEIVER — skip creating offer, set remote desc from this SDP and answer */
+  offerSdp?: string
 }) {
-  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>('calling')
+  const isReceiver = !!offerSdp
+  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>(isReceiver ? 'calling' : 'calling')
   const [muted, setMuted] = useState(false)
   const [videoOff, setVideoOff] = useState(false)
   const localVideo = useRef<HTMLVideoElement>(null)
@@ -1759,57 +1825,115 @@ function CallWidget({ config, auth, targetUser, callType, onEnd }: {
   const localStream = useRef<MediaStream | null>(null)
 
   useEffect(() => {
-    startCall()
-    return () => { cleanup() }
+    if (isReceiver) {
+      answerCall()
+    } else {
+      startCall()
+    }
+    // Listen for answer/ice from caller (receiver side) or from callee (caller side)
+    const ctrl = new AbortController()
+    listenForSignals(ctrl)
+    return () => { ctrl.abort(); cleanup(false) }
   }, [])
+
+  async function setupPeer(stream: MediaStream) {
+    const peerConn = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+    pc.current = peerConn
+    stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
+    peerConn.ontrack = e => {
+      if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
+      setStatus('connected')
+    }
+    peerConn.onicecandidate = e => {
+      if (e.candidate) {
+        fetch(`${config.apiBase}/api/calls`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'ice', to: targetUser.id, candidate: e.candidate }),
+        }).catch(() => {})
+      }
+    }
+    return peerConn
+  }
 
   async function startCall() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true, video: callType === 'video',
-      })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' })
       localStream.current = stream
       if (localVideo.current) localVideo.current.srcObject = stream
-
-      const peerConn = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
-      pc.current = peerConn
-
-      stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
-
-      peerConn.ontrack = e => {
-        if (remoteVideo.current) remoteVideo.current.srcObject = e.streams[0]
-        setStatus('connected')
-      }
-
-      peerConn.onicecandidate = e => {
-        if (e.candidate) {
-          fetch(`${config.apiBase}/api/calls`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'ice', to: targetUser.id, candidate: e.candidate }),
-          }).catch(() => {})
-        }
-      }
-
+      const peerConn = await setupPeer(stream)
       const offer = await peerConn.createOffer()
       await peerConn.setLocalDescription(offer)
-
       await fetch(`${config.apiBase}/api/calls`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'offer', to: targetUser.id, sdp: offer.sdp, callType }),
       })
-    } catch { cleanup(); onEnd() }
+    } catch { cleanup(true); onEnd() }
   }
 
-  function cleanup() {
+  async function answerCall() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' })
+      localStream.current = stream
+      if (localVideo.current) localVideo.current.srcObject = stream
+      const peerConn = await setupPeer(stream)
+      await peerConn.setRemoteDescription({ type: 'offer', sdp: offerSdp! })
+      const answer = await peerConn.createAnswer()
+      await peerConn.setLocalDescription(answer)
+      await fetch(`${config.apiBase}/api/calls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'answer', to: targetUser.id, sdp: answer.sdp }),
+      })
+      setStatus('connected')
+    } catch { cleanup(true); onEnd() }
+  }
+
+  function listenForSignals(ctrl: AbortController) {
+    fetch(`${config.apiBase}/api/bundy/stream`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+      signal: ctrl.signal,
+    }).then(async res => {
+      if (!res.body) return
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const parts = buf.split('\n\n'); buf = parts.pop() ?? ''
+        for (const part of parts) {
+          const evM = part.match(/^event: (.+)/m)
+          const datM = part.match(/^data: (.+)/m)
+          if (!evM || !datM) continue
+          try {
+            const ev = evM[1].trim()
+            const payload = JSON.parse(datM[1]) as { from?: string; sdp?: string; candidate?: RTCIceCandidateInit }
+            if (ev === 'call-answer' && !isReceiver && pc.current) {
+              await pc.current.setRemoteDescription({ type: 'answer', sdp: payload.sdp! })
+            } else if (ev === 'call-ice' && pc.current && payload.candidate) {
+              await pc.current.addIceCandidate(new RTCIceCandidate(payload.candidate))
+            } else if (ev === 'call-end') {
+              cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000)
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    }).catch(() => {})
+  }
+
+  function cleanup(sendEnd: boolean) {
     pc.current?.close()
     localStream.current?.getTracks().forEach(t => t.stop())
-    fetch(`${config.apiBase}/api/calls`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'end', to: targetUser.id }),
-    }).catch(() => {})
+    if (sendEnd) {
+      fetch(`${config.apiBase}/api/calls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'end', to: targetUser.id }),
+      }).catch(() => {})
+    }
   }
 
   function toggleMute() {
@@ -1822,7 +1946,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd }: {
     setVideoOff(!videoOff)
   }
 
-  function hangup() { cleanup(); setStatus('ended'); onEnd() }
+  function hangup() { cleanup(true); setStatus('ended'); onEnd() }
 
   return (
     <div style={{
@@ -2586,6 +2710,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>('home')
   const [isOnline, setIsOnline] = useState(true)
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null)
+  const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
   const apiConfig = useApiConfig()
 
   useEffect(() => {
@@ -2614,7 +2739,11 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           payload={incomingCall}
           config={apiConfig}
           auth={auth}
-          onAccept={() => { setTab('messages'); setIncomingCall(null) }}
+          onAccept={() => {
+            setAcceptedCall(incomingCall)
+            setTab('messages')
+            setIncomingCall(null)
+          }}
           onReject={() => setIncomingCall(null)}
         />
       )}
@@ -2632,28 +2761,34 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         )}
 
         {tab === 'home' && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
             <HomePanel auth={auth} />
           </div>
         )}
-        {/* MessagesPanel is always mounted so SSE stays alive for calls & notifications */}
+        {/* MessagesPanel: always mounted (SSE stays alive), hidden via visibility when on other tabs */}
         {apiConfig && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36, display: tab === 'messages' ? 'block' : 'none' }}>
-            <MessagesPanel config={apiConfig} auth={auth} />
+          <div style={{
+            position: 'absolute',
+            top: isOnline ? 0 : 36,
+            left: 0, right: 0, bottom: 0,
+            visibility: tab === 'messages' ? 'visible' : 'hidden',
+            pointerEvents: tab === 'messages' ? 'auto' : 'none',
+          }}>
+          <MessagesPanel config={apiConfig} auth={auth} acceptedCall={acceptedCall} />
           </div>
         )}
         {tab === 'tasks' && apiConfig && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
             <TasksPanel config={apiConfig} auth={auth} />
           </div>
         )}
         {tab === 'activity' && apiConfig && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
             <ActivityPanel config={apiConfig} />
           </div>
         )}
         {tab === 'settings' && apiConfig && (
-          <div style={{ height: '100%', paddingTop: isOnline ? 0 : 36 }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0 }}>
             <SettingsPanel auth={auth} config={apiConfig} onLogout={onLogout} />
           </div>
         )}
