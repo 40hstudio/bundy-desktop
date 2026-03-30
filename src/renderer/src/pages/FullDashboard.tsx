@@ -3236,6 +3236,8 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverCol, setDragOverCol] = useState<string | null>(null)
   const [showProjectFilter, setShowProjectFilter] = useState(false)
+  const [editProject, setEditProject] = useState<TaskProject | null>(null)
+  const [showManageSections, setShowManageSections] = useState(false)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -3315,7 +3317,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const selectedProject = projects.find(p => p.id === selectedProjectId)
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
       {/* Toolbar */}
       <div style={{
         padding: '10px 20px', borderBottom: `1px solid ${C.border}`,
@@ -3355,21 +3357,37 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                 All Projects
               </button>
               {projects.map(p => (
-                <button
+                <div
                   key={p.id}
-                  onClick={() => { setSelectedProjectId(p.id); setShowProjectFilter(false) }}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '7px 10px',
-                    borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12,
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
+                    borderRadius: 6,
                     background: selectedProjectId === p.id ? C.accentLight : 'transparent',
-                    color: selectedProjectId === p.id ? C.accent : C.text,
-                    fontWeight: selectedProjectId === p.id ? 600 : 400,
                   }}
                 >
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                  {p._count?.tasks != null && <span style={{ fontSize: 10, color: C.textMuted }}>{p._count.tasks}</span>}
-                </button>
+                  <button
+                    onClick={() => { setSelectedProjectId(p.id); setShowProjectFilter(false) }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, flex: 1, textAlign: 'left',
+                      border: 'none', cursor: 'pointer', fontSize: 12, padding: 0, background: 'transparent',
+                      color: selectedProjectId === p.id ? C.accent : C.text,
+                      fontWeight: selectedProjectId === p.id ? 600 : 400,
+                    }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                    {p._count?.tasks != null && <span style={{ fontSize: 10, color: C.textMuted }}>{p._count.tasks}</span>}
+                  </button>
+                  {auth.role === 'admin' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditProject(p); setShowProjectFilter(false) }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, flexShrink: 0, opacity: 0.5 }}
+                      title="Edit project"
+                    >
+                      <Edit2 size={10} />
+                    </button>
+                  )}
+                </div>
               ))}
               <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>
                 <button
@@ -3406,6 +3424,20 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
         ))}
 
         <div style={{ flex: 1 }} />
+
+        {/* Manage Sections button — shown when a project is selected and user is admin */}
+        {selectedProjectId && auth.role === 'admin' && (
+          <button
+            onClick={() => setShowManageSections(true)}
+            style={{
+              ...neu(), padding: '4px 10px', border: 'none', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: 11, color: C.textMuted, fontWeight: 500,
+            }}
+          >
+            <Layers size={11} /> Sections
+          </button>
+        )}
 
         {/* View toggle */}
         <div style={{ display: 'flex', background: C.cardBg, borderRadius: 8, padding: 2 }}>
@@ -3444,7 +3476,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: viewMode === 'board' ? '16px 12px' : 16 }}>
+      <div style={{ flex: 1, overflow: viewMode === 'board' ? 'hidden' : 'auto', minHeight: 0, padding: viewMode === 'board' ? '16px 12px' : 16 }}>
         {loading ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}>
             <Loader size={24} />
@@ -3460,14 +3492,14 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
           </div>
         ) : viewMode === 'board' ? (
           /* ─── Board View (Kanban) ─── */
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${TASK_BOARD_COLS.length}, 1fr)`, gap: 10, minHeight: '100%' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${TASK_BOARD_COLS.length}, 1fr)`, gap: 10, height: '100%' }}>
             {TASK_BOARD_COLS.map(col => {
               const colTasks = tasks.filter(t => t.status === col.key)
               const isOver = dragOverCol === col.key
               return (
-                <div key={col.key} style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                <div key={col.key} style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, minHeight: 0 }}>
                   {/* Column header */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', marginBottom: 2, flexShrink: 0 }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: TASK_STATUS_COLORS[col.key] }} />
                     <span style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{col.label}</span>
                     {colTasks.length > 0 && (
@@ -3486,7 +3518,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                       border: `2px ${isOver ? 'solid' : 'dashed'} ${isOver ? C.accent : C.border}`,
                       background: isOver ? C.accentLight : 'transparent',
                       transition: 'all 0.15s ease',
-                      minHeight: 80,
+                      minHeight: 80, overflow: 'auto',
                     }}
                   >
                     {colTasks.map(task => (
@@ -3531,8 +3563,8 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
                               {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                             </span>
                           )}
-                          {task._count.subtasks > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><GitBranch size={8} />{task._count.subtasks}</span>}
-                          {task._count.comments > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><MessageSquare size={8} />{task._count.comments}</span>}
+                          {(task._count?.subtasks ?? 0) > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><GitBranch size={8} />{task._count.subtasks}</span>}
+                          {(task._count?.comments ?? 0) > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><MessageSquare size={8} />{task._count.comments}</span>}
                         </div>
                       </div>
                     ))}
@@ -3604,6 +3636,34 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
             setSelectedProjectId(proj.id)
             setShowCreateProject(false)
           }}
+        />
+      )}
+
+      {editProject && (
+        <EditProjectModal
+          config={config}
+          project={editProject}
+          onClose={() => setEditProject(null)}
+          onUpdated={(proj) => {
+            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, ...proj } : p))
+            setEditProject(null)
+          }}
+          onDeleted={(id) => {
+            setProjects(prev => prev.filter(p => p.id !== id))
+            if (selectedProjectId === id) setSelectedProjectId('')
+            setEditProject(null)
+          }}
+        />
+      )}
+
+      {showManageSections && selectedProjectId && (
+        <ManageSectionsModal
+          config={config}
+          projectId={selectedProjectId}
+          projectName={selectedProject?.name ?? 'Project'}
+          sections={sections}
+          onClose={() => setShowManageSections(false)}
+          onUpdated={(updated) => setSections(updated)}
         />
       )}
 
@@ -3690,12 +3750,12 @@ function TaskListRow({ task, auth: _auth, onOpen }: { task: Task; auth: Auth; on
       )}
 
       {/* Counts */}
-      {task._count.subtasks > 0 && (
+      {(task._count?.subtasks ?? 0) > 0 && (
         <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
           <GitBranch size={10} /> {task._count.subtasks}
         </span>
       )}
-      {task._count.comments > 0 && (
+      {(task._count?.comments ?? 0) > 0 && (
         <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
           <MessageSquare size={10} /> {task._count.comments}
         </span>
@@ -3729,6 +3789,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
 }) {
   const [detail, setDetail] = useState<Task | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [comments, setComments] = useState<TaskComment[]>([])
   const [activities, setActivities] = useState<TaskActivityItem[]>([])
   const [commentText, setCommentText] = useState('')
@@ -3760,6 +3821,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   // Load task detail
   useEffect(() => {
     setLoadingDetail(true)
+    setLoadError(null)
     Promise.all([
       apiFetch(`/api/tasks/${taskId}`),
       apiFetch('/api/users'),
@@ -3770,7 +3832,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       setEditTitle(taskData.task.title)
       setEditDesc(taskData.task.description ?? '')
       setUsers(userData.users)
-    }).catch(() => {}).finally(() => setLoadingDetail(false))
+    }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
   }, [taskId, apiFetch])
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
@@ -3897,7 +3959,21 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     )
   }
 
-  if (!detail) return null
+  if (!detail) return (
+    <div style={{
+      position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
+      background: C.contentBg, borderLeft: `1px solid ${C.border}`,
+      boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 10, gap: 12,
+    }}>
+      <AlertCircle size={32} color={C.danger} strokeWidth={1.5} />
+      <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>{loadError || 'Task not found'}</span>
+      <button onClick={onClose} style={{
+        padding: '6px 14px', borderRadius: 8, border: 'none',
+        background: C.accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+      }}>Close</button>
+    </div>
+  )
 
   return (
     <div style={{
@@ -3994,7 +4070,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       </div>
 
       {/* Tab content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: 16 }}>
         {activeTab === 'detail' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Status */}
@@ -4634,6 +4710,310 @@ function CreateProjectModal({ config, onClose, onCreated }: {
             background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             opacity: saving || !name.trim() ? 0.5 : 1,
           }}>{saving ? 'Creating…' : 'Create Project'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Edit Project Modal ───────────────────────────────────────────────────────
+
+function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
+  config: ApiConfig
+  project: TaskProject
+  onClose: () => void
+  onUpdated: (proj: TaskProject) => void
+  onDeleted: (id: string) => void
+}) {
+  const [name, setName] = useState(project.name)
+  const [clientName, setClientName] = useState(project.clientName ?? '')
+  const [color, setColor] = useState(project.color)
+  const [description, setDescription] = useState(project.description ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const PRESET_COLORS = ['#6c5ce7', '#00b894', '#fdcb6e', '#e17055', '#0984e3', '#d63031', '#e84393', '#00cec9', '#636e72', '#2d3436']
+
+  async function handleSave() {
+    if (!name.trim()) { setError('Name is required'); return }
+    setSaving(true); setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          clientName: clientName.trim() || null,
+          color,
+          description: description.trim() || null,
+        }),
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      const d = await res.json() as { project: TaskProject }
+      onUpdated(d.project)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to update project') } finally { setSaving(false) }
+  }
+
+  async function handleDelete() {
+    setDeleting(true); setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/projects/${project.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      onDeleted(project.id)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete project') } finally { setDeleting(false) }
+  }
+
+  const fieldStyle = {
+    ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+    border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit',
+    boxSizing: 'border-box' as const,
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
+      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        width: 400, background: C.contentBg, borderRadius: 14,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>Edit Project</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={18} /></button>
+        </div>
+
+        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+        {confirmDelete ? (
+          <div style={{ padding: 16, background: '#fef2f2', borderRadius: 10, textAlign: 'center' }}>
+            <div style={{ fontSize: 13, color: C.danger, fontWeight: 600, marginBottom: 8 }}>
+              Delete "{project.name}" and detach all its tasks?
+            </div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 12 }}>
+              Tasks will not be deleted, but will lose their project assignment.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button onClick={handleDelete} disabled={deleting} style={{
+                padding: '6px 14px', borderRadius: 8, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1,
+              }}>{deleting ? 'Deleting…' : 'Delete Project'}</button>
+              <button onClick={() => setConfirmDelete(false)} style={{
+                padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer',
+              }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Client Name</div>
+                <input value={clientName} onChange={e => setClientName(e.target.value)}
+                  placeholder="e.g. Acme Corp" style={fieldStyle} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Project Name *</div>
+                <input value={name} onChange={e => setName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && void handleSave()}
+                  placeholder="e.g. Website Redesign" autoFocus style={fieldStyle} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 3 }}>Description</div>
+                <textarea value={description} onChange={e => setDescription(e.target.value)}
+                  placeholder="Optional…" rows={2} style={{ ...fieldStyle, resize: 'vertical' }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>Color</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {PRESET_COLORS.map(c => (
+                    <button key={c} onClick={() => setColor(c)} style={{
+                      width: 24, height: 24, borderRadius: '50%', border: color === c ? '2px solid #1e293b' : '2px solid transparent',
+                      background: c, cursor: 'pointer', boxShadow: color === c ? `0 0 0 2px ${c}44` : 'none',
+                    }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18 }}>
+              <button onClick={() => setConfirmDelete(true)} style={{
+                padding: '8px 16px', borderRadius: 8, border: 'none', background: '#fef2f2', color: C.danger, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 5,
+              }}><Trash2 size={13} /> Delete</button>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button onClick={onClose} style={{
+                  padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+                }}>Cancel</button>
+                <button onClick={handleSave} disabled={saving || !name.trim()} style={{
+                  padding: '8px 20px', borderRadius: 8, border: 'none',
+                  background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  opacity: saving || !name.trim() ? 0.5 : 1,
+                }}>{saving ? 'Saving…' : 'Save Changes'}</button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Manage Sections Modal ────────────────────────────────────────────────────
+
+function ManageSectionsModal({ config, projectId, projectName, sections: initialSections, onClose, onUpdated }: {
+  config: ApiConfig
+  projectId: string
+  projectName: string
+  sections: TaskSection[]
+  onClose: () => void
+  onUpdated: (sections: TaskSection[]) => void
+}) {
+  const [secs, setSecs] = useState<TaskSection[]>(initialSections)
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  async function createSection() {
+    if (!newName.trim()) return
+    setCreating(true); setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/sections`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim(), projectId }),
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      const d = await res.json() as { section: TaskSection }
+      const updated = [...secs, d.section]
+      setSecs(updated)
+      onUpdated(updated)
+      setNewName('')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to create section') } finally { setCreating(false) }
+  }
+
+  async function renameSection(id: string) {
+    if (!editName.trim()) { setEditingId(null); return }
+    setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/sections/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editName.trim() }),
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      const d = await res.json() as { section: TaskSection }
+      const updated = secs.map(s => s.id === id ? d.section : s)
+      setSecs(updated)
+      onUpdated(updated)
+      setEditingId(null)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to rename section') }
+  }
+
+  async function deleteSection(id: string) {
+    setDeletingId(id); setError('')
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks/sections/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed') }
+      const updated = secs.filter(s => s.id !== id)
+      setSecs(updated)
+      onUpdated(updated)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to delete section') } finally { setDeletingId(null) }
+  }
+
+  const fieldStyle = {
+    ...neu(true), padding: '7px 10px', fontSize: 12, color: C.text,
+    border: 'none', outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' as const,
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
+      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        width: 420, maxHeight: '80vh', background: C.contentBg, borderRadius: 14,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24, display: 'flex', flexDirection: 'column',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexShrink: 0 }}>
+          <div>
+            <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>Manage Sections</span>
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{projectName}</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}><X size={18} /></button>
+        </div>
+
+        {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+        {/* Section list */}
+        <div style={{ flex: 1, overflow: 'auto', marginBottom: 12 }}>
+          {secs.length === 0 && (
+            <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.5, padding: 20, fontSize: 12 }}>No sections yet</div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {secs.map(sec => (
+              <div key={sec.id} style={{
+                ...neu(), padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                {editingId === sec.id ? (
+                  <>
+                    <input
+                      value={editName}
+                      onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') renameSection(sec.id); if (e.key === 'Escape') setEditingId(null) }}
+                      onBlur={() => renameSection(sec.id)}
+                      autoFocus
+                      style={{ ...fieldStyle, flex: 1 }}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Layers size={12} color={C.textMuted} />
+                    <span style={{ flex: 1, fontSize: 13, color: C.text, fontWeight: 500 }}>{sec.name}</span>
+                    <button
+                      onClick={() => { setEditingId(sec.id); setEditName(sec.name) }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}
+                      title="Rename"
+                    ><Edit2 size={12} /></button>
+                    <button
+                      onClick={() => deleteSection(sec.id)}
+                      disabled={deletingId === sec.id}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 2, opacity: deletingId === sec.id ? 0.4 : 1 }}
+                      title="Delete section"
+                    ><Trash2 size={12} /></button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Add new section */}
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <input
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && newName.trim()) createSection() }}
+            placeholder="New section name…"
+            style={{ ...fieldStyle, flex: 1 }}
+          />
+          <button
+            onClick={createSection}
+            disabled={creating || !newName.trim()}
+            style={{
+              padding: '7px 14px', borderRadius: 8, border: 'none',
+              background: C.accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              opacity: creating || !newName.trim() ? 0.5 : 1,
+            }}
+          >{creating ? '…' : <Plus size={14} />}</button>
         </div>
       </div>
     </div>
