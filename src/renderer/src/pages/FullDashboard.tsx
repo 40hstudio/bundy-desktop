@@ -1,15 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Home, MessageSquare, CheckSquare, Activity, Settings,
-  LogOut, Play, Pause, RotateCcw, Square, Plus, Trash2,
-  Send, Hash, Users, Lock, ChevronRight, Circle, Clock,
-  Check, AlertCircle, Loader, WifiOff, RefreshCw, Filter,
-  Calendar, Flag, User as UserIcon, Layers, Settings2,
+  LogOut, Play, Pause, RotateCcw, Square, Trash2,
+  Send, Hash, Users, Circle,
+  Check, AlertCircle, Loader, WifiOff, RefreshCw,
+  Layers, Settings2,
   UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
-  MicOff, PhoneOff, Edit2, MessageCircle, X, ChevronLeft,
+  MicOff, PhoneOff, Edit2, X,
   Bold, Italic, List, ExternalLink, FileText, PhoneIncoming,
   Mic, Maximize2, Minimize2, Move, Search
 } from 'lucide-react'
+
+// Electron-specific CSS property for window dragging
+declare module 'react' {
+  interface CSSProperties {
+    WebkitAppRegion?: 'drag' | 'no-drag'
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,11 +26,6 @@ interface BundyStatus {
   isClockedIn: boolean; onBreak: boolean; isTracking: boolean
   elapsedMs: number; username: string; role: string
 }
-interface PlanItem {
-  id: string; details: string; status: string; outcome: string | null
-  project: { id: string; name: string }
-}
-interface DailyPlan { id: string; date: string; items: PlanItem[] }
 interface UserInfo {
   id: string; username: string; alias: string | null; avatarUrl: string | null; role?: string
 }
@@ -92,7 +94,7 @@ function neu(inset = false) {
 }
 
 function card() {
-  return { background: C.contentBg, ...neu(), padding: 16 }
+  return { ...neu(), padding: 16 }
 }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -156,13 +158,13 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
     <nav style={{
       width: 200, minHeight: '100vh', background: C.sidebarBg,
       display: 'flex', flexDirection: 'column', flexShrink: 0,
-      WebkitAppRegion: 'drag' as React.CSSProperties['WebkitAppRegion'],
+      WebkitAppRegion: 'drag',
     }}>
       {/* Titlebar area for traffic lights */}
       <div style={{ height: 52, flexShrink: 0 }} />
 
       {/* Logo / App name */}
-      <div style={{ padding: '0 20px 20px', WebkitAppRegion: 'no-drag' as React.CSSProperties['WebkitAppRegion'] }}>
+      <div style={{ padding: '0 20px 20px', WebkitAppRegion: 'no-drag' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{
             width: 32, height: 32, borderRadius: 8,
@@ -180,7 +182,7 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
       </div>
 
       {/* Nav items */}
-      <div style={{ flex: 1, padding: '0 8px', WebkitAppRegion: 'no-drag' as React.CSSProperties['WebkitAppRegion'] }}>
+      <div style={{ flex: 1, padding: '0 8px', WebkitAppRegion: 'no-drag' }}>
         {NAV.map(item => {
           const active = tab === item.id
           return (
@@ -205,7 +207,7 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
       </div>
 
       {/* Bottom section */}
-      <div style={{ padding: '8px', borderTop: `1px solid #1e293b`, WebkitAppRegion: 'no-drag' as React.CSSProperties['WebkitAppRegion'] }}>
+      <div style={{ padding: '8px', borderTop: `1px solid #1e293b`, WebkitAppRegion: 'no-drag' }}>
         <button
           onClick={() => setTab('settings')}
           style={{
@@ -250,22 +252,15 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
 
 // ─── Home Panel ───────────────────────────────────────────────────────────────
 
-const ACTION_LABEL: Record<string, string> = {
-  'clock-in': 'Clock In', 'clock-out': 'Clock Out',
-  'break-start': 'Take Break', 'break-end': 'Resume',
-}
 const ACTION_COLORS: Record<string, string> = {
   'clock-in': '#22c55e', 'clock-out': '#ef4444',
   'break-start': '#f59e0b', 'break-end': '#6366f1',
 }
 
-function HomePanel({ auth }: { auth: Auth }) {
+function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | null }) {
   const [status, setStatus] = useState<BundyStatus | null>(null)
-  const [plan, setPlan] = useState<DailyPlan | null>(null)
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
-  const [newItemProject, setNewItemProject] = useState('')
-  const [newItemDetails, setNewItemDetails] = useState('')
-  const [addingItem, setAddingItem] = useState(false)
+  const [todayTasks, setTodayTasks] = useState<Task[]>([])
+  const [loadingTasks, setLoadingTasks] = useState(false)
   const [actioning, setActioning] = useState(false)
   const [snapshotAt] = useState(Date.now())
 
@@ -277,22 +272,33 @@ function HomePanel({ auth }: { auth: Auth }) {
 
   const load = useCallback(async () => {
     try {
-      const [s, p] = await Promise.all([
-        window.electronAPI.getStatus(),
-        window.electronAPI.ensureDailyPlan(),
-      ])
+      const s = await window.electronAPI.getStatus()
       setStatus(s)
-      setPlan(p)
     } catch { /* offline */ }
   }, [])
 
+  const loadTasks = useCallback(async () => {
+    if (!config) return
+    setLoadingTasks(true)
+    try {
+      const res = await fetch(`${config.apiBase}/api/tasks?assigneeId=me&dueDate=today`, {
+        headers: { 'Authorization': `Bearer ${config.token}` },
+      })
+      if (res.ok) {
+        const data = await res.json() as { tasks: Task[] }
+        setTodayTasks(data.tasks.filter(t => t.status !== 'done' && t.status !== 'cancelled'))
+      }
+    } catch { /* offline */ } finally {
+      setLoadingTasks(false)
+    }
+  }, [config])
+
   useEffect(() => {
     load()
-    const projs = window.electronAPI.getProjects().then(setProjects).catch(() => {})
+    loadTasks()
     const unsub = window.electronAPI.onStatusUpdate((s) => setStatus(s))
-    const unsubPlan = window.electronAPI.onPlanUpdate((p) => setPlan(p))
-    return () => { unsub(); unsubPlan(); void projs }
-  }, [load])
+    return () => { unsub() }
+  }, [load, loadTasks])
 
   async function doAction(action: string) {
     setActioning(true)
@@ -305,33 +311,15 @@ function HomePanel({ auth }: { auth: Auth }) {
     }
   }
 
-  async function addItem() {
-    if (!newItemDetails.trim()) return
-    setAddingItem(true)
+  async function markTaskDone(taskId: string) {
+    if (!config) return
     try {
-      await window.electronAPI.addPlanItem(newItemProject || 'General', newItemDetails.trim())
-      const p = await window.electronAPI.ensureDailyPlan()
-      setPlan(p)
-      setNewItemDetails('')
-      setNewItemProject('')
-    } catch { /* offline */ } finally {
-      setAddingItem(false)
-    }
-  }
-
-  async function setItemStatus(itemId: string, newStatus: string) {
-    try {
-      await window.electronAPI.updatePlanItem(itemId, newStatus)
-      const p = await window.electronAPI.ensureDailyPlan()
-      setPlan(p)
-    } catch { /* offline */ }
-  }
-
-  async function removeItem(itemId: string) {
-    try {
-      await window.electronAPI.deletePlanItem(itemId)
-      const p = await window.electronAPI.ensureDailyPlan()
-      setPlan(p)
+      await fetch(`${config.apiBase}/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'done' }),
+      })
+      setTodayTasks(prev => prev.filter(t => t.id !== taskId))
     } catch { /* offline */ }
   }
 
@@ -354,13 +342,15 @@ function HomePanel({ auth }: { auth: Auth }) {
     : status.onBreak ? C.warning
     : C.textMuted
 
-  const PLAN_STATUSES = ['planned', 'in-progress', 'completed', 'blocked']
-  const PLAN_ICONS: Record<string, React.ReactNode> = {
-    planned: <Circle size={13} />, 'in-progress': <Play size={13} />,
-    completed: <Check size={13} />, blocked: <AlertCircle size={13} />,
+  const TASK_STATUS_ICONS: Record<string, React.ReactNode> = {
+    todo: <Circle size={13} />, 'in-progress': <Play size={13} />,
+    done: <Check size={13} />, cancelled: <AlertCircle size={13} />,
   }
-  const PLAN_COLORS: Record<string, string> = {
-    planned: C.textMuted, 'in-progress': C.accent, completed: C.success, blocked: C.danger,
+  const TASK_STATUS_COLORS: Record<string, string> = {
+    todo: C.textMuted, 'in-progress': C.accent, done: C.success, cancelled: C.danger,
+  }
+  const PRIORITY_COLORS: Record<string, string> = {
+    urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e',
   }
 
   return (
@@ -404,96 +394,78 @@ function HomePanel({ auth }: { auth: Auth }) {
         </div>
       )}
 
-      {/* Daily Plan */}
+      {/* Today's Tasks */}
       <div style={{ ...card() }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Today's Plan</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Today's Tasks</div>
           <div style={{ fontSize: 11, color: C.textMuted }}>
-            {plan?.items?.filter(i => i.status === 'completed').length ?? 0} / {plan?.items?.length ?? 0} done
+            {todayTasks.length} {todayTasks.length === 1 ? 'task' : 'tasks'}
           </div>
         </div>
 
-        {/* Add form */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <select
-            value={newItemProject}
-            onChange={e => setNewItemProject(e.target.value)}
-            style={{
-              ...neu(true), padding: '8px 10px', fontSize: 12, color: C.text,
-              border: 'none', outline: 'none', width: 110, flexShrink: 0, cursor: 'pointer',
-            }}
-          >
-            <option value="">Project…</option>
-            {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-          </select>
-          <input
-            value={newItemDetails}
-            onChange={e => setNewItemDetails(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void addItem()}
-            placeholder="Add a task…"
-            style={{
-              flex: 1, ...neu(true), padding: '8px 12px',
-              fontSize: 12, color: C.text, border: 'none', outline: 'none',
-            }}
-          />
-          <button
-            onClick={addItem}
-            disabled={addingItem || !newItemDetails.trim()}
-            style={{
-              ...neu(), padding: '8px 12px', border: 'none', color: C.accent,
-              cursor: 'pointer', fontSize: 12, fontWeight: 600, opacity: addingItem ? 0.5 : 1,
-            }}
-          >
-            <Plus size={16} />
-          </button>
-        </div>
-
-        {/* Items list */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {(!plan?.items || plan.items.length === 0) && (
+          {loadingTasks ? (
             <div style={{ color: C.textMuted, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
-              No tasks yet. Add one above.
+              <Loader size={16} />
             </div>
-          )}
-          {plan?.items?.map(item => (
-            <div key={item.id} style={{
-              ...neu(), padding: '10px 12px',
-              display: 'flex', alignItems: 'center', gap: 10,
-              opacity: item.status === 'completed' ? 0.6 : 1,
-            }}>
-              {/* Status cycle button */}
-              <button
-                onClick={() => {
-                  const idx = PLAN_STATUSES.indexOf(item.status)
-                  setItemStatus(item.id, PLAN_STATUSES[(idx + 1) % PLAN_STATUSES.length])
-                }}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: PLAN_COLORS[item.status] ?? C.textMuted, padding: 0, flexShrink: 0,
-                }}
-              >
-                {PLAN_ICONS[item.status] ?? <Circle size={13} />}
-              </button>
-
-              <div style={{ flex: 1, minWidth: 0 }}>
+          ) : todayTasks.length === 0 ? (
+            <div style={{ color: C.textMuted, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
+              No tasks due today. Manage tasks in the Tasks tab.
+            </div>
+          ) : (
+            todayTasks.map(task => (
+              <div key={task.id} style={{
+                ...neu(), padding: '10px 12px',
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}>
+                {/* Status icon */}
                 <div style={{
-                  fontSize: 13, color: C.text,
-                  textDecoration: item.status === 'completed' ? 'line-through' : 'none',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0,
                 }}>
-                  {item.details}
+                  {TASK_STATUS_ICONS[task.status] ?? <Circle size={13} />}
                 </div>
-                <div style={{ fontSize: 11, color: C.textMuted }}>{item.project?.name ?? 'General'}</div>
-              </div>
 
-              <button
-                onClick={() => removeItem(item.id)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13, color: C.text,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {task.title}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                    {task.project && (
+                      <span style={{
+                        fontSize: 10, color: task.project.color || C.textMuted,
+                        background: (task.project.color || C.accent) + '18',
+                        padding: '1px 6px', borderRadius: 4,
+                      }}>
+                        {task.project.name}
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: 10,
+                      color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
+                      fontWeight: 600, textTransform: 'uppercase',
+                    }}>
+                      {task.priority}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Mark done button */}
+                <button
+                  onClick={() => markTaskDone(task.id)}
+                  title="Mark as done"
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: C.success, padding: 2, flexShrink: 0,
+                  }}
+                >
+                  <Check size={15} />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
@@ -2142,9 +2114,9 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
         ].map((btn, i) => (
           <button key={i} onClick={btn.action} title={btn.title}
             style={{
+              ...neu(),
               padding: '4px 8px', borderRadius: 6, border: 'none',
               background: 'transparent', color: C.textMuted, cursor: 'pointer',
-              ...neu(),
             }}>
             {btn.icon}
           </button>
@@ -2259,7 +2231,7 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
 
 // ─── CallWidget (1:1 calls with window modes, dragging, video renegotiation) ─
 
-function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
+function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
   config: ApiConfig; auth: Auth
   targetUser: { id: string; name: string; avatar: string | null }
   callType: 'audio' | 'video'
@@ -3224,7 +3196,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress'>('mine')
-  const [projects, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
+  const [, setProjects] = useState<{ id: string; name: string; color: string }[]>([])
   const [detailTask, setDetailTask] = useState<Task | null>(null)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
@@ -3353,7 +3325,7 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   )
 }
 
-function TaskCard({ task, auth, onDone, onOpen }: { task: Task; auth: Auth; onDone: () => void; onOpen: () => void }) {
+function TaskCard({ task, auth: _auth, onDone, onOpen }: { task: Task; auth: Auth; onDone: () => void; onOpen: () => void }) {
   const isDone = task.status === 'done' || task.status === 'cancelled'
   return (
     <div
@@ -3410,7 +3382,7 @@ function TaskCard({ task, auth, onDone, onOpen }: { task: Task; auth: Auth; onDo
   )
 }
 
-function TaskDetailPanel({ task, config, auth, onClose, onUpdated }: {
+function TaskDetailPanel({ task, config, auth: _auth, onClose, onUpdated }: {
   task: Task; config: ApiConfig; auth: Auth
   onClose: () => void
   onUpdated: (t: Task) => void
@@ -4012,7 +3984,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
         {tab === 'home' && (
           <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
-            <HomePanel auth={auth} />
+            <HomePanel auth={auth} config={apiConfig} />
           </div>
         )}
         {/* MessagesPanel: always mounted (SSE stays alive), hidden via visibility when on other tabs */}

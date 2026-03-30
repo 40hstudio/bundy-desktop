@@ -10,6 +10,7 @@ export interface StoredAuth {
 export interface BundyStatus {
   isClockedIn: boolean
   onBreak: boolean
+  isTracking: boolean
   elapsedMs: number
   username: string
   role: string

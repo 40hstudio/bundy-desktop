@@ -7,7 +7,7 @@
 
 import { app } from 'electron'
 import store from './store'
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs'
+import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 
 const MAX_BUFFER = 20 // max pending reports stored locally
