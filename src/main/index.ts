@@ -580,12 +580,8 @@ app.whenReady().then(() => {
     if (popupWin && !popupWin.isDestroyed()) {
       popupWin.webContents.send('update-downloaded')
     }
-    // Auto-install 5 s after download — gives the user a brief window to click
-    // "Restart Now" or just let it happen automatically.
-    setTimeout(() => {
-      store.set('restartForUpdate', true)
-      autoUpdater.quitAndInstall(false, true)
-    }, 5_000)
+    // Don't force-restart — let the user choose when to restart via the UI.
+    // The app will also install on next quit (autoInstallOnAppQuit = true).
   })
 
   // Check on startup (delay 10s so the app is fully loaded first)

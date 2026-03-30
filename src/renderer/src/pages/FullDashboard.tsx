@@ -8,7 +8,7 @@ import {
   UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
   MicOff, PhoneOff, Edit2, MessageCircle, X, ChevronLeft,
   Bold, Italic, List, ExternalLink, FileText, PhoneIncoming,
-  Mic, Maximize2, Minimize2, Move
+  Mic, Maximize2, Minimize2, Move, Search
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -678,6 +678,7 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
 
 interface OgMeta { title: string | null; description: string | null; image: string | null; siteName: string | null }
 const ogClientCache = new Map<string, OgMeta | null>()
+const OG_CACHE_MAX = 200
 
 function isImageUrl(url: string): boolean {
   return /\.(jpg|jpeg|png|gif|webp|avif|svg)(\?.*)?$/i.test(url.split('?')[0])
@@ -701,10 +702,20 @@ function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
       .then(r => r.json())
       .then((d: OgMeta & { error?: string }) => {
         const data = d.error ? null : (d.title || d.image ? d : null)
+        if (ogClientCache.size >= OG_CACHE_MAX) {
+          const firstKey = ogClientCache.keys().next().value
+          if (firstKey !== undefined) ogClientCache.delete(firstKey)
+        }
         ogClientCache.set(url, data)
         setOg(data)
       })
-      .catch(() => { ogClientCache.set(url, null); setOg(null) })
+      .catch(() => {
+        if (ogClientCache.size >= OG_CACHE_MAX) {
+          const firstKey = ogClientCache.keys().next().value
+          if (firstKey !== undefined) ogClientCache.delete(firstKey)
+        }
+        ogClientCache.set(url, null); setOg(null)
+      })
   }, [url, config])
 
   if (!og) return null
@@ -976,7 +987,7 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
       })
       const d = await res.json() as { ok?: boolean; user?: UserInfo }
       if (d.ok && d.user) setMembers(prev => [...prev, { userId, user: d.user! }])
-    } catch { /* ignore */ } finally { setBusy(false) }
+    } catch (err) { console.error('[ChannelSettings] addMember failed:', err) } finally { setBusy(false) }
   }
 
   async function removeMember(userId: string) {
@@ -988,7 +999,7 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
         body: JSON.stringify({ userId }),
       })
       setMembers(prev => prev.filter(m => m.userId !== userId))
-    } catch { /* ignore */ } finally { setBusy(false) }
+    } catch (err) { console.error('[ChannelSettings] removeMember failed:', err) } finally { setBusy(false) }
   }
 
   const nonMembers = allUsers.filter(u => !members.some(m => m.userId === u.id))
@@ -1066,6 +1077,20 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const [showSettings, setShowSettings] = useState(false)
   // Per-channel typing: Map<channelId, string[]>
   const [typingMap, setTypingMap] = useState<Record<string, string[]>>({})
+  // Edit / delete state
+  const [editingMsgId, setEditingMsgId] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<Array<{
+    id: string; channelId: string; content: string; createdAt: string
+    sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+    channel: { id: string; name: string | null; type: string }
+  }>>([])
+  const [searching, setSearching] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
+  const searchTimer = useRef<NodeJS.Timeout | null>(null)
   // Active call state
   const [activeCall, setActiveCall] = useState<{
     targetUser: { id: string; name: string; avatar: string | null }
@@ -1210,148 +1235,174 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     }
   }, [apiFetch, config])
 
-  // SSE for real-time messages + typing + read
+  // SSE for real-time messages + typing + read (with auto-reconnect)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   useEffect(() => {
-    const ctrl = new AbortController()
-    let buf = ''
-    fetch(`${config.apiBase}/api/bundy/stream`, {
-      headers: { Authorization: `Bearer ${config.token}` },
-      signal: ctrl.signal,
-    }).then(async res => {
-      if (!res.body) return
-      const reader = res.body.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const parts = buf.split('\n\n')
-        buf = parts.pop() ?? ''
-        for (const part of parts) {
-          const eventMatch = part.match(/^event: (.+)/m)
-          const dataMatch = part.match(/^data: (.+)/m)
-          if (!eventMatch || !dataMatch) continue
-          const ev = eventMatch[1].trim()
-          try {
-            const payload = JSON.parse(dataMatch[1])
-            if (ev === 'channel-message') {
-              const channelId = payload.channelId as string
-              const isCurrentChannel = selectedRef.current?.id === channelId
-              if (isCurrentChannel) {
-                setMessages(prev => {
-                  if (prev.some(m => m.id === payload.id)) return prev
-                  return [...prev, {
-                    id: payload.id, content: payload.content,
-                    createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
-                    sender: {
-                      id: payload.senderId,
-                      username: payload.senderName,
-                      alias: payload.senderAlias ?? payload.senderName,
-                      avatarUrl: payload.senderAvatar ?? null,
-                    },
-                    reads: [],
-                  }]
-                })
-                // Mark as read since we're viewing it
-                fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${config.token}` },
-                }).catch(() => {})
-              } else if (payload.senderId !== auth.userId) {
-                // Not our own message in another channel — increment unread + notify
-                setChannels(prev => prev.map(c =>
-                  c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
-                ))
-                // Desktop notification
-                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                  void new Notification(`New message`, {
-                    body: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`,
-                    silent: false,
+    let dead = false
+    let ctrl = new AbortController()
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    function connect() {
+      if (dead) return
+      ctrl = new AbortController()
+      let buf = ''
+      fetch(`${config.apiBase}/api/bundy/stream`, {
+        headers: { Authorization: `Bearer ${config.token}` },
+        signal: ctrl.signal,
+      }).then(async res => {
+        if (!res.body) { scheduleReconnect(); return }
+        const reader = res.body.getReader()
+        const dec = new TextDecoder()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += dec.decode(value, { stream: true })
+          const parts = buf.split('\n\n')
+          buf = parts.pop() ?? ''
+          for (const part of parts) {
+            const eventMatch = part.match(/^event: (.+)/m)
+            const dataMatch = part.match(/^data: (.+)/m)
+            if (!eventMatch || !dataMatch) continue
+            const ev = eventMatch[1].trim()
+            try {
+              const payload = JSON.parse(dataMatch[1])
+              if (ev === 'channel-message') {
+                const channelId = payload.channelId as string
+                const isCurrentChannel = selectedRef.current?.id === channelId
+                if (isCurrentChannel) {
+                  setMessages(prev => {
+                    if (prev.some(m => m.id === payload.id)) return prev
+                    return [...prev, {
+                      id: payload.id, content: payload.content,
+                      createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
+                      sender: {
+                        id: payload.senderId,
+                        username: payload.senderName,
+                        alias: payload.senderAlias ?? payload.senderName,
+                        avatarUrl: payload.senderAvatar ?? null,
+                      },
+                      reads: [],
+                    }]
                   })
-                } else if (typeof Notification !== 'undefined' && Notification.permission !== 'denied') {
-                  Notification.requestPermission()
+                  // Mark as read since we're viewing it
+                  fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${config.token}` },
+                  }).catch(() => {})
+                } else if (payload.senderId !== auth.userId) {
+                  // Not our own message in another channel — increment unread + notify
+                  setChannels(prev => prev.map(c =>
+                    c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
+                  ))
+                  // Desktop notification
+                  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                    void new Notification(`New message`, {
+                      body: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`,
+                      silent: false,
+                    })
+                  } else if (typeof Notification !== 'undefined' && Notification.permission !== 'denied') {
+                    Notification.requestPermission()
+                  }
                 }
-              }
-              // Update last message in sidebar
-              setChannels(prev => prev.map(c =>
-                c.id === channelId
-                  ? { ...c, lastMessage: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`, lastTime: payload.createdAt }
-                  : c
-              ))
-            } else if (ev === 'channel-typing') {
-              const channelId = payload.channelId as string
-              if (payload.userId !== auth.userId) {
-                const userName = payload.userName as string
-                setTypingMap(prev => {
-                  const cur = prev[channelId] ?? []
-                  if (cur.includes(userName)) return prev
-                  return { ...prev, [channelId]: [...cur, userName] }
-                })
-                // Clear this user's typing after 3s
-                const timerKey = `${channelId}:${userName}`
-                if (typingTimers.current[timerKey]) clearTimeout(typingTimers.current[timerKey])
-                typingTimers.current[timerKey] = setTimeout(() => {
-                  setTypingMap(prev => {
-                    const cur = (prev[channelId] ?? []).filter(n => n !== userName)
-                    if (cur.length === 0) {
-                      const { [channelId]: _, ...rest } = prev
-                      return rest
-                    }
-                    return { ...prev, [channelId]: cur }
-                  })
-                }, 3000)
-              }
-            } else if (ev === 'channel-read') {
-              setMessages(prev => prev.map(m =>
-                payload.messageIds?.includes(m.id)
-                  ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
-                  : m
-              ))
-              // Clear unread badge when WE read it (our userId matches)
-              if (payload.userId === auth.userId) {
+                // Update last message in sidebar
                 setChannels(prev => prev.map(c =>
-                  c.id === payload.channelId ? { ...c, unread: 0 } : c
+                  c.id === channelId
+                    ? { ...c, lastMessage: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`, lastTime: payload.createdAt }
+                    : c
                 ))
+              } else if (ev === 'channel-message-edit') {
+                setMessages(prev => prev.map(m =>
+                  m.id === payload.messageId
+                    ? { ...m, content: payload.content, editedAt: payload.editedAt }
+                    : m
+                ))
+              } else if (ev === 'channel-message-delete') {
+                setMessages(prev => prev.filter(m => m.id !== payload.messageId))
+              } else if (ev === 'channel-typing') {
+                const channelId = payload.channelId as string
+                if (payload.userId !== auth.userId) {
+                  const userName = payload.userName as string
+                  setTypingMap(prev => {
+                    const cur = prev[channelId] ?? []
+                    if (cur.includes(userName)) return prev
+                    return { ...prev, [channelId]: [...cur, userName] }
+                  })
+                  // Clear this user's typing after 3s
+                  const timerKey = `${channelId}:${userName}`
+                  if (typingTimers.current[timerKey]) clearTimeout(typingTimers.current[timerKey])
+                  typingTimers.current[timerKey] = setTimeout(() => {
+                    setTypingMap(prev => {
+                      const cur = (prev[channelId] ?? []).filter(n => n !== userName)
+                      if (cur.length === 0) {
+                        const { [channelId]: _, ...rest } = prev
+                        return rest
+                      }
+                      return { ...prev, [channelId]: cur }
+                    })
+                  }, 3000)
+                }
+              } else if (ev === 'channel-read') {
+                setMessages(prev => prev.map(m =>
+                  payload.messageIds?.includes(m.id)
+                    ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
+                    : m
+                ))
+                // Clear unread badge when WE read it (our userId matches)
+                if (payload.userId === auth.userId) {
+                  setChannels(prev => prev.map(c =>
+                    c.id === payload.channelId ? { ...c, unread: 0 } : c
+                  ))
+                }
+              } else if (ev === 'channel-created') {
+                // A new channel/DM/group was created that includes us — reload list
+                loadChannels()
+              } else if (ev === 'call-invite') {
+                window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
+              } else if (ev === 'call-answer') {
+                window.dispatchEvent(new CustomEvent('bundy-call-answer', { detail: payload }))
+              } else if (ev === 'call-ice') {
+                window.dispatchEvent(new CustomEvent('bundy-call-ice', { detail: payload }))
+              } else if (ev === 'call-end') {
+                window.dispatchEvent(new CustomEvent('bundy-call-end', { detail: payload }))
+              } else if (ev === 'call-reoffer') {
+                window.dispatchEvent(new CustomEvent('bundy-call-reoffer', { detail: payload }))
+              } else if (ev === 'call-reanswer') {
+                window.dispatchEvent(new CustomEvent('bundy-call-reanswer', { detail: payload }))
+              } else if (ev === 'conference-joined') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-joined', { detail: payload }))
+              } else if (ev === 'conference-left') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-left', { detail: payload }))
+              } else if (ev === 'conference-ended') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-ended', { detail: payload }))
+              } else if (ev === 'conference-offer') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-offer', { detail: payload }))
+              } else if (ev === 'conference-answer') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-answer', { detail: payload }))
+              } else if (ev === 'conference-ice') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-ice', { detail: payload }))
+              } else if (ev === 'active-conferences') {
+                window.dispatchEvent(new CustomEvent('bundy-active-conferences', { detail: payload }))
               }
-            } else if (ev === 'channel-created') {
-              // A new channel/DM/group was created that includes us — reload list
-              loadChannels()
-            } else if (ev === 'call-invite') {
-              // Incoming call — dispatch a custom window event so IncomingCallOverlay
-              // (rendered outside MessagesPanel) can show regardless of active tab.
-              window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
-            } else if (ev === 'call-answer') {
-              window.dispatchEvent(new CustomEvent('bundy-call-answer', { detail: payload }))
-            } else if (ev === 'call-ice') {
-              window.dispatchEvent(new CustomEvent('bundy-call-ice', { detail: payload }))
-            } else if (ev === 'call-end') {
-              window.dispatchEvent(new CustomEvent('bundy-call-end', { detail: payload }))
-            } else if (ev === 'call-reoffer') {
-              window.dispatchEvent(new CustomEvent('bundy-call-reoffer', { detail: payload }))
-            } else if (ev === 'call-reanswer') {
-              window.dispatchEvent(new CustomEvent('bundy-call-reanswer', { detail: payload }))
-            } else if (ev === 'conference-joined') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-joined', { detail: payload }))
-            } else if (ev === 'conference-left') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-left', { detail: payload }))
-            } else if (ev === 'conference-ended') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-ended', { detail: payload }))
-            } else if (ev === 'conference-offer') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-offer', { detail: payload }))
-            } else if (ev === 'conference-answer') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-answer', { detail: payload }))
-            } else if (ev === 'conference-ice') {
-              window.dispatchEvent(new CustomEvent('bundy-conference-ice', { detail: payload }))
-            } else if (ev === 'active-conferences') {
-              window.dispatchEvent(new CustomEvent('bundy-active-conferences', { detail: payload }))
-            }
-          } catch { /* ignore parse errors */ }
+            } catch { /* ignore parse errors */ }
+          }
         }
-      }
-    }).catch(() => {})
-    return () => ctrl.abort()
+        // Stream ended normally — reconnect
+        scheduleReconnect()
+      }).catch(() => { scheduleReconnect() })
+    }
+
+    function scheduleReconnect() {
+      if (dead) return
+      reconnectTimer = setTimeout(connect, 3000)
+    }
+
+    connect()
+    return () => {
+      dead = true
+      ctrl.abort()
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+    }
   }, [config, auth.userId, loadChannels])
 
   // Request notification permission once
@@ -1415,6 +1466,53 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     }
   }
 
+  async function handleEditMessage() {
+    if (!editingMsgId || !editingContent.trim() || !selected) return
+    try {
+      await apiFetch(`/api/channels/${selected.id}/messages/${editingMsgId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content: editingContent.trim() }),
+      })
+      setMessages(prev => prev.map(m =>
+        m.id === editingMsgId ? { ...m, content: editingContent.trim(), editedAt: new Date().toISOString() } : m
+      ))
+    } catch (err) { console.error('[Messages] edit failed:', err) }
+    setEditingMsgId(null)
+    setEditingContent('')
+  }
+
+  async function handleDeleteMessage(msgId: string) {
+    if (!selected) return
+    try {
+      await apiFetch(`/api/channels/${selected.id}/messages/${msgId}`, { method: 'DELETE' })
+      setMessages(prev => prev.filter(m => m.id !== msgId))
+    } catch (err) { console.error('[Messages] delete failed:', err) }
+  }
+
+  function handleSearchInput(q: string) {
+    setSearchQuery(q)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    if (!q.trim() || q.trim().length < 2) { setSearchResults([]); return }
+    searchTimer.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const params = new URLSearchParams({ q: q.trim() })
+        const data = await apiFetch(`/api/channels/search?${params}`)
+        setSearchResults(data.messages ?? [])
+      } catch { setSearchResults([]) }
+      setSearching(false)
+    }, 400)
+  }
+
+  function handleSearchResultClick(result: typeof searchResults[0]) {
+    // Navigate to the channel and close search
+    const ch = channels.find(c => c.id === result.channelId)
+    if (ch) setSelected(ch)
+    setShowSearch(false)
+    setSearchQuery('')
+    setSearchResults([])
+  }
+
   const channelList = channels.filter(c => c.type === 'channel')
   const groupList = channels.filter(c => c.type === 'group')
   const dmList = channels.filter(c => c.type === 'dm')
@@ -1457,12 +1555,67 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       }}>
         <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Messages</span>
-          <button onClick={() => setShowNewConv(true)} title="New Conversation"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4 }}>
-            <Edit2 size={15} />
-          </button>
+          <div style={{ display: 'flex', gap: 2 }}>
+            <button onClick={() => { setShowSearch(!showSearch); if (showSearch) { setSearchQuery(''); setSearchResults([]) } }} title="Search messages"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSearch ? C.accent : C.textMuted, padding: 4 }}>
+              <Search size={15} />
+            </button>
+            <button onClick={() => setShowNewConv(true)} title="New Conversation"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4 }}>
+              <Edit2 size={15} />
+            </button>
+          </div>
         </div>
+        {showSearch && (
+          <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+            <input
+              value={searchQuery}
+              onChange={e => handleSearchInput(e.target.value)}
+              placeholder="Search messages…"
+              autoFocus
+              style={{
+                width: '100%', padding: '6px 10px', fontSize: 12,
+                border: `1px solid ${C.border}`, borderRadius: 8,
+                outline: 'none', background: '#fff', color: C.text,
+              }}
+            />
+          </div>
+        )}
         <div style={{ flex: 1, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {showSearch && searchQuery.trim().length >= 2 ? (
+            <div style={{ padding: '4px 0' }}>
+              {searching && (
+                <div style={{ padding: '12px 16px', color: C.textMuted, fontSize: 12, textAlign: 'center' }}>
+                  <Loader size={14} /> Searching…
+                </div>
+              )}
+              {!searching && searchResults.length === 0 && (
+                <div style={{ padding: '12px 16px', color: C.textMuted, fontSize: 12, textAlign: 'center' }}>No results</div>
+              )}
+              {searchResults.map(r => (
+                <button key={r.id} onClick={() => handleSearchResultClick(r)}
+                  style={{
+                    width: '100%', display: 'flex', flexDirection: 'column', gap: 2,
+                    padding: '8px 16px', border: 'none', textAlign: 'left',
+                    background: 'transparent', cursor: 'pointer',
+                    borderBottom: `1px solid ${C.border}`,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: C.accent }}>
+                      {r.channel.type === 'channel' ? `#${r.channel.name}` : r.channel.name}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(r.createdAt)}</span>
+                  </div>
+                  <span style={{ fontSize: 11, color: C.textMuted }}>{r.sender.alias ?? r.sender.username}</span>
+                  <span style={{
+                    fontSize: 12, color: C.text, overflow: 'hidden',
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                  }}>{r.content}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
           {channelList.length > 0 && (
             <>
               <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
@@ -1486,6 +1639,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               No conversations yet.<br />
               <button onClick={() => setShowNewConv(true)} style={{ marginTop: 8, background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>+ Start one</button>
             </div>
+          )}
+            </>
           )}
         </div>
       </div>
@@ -1624,8 +1779,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               const isRead = msg.reads?.some(r => r.userId !== auth.userId)
               const isAttachment = /^\[📎\s[^\]]+?\]\(https?:\/\/\S+?\)\s*$/.test(msg.content)
               const plainUrls = isAttachment ? [] : extractUrls(msg.content).filter(u => !isImageUrl(u))
+              const isEditing = editingMsgId === msg.id
+              const isHovered = hoveredMsgId === msg.id
               return (
-                <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}>
+                <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}
+                  onMouseEnter={() => setHoveredMsgId(msg.id)}
+                  onMouseLeave={() => setHoveredMsgId(null)}
+                >
                   {showHeader && !isMe && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <Avatar url={msg.sender.avatarUrl} name={senderName} size={24} />
@@ -1633,9 +1793,35 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(msg.createdAt)}</span>
                     </div>
                   )}
-                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32 }}>
+                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32, position: 'relative' }}>
                     <div style={{ maxWidth: '72%' }}>
-                      {isAttachment ? (
+                      {isEditing ? (
+                        <div style={{
+                          padding: '6px 10px', borderRadius: 12,
+                          background: '#fff', border: `2px solid ${C.accent}`,
+                        }}>
+                          <textarea
+                            value={editingContent}
+                            onChange={e => setEditingContent(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditMessage() }
+                              if (e.key === 'Escape') { setEditingMsgId(null); setEditingContent('') }
+                            }}
+                            autoFocus
+                            style={{
+                              width: '100%', minHeight: 36, fontSize: 13, color: C.text,
+                              background: 'transparent', border: 'none', outline: 'none',
+                              resize: 'none', fontFamily: 'inherit',
+                            }}
+                          />
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
+                            <button onClick={() => { setEditingMsgId(null); setEditingContent('') }}
+                              style={{ fontSize: 11, color: C.textMuted, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+                            <button onClick={handleEditMessage}
+                              style={{ fontSize: 11, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Save</button>
+                          </div>
+                        </div>
+                      ) : isAttachment ? (
                         <InlineAttachment content={msg.content} isMe={isMe} config={config} />
                       ) : (
                         <div style={{
@@ -1662,6 +1848,27 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         </div>
                       )}
                     </div>
+                    {/* Hover action buttons */}
+                    {isHovered && !isEditing && isMe && (
+                      <div style={{
+                        position: 'absolute', top: -6, [isMe ? 'left' : 'right']: isMe ? undefined : -60,
+                        ...(isMe ? { right: 'calc(72% + 4px)' } : {}),
+                        display: 'flex', gap: 2, background: C.contentBg,
+                        borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+                        border: `1px solid ${C.border}`, padding: 2,
+                      }}>
+                        {!isAttachment && (
+                          <button onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
+                            title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                            <Edit2 size={12} />
+                          </button>
+                        )}
+                        <button onClick={() => handleDeleteMessage(msg.id)}
+                          title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )
@@ -2086,6 +2293,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
 
   // Track remote video availability (when peer adds/removes video)
   const [remoteHasVideo, setRemoteHasVideo] = useState(false)
+  const iceRestartTimer = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -2104,7 +2312,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
         }
       }, 30000)
     }
-    return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout); if (durationTimer.current) clearInterval(durationTimer.current) }
+    return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout); if (durationTimer.current) clearInterval(durationTimer.current); if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current) }
   }, [])
 
   // Call duration timer
@@ -2198,7 +2406,8 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
       console.log('[CallWidget] iceConnectionState:', state)
       if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected' }
       else if (state === 'disconnected') {
-        setTimeout(async () => {
+        if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current)
+        iceRestartTimer.current = setTimeout(async () => {
           if (peerConn.iceConnectionState === 'disconnected' && statusRef.current !== 'ended') {
             console.log('[CallWidget] ICE disconnected — attempting restart')
             try {
@@ -2560,6 +2769,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const hideTimer = useRef<NodeJS.Timeout | null>(null)
   const mountedRef = useRef(true)
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const iceRestartTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
     mountedRef.current = true
@@ -2571,6 +2781,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       ctrl.abort()
       cleanupAll(true)
       if (durationTimer.current) clearInterval(durationTimer.current)
+      for (const t of iceRestartTimers.current.values()) clearTimeout(t)
+      iceRestartTimers.current.clear()
     }
   }, [])
 
@@ -2659,7 +2871,10 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       const state = peerConn.iceConnectionState
       console.log(`[Conference] peer ${peerId} iceConnectionState: ${state}`)
       if (state === 'disconnected') {
-        setTimeout(async () => {
+        const prev = iceRestartTimers.current.get(peerId)
+        if (prev) clearTimeout(prev)
+        iceRestartTimers.current.set(peerId, setTimeout(async () => {
+          iceRestartTimers.current.delete(peerId)
           if (peerConn.iceConnectionState === 'disconnected' && mountedRef.current) {
             console.log(`[Conference] peer ${peerId} ICE disconnected — attempting restart`)
             try {
@@ -2672,7 +2887,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
               })
             } catch (err) { console.error(`[Conference] peer ${peerId} ICE restart failed:`, err) }
           }
-        }, 5000)
+        }, 5000))
       } else if (state === 'failed') {
         peerConn.createOffer({ iceRestart: true }).then(async offer => {
           await peerConn.setLocalDescription(offer)
@@ -2702,6 +2917,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       peersRef.current.delete(peerId)
       const audioEl = audioElementsRef.current.get(peerId)
       if (audioEl) { audioEl.pause(); audioEl.srcObject = null; audioElementsRef.current.delete(peerId) }
+      const iceTimer = iceRestartTimers.current.get(peerId)
+      if (iceTimer) { clearTimeout(iceTimer); iceRestartTimers.current.delete(peerId) }
       if (mountedRef.current) {
         setPeers(prev => { const next = new Map(prev); next.delete(peerId); return next })
       }
@@ -3228,7 +3445,7 @@ function TaskDetailPanel({ task, config, auth, onClose, onUpdated }: {
       const d = await apiFetch(`/api/tasks/${task.id}`, { method: 'PATCH', body: JSON.stringify({ status }) }) as { task: Task }
       setDetail(d.task)
       onUpdated(d.task)
-    } catch { /* ignore */ } finally { setSavingStatus(false) }
+    } catch (err) { console.error('[TaskDetail] setStatus failed:', err) } finally { setSavingStatus(false) }
   }
 
   async function addComment() {
@@ -3238,7 +3455,7 @@ function TaskDetailPanel({ task, config, auth, onClose, onUpdated }: {
       const d = await apiFetch(`/api/tasks/${task.id}/comments`, { method: 'POST', body: JSON.stringify({ body: commentText.trim() }) }) as { comment: TaskComment }
       setComments(prev => [...prev, d.comment])
       setCommentText('')
-    } catch { /* ignore */ } finally { setAddingComment(false) }
+    } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
   }
 
   const isDone = detail.status === 'done' || detail.status === 'cancelled'
