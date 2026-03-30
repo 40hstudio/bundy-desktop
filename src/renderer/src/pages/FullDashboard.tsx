@@ -1360,7 +1360,7 @@ function MessagesPanel({ config, auth, acceptedCall }: {
 
       {/* Conversations sidebar */}
       <div style={{
-        width: 240, height: '100%', borderRight: `1px solid ${C.border}`,
+        width: 240, borderRight: `1px solid ${C.border}`,
         background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
       }}>
         <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -1400,7 +1400,7 @@ function MessagesPanel({ config, auth, acceptedCall }: {
 
       {/* Message thread */}
       {selected ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{
             padding: '10px 16px', borderBottom: `1px solid ${C.border}`,
