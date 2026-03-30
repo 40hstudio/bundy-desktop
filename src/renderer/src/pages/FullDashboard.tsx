@@ -906,6 +906,14 @@ function IncomingCallOverlay({ payload, onAccept, onReject }: {
   config?: ApiConfig; auth?: Auth
   onAccept: () => void; onReject: () => void
 }) {
+  useEffect(() => {
+    const audio = new Audio('ringtone.mp3')
+    audio.loop = true
+    audio.volume = 0.6
+    audio.play().catch(() => {})
+    return () => { audio.pause(); audio.src = '' }
+  }, [])
+
   return (
     <div style={{
       position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
@@ -2066,7 +2074,8 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
   const durationTimer = useRef<NodeJS.Timeout | null>(null)
   const localVideo = useRef<HTMLVideoElement>(null)
   const remoteVideo = useRef<HTMLVideoElement>(null)
-  const remoteAudio = useRef<HTMLAudioElement>(null)
+  const remoteStreamRef = useRef<MediaStream | null>(null)
+  const remoteAudioEl = useRef<HTMLAudioElement | null>(null)
   const pc = useRef<RTCPeerConnection | null>(null)
   const localStream = useRef<MediaStream | null>(null)
   const iceBuffer = useRef<RTCIceCandidateInit[]>(bufferedIce ? [...bufferedIce] : [])
@@ -2106,6 +2115,22 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
     return () => { if (status === 'ended' && durationTimer.current) { clearInterval(durationTimer.current); durationTimer.current = null } }
   }, [status])
 
+  // Imperative audio element for remote stream (survives mode switches)
+  useEffect(() => {
+    const audio = document.createElement('audio')
+    audio.autoplay = true
+    remoteAudioEl.current = audio
+    return () => { audio.pause(); audio.srcObject = null; remoteAudioEl.current = null }
+  }, [])
+
+  // Re-attach remote stream to video element on mode switch
+  useEffect(() => {
+    if (remoteStreamRef.current && remoteVideo.current) {
+      remoteVideo.current.srcObject = remoteStreamRef.current
+      remoteVideo.current.play().catch(() => {})
+    }
+  }, [windowMode])
+
   // Dragging logic for mini mode
   useEffect(() => {
     if (!isDragging) return
@@ -2143,8 +2168,14 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
     pc.current = peerConn
     stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
     peerConn.ontrack = e => {
-      const remoteStream = e.streams[0]
-      if (!remoteStream) return
+      let remoteStream = e.streams[0]
+      if (!remoteStream) {
+        if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream()
+        remoteStreamRef.current.addTrack(e.track)
+        remoteStream = remoteStreamRef.current
+      } else {
+        remoteStreamRef.current = remoteStream
+      }
       console.log('[CallWidget] ontrack fired, tracks:', remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`))
       const hasVid = remoteStream.getVideoTracks().length > 0
       setRemoteHasVideo(hasVid)
@@ -2152,22 +2183,47 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
         remoteVideo.current.srcObject = remoteStream
         remoteVideo.current.play().catch(() => {})
       }
-      if (remoteAudio.current) {
-        remoteAudio.current.srcObject = remoteStream
-        remoteAudio.current.play().catch(() => {})
+      if (remoteAudioEl.current) {
+        remoteAudioEl.current.srcObject = remoteStream
+        remoteAudioEl.current.play().catch(() => {})
       }
     }
     peerConn.onconnectionstatechange = () => {
       const state = peerConn.connectionState
       console.log('[CallWidget] connectionState:', state)
       if (state === 'connected') { setStatus('connected'); statusRef.current = 'connected' }
-      else if (state === 'failed') { console.error('[CallWidget] connection failed'); cleanup(true); setStatus('ended'); onEnd() }
     }
     peerConn.oniceconnectionstatechange = () => {
       const state = peerConn.iceConnectionState
       console.log('[CallWidget] iceConnectionState:', state)
       if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected' }
-      else if (state === 'failed') { console.error('[CallWidget] ICE failed'); cleanup(true); setStatus('ended'); onEnd() }
+      else if (state === 'disconnected') {
+        setTimeout(async () => {
+          if (peerConn.iceConnectionState === 'disconnected' && statusRef.current !== 'ended') {
+            console.log('[CallWidget] ICE disconnected — attempting restart')
+            try {
+              const offer = await peerConn.createOffer({ iceRestart: true })
+              await peerConn.setLocalDescription(offer)
+              await fetch(`${config.apiBase}/api/calls`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
+              })
+            } catch (err) { console.error('[CallWidget] ICE restart failed:', err) }
+          }
+        }, 5000)
+      }
+      else if (state === 'failed') {
+        console.warn('[CallWidget] ICE failed — attempting restart')
+        peerConn.createOffer({ iceRestart: true }).then(async offer => {
+          await peerConn.setLocalDescription(offer)
+          await fetch(`${config.apiBase}/api/calls`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
+          })
+        }).catch(() => { console.error('[CallWidget] ICE restart failed, ending call'); cleanup(true); setStatus('ended'); onEnd() })
+      }
     }
     peerConn.onicecandidate = e => {
       if (e.candidate) {
@@ -2357,7 +2413,6 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
         boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden',
         display: 'flex', flexDirection: 'column',
       }}>
-        <audio ref={remoteAudio} autoPlay style={{ display: 'none' }} />
         {/* Draggable header */}
         <div
           onMouseDown={handleDragStart}
@@ -2422,7 +2477,6 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
       position: 'fixed', inset: 0, background: isFs ? '#000' : 'rgba(0,0,0,0.85)', zIndex: 9998,
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: isFs ? 0 : 20,
     }}>
-      <audio ref={remoteAudio} autoPlay style={{ display: 'none' }} />
       {showVideo ? (
         <div style={{
           position: 'relative',
@@ -2505,6 +2559,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const [showControls, setShowControls] = useState(true)
   const hideTimer = useRef<NodeJS.Timeout | null>(null)
   const mountedRef = useRef(true)
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   useEffect(() => {
     mountedRef.current = true
@@ -2561,9 +2616,26 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     }
 
     peerConn.ontrack = e => {
-      const remoteStream = e.streams[0]
-      if (!remoteStream) return
-      peerData.stream = remoteStream
+      let remoteStream = e.streams[0]
+      if (!remoteStream) {
+        if (!peerData.stream) peerData.stream = new MediaStream()
+        peerData.stream.addTrack(e.track)
+        remoteStream = peerData.stream
+      } else {
+        peerData.stream = remoteStream
+      }
+      console.log(`[Conference] ontrack from ${peerId}, tracks:`, remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`))
+      // Imperative audio element per peer (survives re-renders)
+      if (e.track.kind === 'audio') {
+        let audioEl = audioElementsRef.current.get(peerId)
+        if (!audioEl) {
+          audioEl = document.createElement('audio')
+          audioEl.autoplay = true
+          audioElementsRef.current.set(peerId, audioEl)
+        }
+        audioEl.srcObject = remoteStream
+        audioEl.play().catch(() => {})
+      }
       if (mountedRef.current) {
         setPeers(prev => {
           const next = new Map(prev)
@@ -2583,10 +2655,39 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       }
     }
 
+    peerConn.oniceconnectionstatechange = () => {
+      const state = peerConn.iceConnectionState
+      console.log(`[Conference] peer ${peerId} iceConnectionState: ${state}`)
+      if (state === 'disconnected') {
+        setTimeout(async () => {
+          if (peerConn.iceConnectionState === 'disconnected' && mountedRef.current) {
+            console.log(`[Conference] peer ${peerId} ICE disconnected — attempting restart`)
+            try {
+              const offer = await peerConn.createOffer({ iceRestart: true })
+              await peerConn.setLocalDescription(offer)
+              await fetch(`${config.apiBase}/api/calls`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
+              })
+            } catch (err) { console.error(`[Conference] peer ${peerId} ICE restart failed:`, err) }
+          }
+        }, 5000)
+      } else if (state === 'failed') {
+        peerConn.createOffer({ iceRestart: true }).then(async offer => {
+          await peerConn.setLocalDescription(offer)
+          await fetch(`${config.apiBase}/api/calls`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
+          })
+        }).catch(() => { removePeer(peerId) })
+      }
+    }
     peerConn.onconnectionstatechange = () => {
       const state = peerConn.connectionState
       console.log(`[Conference] peer ${peerId} connectionState: ${state}`)
-      if (state === 'failed' || state === 'closed') {
+      if (state === 'closed') {
         removePeer(peerId)
       }
     }
@@ -2599,6 +2700,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     if (peer) {
       peer.pc.close()
       peersRef.current.delete(peerId)
+      const audioEl = audioElementsRef.current.get(peerId)
+      if (audioEl) { audioEl.pause(); audioEl.srcObject = null; audioElementsRef.current.delete(peerId) }
       if (mountedRef.current) {
         setPeers(prev => { const next = new Map(prev); next.delete(peerId); return next })
       }
@@ -2645,12 +2748,21 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       const payload = (e as CustomEvent<{ from: string; sdp: string; channelId: string }>).detail
       if (payload.channelId !== channelId) return
       const fromId = payload.from
-      // Find the participant info from current peers or use a fallback
       let name = fromId, avatar: string | null = null
       const existing = peersRef.current.get(fromId)
       if (existing) { name = existing.name; avatar = existing.avatar }
       const peerConn = existing?.pc ?? createPeerConnection(fromId, name, avatar)
       try {
+        // Polite-peer protocol: handle offer glare
+        const isPolite = auth.userId < fromId
+        if (peerConn.signalingState === 'have-local-offer') {
+          if (!isPolite) {
+            console.log(`[Conference] offer glare with ${fromId} — impolite, ignoring remote offer`)
+            return
+          }
+          console.log(`[Conference] offer glare with ${fromId} — polite, rolling back`)
+          await peerConn.setLocalDescription({ type: 'rollback' })
+        }
         await peerConn.setRemoteDescription({ type: 'offer', sdp: payload.sdp })
         await drainPeerIceBuffer(fromId)
         const answer = await peerConn.createAnswer()
@@ -2732,6 +2844,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   function cleanupAll(sendLeave: boolean) {
     for (const [, peer] of peersRef.current) { peer.pc.close() }
     peersRef.current.clear()
+    for (const [, audioEl] of audioElementsRef.current) { audioEl.pause(); audioEl.srcObject = null }
+    audioElementsRef.current.clear()
     localStream.current?.getTracks().forEach(t => t.stop())
     if (sendLeave) {
       fetch(`${config.apiBase}/api/calls`, {
