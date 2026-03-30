@@ -1524,8 +1524,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 return (
                   <button onClick={async () => {
                     try {
-                      const res = await fetch(`${config.serverUrl}/api/calls`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+                      const res = await fetch(`${config.apiBase}/api/calls`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
                         body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
                       })
                       const data = await res.json()
@@ -1541,8 +1541,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               return (
                 <button onClick={async () => {
                   try {
-                    const res = await fetch(`${config.serverUrl}/api/calls`, {
-                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+                    const res = await fetch(`${config.apiBase}/api/calls`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
                       body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
                     })
                     const data = await res.json()
@@ -1584,8 +1584,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 </div>
                 <button onClick={async () => {
                   try {
-                    const res = await fetch(`${config.serverUrl}/api/calls`, {
-                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+                    const res = await fetch(`${config.apiBase}/api/calls`, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
                       body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
                     })
                     const data = await res.json()
@@ -2076,7 +2076,7 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
   const renegotiating = useRef(false)
 
   // Track remote video availability (when peer adds/removes video)
-  const [remoteHasVideo, setRemoteHasVideo] = useState(callType === 'video')
+  const [remoteHasVideo, setRemoteHasVideo] = useState(false)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -2377,7 +2377,18 @@ function CallWidget({ config, auth, targetUser, callType, onEnd, offerSdp, buffe
         </div>
         {showVideo ? (
           <div style={{ flex: 1, position: 'relative', background: '#000', minHeight: 0 }}>
-            <video ref={remoteVideo} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <video ref={remoteVideo} autoPlay playsInline style={{
+              width: '100%', height: '100%', objectFit: 'cover',
+              display: remoteHasVideo ? 'block' : 'none',
+            }} />
+            {!remoteHasVideo && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <Avatar url={targetUser.avatar} name={targetUser.name} size={24} />
+                <span style={{ color: '#94a3b8', fontSize: 10 }}>
+                  {status === 'calling' ? 'Calling…' : 'Connected'}
+                </span>
+              </div>
+            )}
             {videoActive && (
               <video ref={localVideo} autoPlay playsInline muted style={{
                 position: 'absolute', bottom: 4, right: 4, width: 70, height: 52,
