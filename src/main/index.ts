@@ -147,13 +147,15 @@ function togglePopup(): void {
 }
 
 function flushUpdateState(): void {
-  if (!popupWin || popupWin.isDestroyed()) return
-  if (updateDownloaded) {
-    popupWin.webContents.send('update-downloaded')
-  } else if (pendingUpdateVersion !== null) {
-    popupWin.webContents.send('update-available', { version: pendingUpdateVersion })
-    if (pendingDownloadPercent !== null) {
-      popupWin.webContents.send('download-progress', { percent: pendingDownloadPercent })
+  const targets = [popupWin, fullNativeWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+  for (const target of targets) {
+    if (updateDownloaded) {
+      target.webContents.send('update-downloaded')
+    } else if (pendingUpdateVersion !== null) {
+      target.webContents.send('update-available', { version: pendingUpdateVersion })
+      if (pendingDownloadPercent !== null) {
+        target.webContents.send('download-progress', { percent: pendingDownloadPercent })
+      }
     }
   }
 }
@@ -246,6 +248,10 @@ async function openFullWindow(): Promise<void> {
   fullNativeWin.on('closed', () => {
     fullWindowIds.delete(wcId)
     fullNativeWin = null
+    // Hide dock icon when window closes (back to tray-only mode)
+    if (!popupWin || popupWin.isDestroyed() || !popupWin.isVisible()) {
+      app.dock?.hide()
+    }
   })
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {
@@ -254,6 +260,10 @@ async function openFullWindow(): Promise<void> {
     await fullNativeWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'full' })
   }
 
+  fullNativeWin.webContents.once('did-finish-load', () => {
+    flushUpdateState()
+  })
+  app.dock?.show()
   fullNativeWin.show()
   fullNativeWin.focus()
 }
@@ -644,24 +654,18 @@ app.whenReady().then(() => {
 
   autoUpdater.on('update-available', (info) => {
     pendingUpdateVersion = info.version
-    if (popupWin && !popupWin.isDestroyed()) {
-      popupWin.webContents.send('update-available', { version: info.version })
-    }
+    flushUpdateState()
   })
 
   autoUpdater.on('download-progress', (progress) => {
     pendingDownloadPercent = Math.round(progress.percent)
-    if (popupWin && !popupWin.isDestroyed()) {
-      popupWin.webContents.send('download-progress', { percent: pendingDownloadPercent })
-    }
+    flushUpdateState()
   })
 
   autoUpdater.on('update-downloaded', () => {
     updateDownloaded = true
     pendingDownloadPercent = 100
-    if (popupWin && !popupWin.isDestroyed()) {
-      popupWin.webContents.send('update-downloaded')
-    }
+    flushUpdateState()
     // Don't force-restart — let the user choose when to restart via the UI.
     // The app will also install on next quit (autoInstallOnAppQuit = true).
   })
@@ -676,7 +680,6 @@ app.whenReady().then(() => {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open Dashboard', click: () => void openFullWindow() },
-    { label: 'Open Mini Panel', click: togglePopup },
     { type: 'separator' },
     {
       label: 'Open in Browser',

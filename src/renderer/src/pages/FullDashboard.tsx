@@ -34,7 +34,7 @@ interface BundyStatus {
   elapsedMs: number; username: string; role: string
 }
 interface UserInfo {
-  id: string; username: string; alias: string | null; avatarUrl: string | null; role?: string
+  id: string; username: string; alias: string | null; avatarUrl: string | null; role?: string; userStatus?: string | null
 }
 interface ChannelMember {
   userId: string; user: UserInfo
@@ -245,9 +245,9 @@ const NAV: NavItem[] = [
   { id: 'activity', icon: <Activity size={18} />, label: 'Activity' },
 ]
 
-function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge, messageMention }: {
+function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge, messageMention, updateBadge }: {
   tab: Tab; setTab: (t: Tab) => void
-  auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number; messageMention?: boolean
+  auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number; messageMention?: boolean; updateBadge?: boolean
 }) {
   return (
     <nav style={{
@@ -325,6 +325,9 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge, messageM
           }}
         >
           <Settings size={18} /> Settings
+          {updateBadge && (
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.accent, marginLeft: 'auto', flexShrink: 0 }} />
+          )}
         </button>
 
         {/* User info */}
@@ -373,9 +376,11 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
   // Clock-out report modal state
   const [planItems, setPlanItems] = useState<PlanItem[]>([])
   const [confirmItems, setConfirmItems] = useState<Array<{ itemId: string; status: string; outcome: string }>>([])
-  const [clockOutStep, setClockOutStep] = useState<'plan' | 'report'>('plan')
+  const [clockOutStep, setClockOutStep] = useState<'tasks' | 'plan' | 'report'>('report')
   const [showReportModal, setShowReportModal] = useState(false)
   const [reportContent, setReportContent] = useState('')
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+  const [taskStatusUpdates, setTaskStatusUpdates] = useState<Record<string, string>>({})
   const [reportSubmitting, setReportSubmitting] = useState(false)
   const [reportError, setReportError] = useState('')
   const [showPreview, setShowPreview] = useState(false)
@@ -430,12 +435,21 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
     setReportContent('')
     setReportError('')
     setConfirmItems(planItems.map(i => ({ itemId: i.id, status: i.status, outcome: '' })))
-    setClockOutStep(planItems.length > 0 ? 'plan' : 'report')
+    setTaskStatusUpdates({})
+    const openTasks = todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+    if (openTasks.length > 0) {
+      setClockOutStep('tasks')
+    } else if (planItems.length > 0) {
+      setClockOutStep('plan')
+    } else {
+      setClockOutStep('report')
+    }
     setShowReportModal(true)
   }
 
   async function doAction(action: string) {
     if (action === 'clock-out') { openClockOutModal(); return }
+    new Audio('sounds/button-press.mp3').play().catch(() => {})
     setActioning(true)
     try {
       await window.electronAPI.doAction(action)
@@ -538,7 +552,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
           {loadingTasks ? (
             <div style={{ color: C.textMuted, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
               <Loader size={16} />
@@ -548,61 +562,99 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
               No tasks due today. Manage tasks in the Tasks tab.
             </div>
           ) : (
-            todayTasks.map(task => (
-              <div key={task.id} onClick={() => onOpenTask?.(task.id)} style={{
-                ...neu(), padding: '10px 12px',
-                display: 'flex', alignItems: 'center', gap: 10,
-                cursor: 'pointer',
-              }}>
-                {/* Status icon */}
-                <div style={{
-                  color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0,
-                }}>
-                  {TASK_STATUS_ICONS[task.status] ?? <Circle size={13} />}
-                </div>
-
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 13, color: C.text,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    display: 'flex', alignItems: 'center', gap: 4,
+            todayTasks.map(task => {
+              const isExpanded = expandedTaskId === task.id
+              return (
+                <div key={task.id}>
+                  <div onClick={() => setExpandedTaskId(prev => prev === task.id ? null : task.id)} style={{
+                    ...neu(), padding: '10px 12px',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    cursor: 'pointer',
+                    borderBottomLeftRadius: isExpanded ? 0 : undefined,
+                    borderBottomRightRadius: isExpanded ? 0 : undefined,
                   }}>
-                    {task.parentTaskId && <CornerDownRight size={10} color={C.textMuted} style={{ flexShrink: 0 }} />}
-                    {task.title}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                    {task.project && (
-                      <span style={{
-                        fontSize: 10, color: task.project.color || C.textMuted,
-                        background: (task.project.color || C.accent) + '18',
-                        padding: '1px 6px', borderRadius: 4,
-                      }}>
-                        {task.project.name}
-                      </span>
-                    )}
-                    <span style={{
-                      fontSize: 10,
-                      color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
-                      fontWeight: 600, textTransform: 'uppercase',
+                    {/* Status icon */}
+                    <div style={{
+                      color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0,
                     }}>
-                      {task.priority}
-                    </span>
-                  </div>
-                </div>
+                      {TASK_STATUS_ICONS[task.status] ?? <Circle size={13} />}
+                    </div>
 
-                {/* Mark done button */}
-                <button
-                  onClick={() => markTaskDone(task.id)}
-                  title="Mark as done"
-                  style={{
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: C.success, padding: 2, flexShrink: 0,
-                  }}
-                >
-                  <Check size={15} />
-                </button>
-              </div>
-            ))
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 13, color: C.text,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        display: 'flex', alignItems: 'center', gap: 4,
+                      }}>
+                        {task.parentTaskId && <CornerDownRight size={10} color={C.textMuted} style={{ flexShrink: 0 }} />}
+                        {task.title}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        {task.project && (
+                          <span style={{
+                            fontSize: 10, color: task.project.color || C.textMuted,
+                            background: (task.project.color || C.accent) + '18',
+                            padding: '1px 6px', borderRadius: 4,
+                          }}>
+                            {task.project.name}
+                          </span>
+                        )}
+                        <span style={{
+                          fontSize: 10,
+                          color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
+                          fontWeight: 600, textTransform: 'uppercase',
+                        }}>
+                          {task.priority}
+                        </span>
+                      </div>
+                    </div>
+
+                    <ChevronDown size={14} color={C.textMuted} style={{ flexShrink: 0, transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }} />
+                  </div>
+
+                  {/* Expanded panel */}
+                  {isExpanded && (
+                    <div style={{
+                      ...neu(true), borderTopLeftRadius: 0, borderTopRightRadius: 0,
+                      padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8,
+                    }}>
+                      {task.description && (
+                        <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                          {task.description.slice(0, 200)}{task.description.length > 200 ? '…' : ''}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {(['todo', 'in-progress', 'done', 'cancelled'] as const).map(s => (
+                          <button key={s} onClick={async (e) => {
+                            e.stopPropagation()
+                            if (!config) return
+                            await fetch(`${config.apiBase}/api/tasks/${task.id}`, {
+                              method: 'PATCH',
+                              headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ status: s }),
+                            }).catch(() => {})
+                            setTodayTasks(prev => s === 'done' || s === 'cancelled'
+                              ? prev.filter(t => t.id !== task.id)
+                              : prev.map(t => t.id === task.id ? { ...t, status: s } : t))
+                            if (s === 'done' || s === 'cancelled') setExpandedTaskId(null)
+                          }} style={{
+                            fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+                            border: 'none',
+                            ...(task.status === s ? neu() : { background: 'transparent' }),
+                            color: task.status === s ? (TASK_STATUS_COLORS[s] ?? C.textMuted) : C.textMuted,
+                            fontWeight: task.status === s ? 600 : 400,
+                          }}>{s}</button>
+                        ))}
+                        <button onClick={(e) => { e.stopPropagation(); onOpenTask?.(task.id) }} style={{
+                          marginLeft: 'auto', fontSize: 11, padding: '3px 8px', borderRadius: 6,
+                          border: 'none', background: 'transparent', color: C.accent, cursor: 'pointer',
+                        }}>Open →</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
       </div>
@@ -621,13 +673,72 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>
-                {clockOutStep === 'plan' ? '📋 Confirm Plan Status' : '🔴 Clock Out Report'}
+                {clockOutStep === 'tasks' ? '✅ Open Tasks' : clockOutStep === 'plan' ? '📋 Confirm Plan Status' : '🔴 Clock Out Report'}
               </span>
               <button
                 onClick={() => { setShowReportModal(false); setShowPreview(false) }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}
               ><X size={16} /></button>
             </div>
+
+            {/* ─── Step 0: Open Tasks ─── */}
+            {clockOutStep === 'tasks' && (
+              <>
+                <div style={{ fontSize: 12, color: C.textMuted }}>
+                  You have open tasks. Update their status before clocking out.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
+                  {todayTasks.map(task => (
+                    <div key={task.id} style={{ ...neu(true), padding: 12, borderRadius: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 8 }}>
+                        {task.title}
+                        {task.project && <span style={{ fontSize: 10, color: task.project.color || C.textMuted, background: (task.project.color || C.accent) + '18', padding: '1px 6px', borderRadius: 4, marginLeft: 8 }}>{task.project.name}</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {(['todo', 'in-progress', 'done', 'cancelled'] as const).map(s => {
+                          const cur = taskStatusUpdates[task.id] ?? task.status
+                          return (
+                            <button
+                              key={s}
+                              onClick={() => setTaskStatusUpdates(prev => ({ ...prev, [task.id]: s }))}
+                              style={{
+                                fontSize: 11, padding: '4px 10px', borderRadius: 8, cursor: 'pointer',
+                                border: 'none',
+                                ...(cur === s ? neu() : { background: 'transparent' }),
+                                color: cur === s ? (TASK_STATUS_COLORS[s] ?? C.textMuted) : C.textMuted,
+                                fontWeight: cur === s ? 600 : 400,
+                              }}
+                            >{s}</button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => { setShowReportModal(false); setShowPreview(false) }}
+                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
+                    Cancel
+                  </button>
+                  <button onClick={async () => {
+                    if (config && Object.keys(taskStatusUpdates).length > 0) {
+                      await Promise.allSettled(Object.entries(taskStatusUpdates).map(([id, status]) =>
+                        fetch(`${config.apiBase}/api/tasks/${id}`, {
+                          method: 'PATCH',
+                          headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ status }),
+                        })
+                      ))
+                      await loadTasks()
+                    }
+                    setClockOutStep(planItems.length > 0 ? 'plan' : 'report')
+                  }}
+                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.accent }}>
+                    Next →
+                  </button>
+                </div>
+              </>
+            )}
 
             {/* ─── Step 1: Plan Confirmation ─── */}
             {clockOutStep === 'plan' && (
@@ -681,9 +792,13 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
                   })}
                 </div>
                 <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => { setShowReportModal(false); setShowPreview(false) }}
+                  <button onClick={() => {
+                    const openTasks = todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+                    if (openTasks.length > 0) setClockOutStep('tasks')
+                    else { setShowReportModal(false); setShowPreview(false) }
+                  }}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
-                    Cancel
+                    {todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? '← Back' : 'Cancel'}
                   </button>
                   <button onClick={() => setClockOutStep('report')}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.accent }}>
@@ -774,9 +889,9 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
                 {reportError && <div style={{ fontSize: 12, color: C.danger }}>{reportError}</div>}
 
                 <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : (setShowReportModal(false), setShowPreview(false)) }}
+                  <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? setClockOutStep('tasks') : (setShowReportModal(false), setShowPreview(false)) }}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
-                    {planItems.length > 0 ? '← Back' : 'Cancel'}
+                    {planItems.length > 0 || todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? '← Back' : 'Cancel'}
                   </button>
                   <button
                     onClick={async () => {
@@ -1302,7 +1417,7 @@ function IncomingCallOverlay({ payload, onAccept, onReject }: {
   onAccept: () => void; onReject: () => void
 }) {
   useEffect(() => {
-    const audio = new Audio('ringtone.mp3')
+    const audio = new Audio('sounds/incoming-call.mp3')
     audio.loop = true
     audio.volume = 0.6
     audio.play().catch(() => {})
@@ -1823,6 +1938,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                   if (isMention) {
                     setMentionedChannels(prev => new Set([...prev, channelId]))
                   }
+                  // Sound notification
+                  new Audio(isMention ? 'sounds/mentioned-message.mp3' : 'sounds/new-message.mp3').play().catch(() => {})
                   // Desktop notification
                   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
                     void new Notification(isMention ? `📣 You were mentioned` : `New message`, {
@@ -2996,6 +3113,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 }
 
 function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void }) {
+  const partnerStatus = conv.type === 'dm' && conv.partnerId
+    ? conv.members.find(m => m.userId === conv.partnerId)?.user?.userStatus ?? null
+    : null
+
   return (
     <button
       onClick={onClick}
@@ -3030,7 +3151,11 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onCl
         <div style={{ fontSize: 12, fontWeight: selected || (conv.unread ?? 0) > 0 ? 600 : 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {conv.name}
         </div>
-        {typingUsers.length > 0 ? (
+        {partnerStatus && !typingUsers.length ? (
+          <div style={{ fontSize: 10, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.85 }}>
+            {partnerStatus}
+          </div>
+        ) : typingUsers.length > 0 ? (
           <div style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             typing…
           </div>
@@ -3422,6 +3547,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   // Track remote video availability (when peer adds/removes video)
   const [remoteHasVideo, setRemoteHasVideo] = useState(false)
   const iceRestartTimer = useRef<NodeJS.Timeout | null>(null)
+  const callingAudioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -3430,6 +3556,15 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       answerCall()
     } else {
       startCall()
+    }
+    // Play calling-idle ringtone for outgoing calls
+    let callingAudio: HTMLAudioElement | null = null
+    if (!isReceiver) {
+      callingAudio = new Audio('sounds/calling-idle.mp3')
+      callingAudio.loop = true
+      callingAudio.volume = 0.5
+      callingAudio.play().catch(() => {})
+      callingAudioRef.current = callingAudio
     }
     let timeout: NodeJS.Timeout | undefined
     if (!isReceiver) {
@@ -3440,7 +3575,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         }
       }, 30000)
     }
-    return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout); if (durationTimer.current) clearInterval(durationTimer.current); if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current) }
+    return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout); if (durationTimer.current) clearInterval(durationTimer.current); if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current); if (callingAudio) { callingAudio.pause(); callingAudio.src = '' } }
   }, [])
 
   // Call duration timer
@@ -3541,12 +3676,12 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     peerConn.onconnectionstatechange = () => {
       const state = peerConn.connectionState
       console.log('[CallWidget] connectionState:', state)
-      if (state === 'connected') { setStatus('connected'); statusRef.current = 'connected' }
+      if (state === 'connected') { setStatus('connected'); statusRef.current = 'connected'; if (callingAudioRef.current) { callingAudioRef.current.pause(); callingAudioRef.current.src = ''; callingAudioRef.current = null } }
     }
     peerConn.oniceconnectionstatechange = () => {
       const state = peerConn.iceConnectionState
       console.log('[CallWidget] iceConnectionState:', state)
-      if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected' }
+      if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected'; if (callingAudioRef.current) { callingAudioRef.current.pause(); callingAudioRef.current.src = ''; callingAudioRef.current = null } }
       else if (state === 'disconnected') {
         if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current)
         iceRestartTimer.current = setTimeout(async () => {
@@ -5127,20 +5262,26 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
 
       {/* Overlays */}
       {detailTaskId && (
-        <TaskDetailDrawer
-          taskId={detailTaskId}
-          config={config}
-          auth={auth}
-          projects={projects}
-          onClose={() => setDetailTaskId(null)}
-          onUpdated={(updated) => {
-            setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
-          }}
-          onDeleted={(id) => {
-            setTasks(prev => prev.filter(t => t.id !== id))
-            setDetailTaskId(null)
-          }}
-        />
+        <>
+          <div
+            onClick={() => setDetailTaskId(null)}
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 48 }}
+          />
+          <TaskDetailDrawer
+            taskId={detailTaskId}
+            config={config}
+            auth={auth}
+            projects={projects}
+            onClose={() => setDetailTaskId(null)}
+            onUpdated={(updated) => {
+              setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
+            }}
+            onDeleted={(id) => {
+              setTasks(prev => prev.filter(t => t.id !== id))
+              setDetailTaskId(null)
+            }}
+          />
+        </>
       )}
 
       {showCreate && (
@@ -5595,7 +5736,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
         background: C.contentBg, borderLeft: `1px solid ${C.border}`,
         boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
       }}>
         <Loader size={24} color={C.accent} />
       </div>
@@ -5607,7 +5748,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
       background: C.contentBg, borderLeft: `1px solid ${C.border}`,
       boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 10, gap: 12,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 50, gap: 12,
     }}>
       <AlertCircle size={32} color={C.danger} strokeWidth={1.5} />
       <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>{loadError || 'Task not found'}</span>
@@ -5623,7 +5764,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
       background: C.contentBg, borderLeft: `1px solid ${C.border}`,
       boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
-      display: 'flex', flexDirection: 'column', zIndex: 10,
+      display: 'flex', flexDirection: 'column', zIndex: 50,
     }}>
       {/* Header */}
       <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
@@ -7073,7 +7214,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
     let wMs = 0, bMs = 0, lastIn: number | null = null, lastBreak: number | null = null
     for (const log of data.timeLogs) {
       const t = new Date(log.timestamp).getTime()
-      if (log.action === 'CHECK_IN' || log.action === 'BACK') { lastIn = t; lastBreak = null }
+      if (log.action === 'CHECK_IN' || log.action === 'BACK') { if (lastBreak != null) bMs += t - lastBreak; lastIn = t; lastBreak = null }
       else if (log.action === 'BREAK') { if (lastIn != null) { wMs += t - lastIn; lastIn = null }; lastBreak = t }
       else if (log.action === 'CLOCK_OUT') { if (lastIn != null) wMs += t - lastIn; if (lastBreak != null) bMs += t - lastBreak; lastIn = null; lastBreak = null }
     }
@@ -7418,6 +7559,16 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
     window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
     window.electronAPI.getVersion().then(setVersion).catch(() => {})
     window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
+    // Live update event listeners
+    const unsubAvail = window.electronAPI.onUpdateAvailable((info) => {
+      setUpdateState(prev => ({ version: info.version, percent: prev?.percent ?? null, downloaded: false }))
+    })
+    const unsubProgress = window.electronAPI.onDownloadProgress((info) => {
+      setUpdateState(prev => ({ version: prev?.version ?? null, percent: info.percent, downloaded: false }))
+    })
+    const unsubDownloaded = window.electronAPI.onUpdateDownloaded(() => {
+      setUpdateState(prev => ({ version: prev?.version ?? null, percent: 100, downloaded: true }))
+    })
     // Load profile
     fetch(`${config.apiBase}/api/user/profile`, {
       headers: { Authorization: `Bearer ${config.token}` }
@@ -7430,6 +7581,7 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
         setEditStatus(d.user?.userStatus ?? '')
       }
     }).catch(() => {})
+    return () => { unsubAvail(); unsubProgress(); unsubDownloaded() }
   }, [config])
 
   async function checkPerms() {
@@ -7457,6 +7609,8 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
     if (!file) return
     const form = new FormData()
     form.append('file', file)
+    setSaving(true)
+    setSaveMsg('Uploading…')
     try {
       const res = await fetch(`${config.apiBase}/api/user/avatar`, {
         method: 'POST',
@@ -7464,8 +7618,14 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
         body: form,
       })
       const d = await res.json() as { user?: { avatarUrl: string } }
-      if (d.user?.avatarUrl) setProfile(p => p ? { ...p, avatarUrl: d.user!.avatarUrl } : p)
-    } catch { /* ignore */ }
+      if (d.user?.avatarUrl) {
+        setProfile(p => p ? { ...p, avatarUrl: d.user!.avatarUrl } : p)
+        setSaveMsg('Avatar updated!')
+        setTimeout(() => setSaveMsg(''), 2000)
+      } else {
+        setSaveMsg('Upload failed')
+      }
+    } catch { setSaveMsg('Upload failed') } finally { setSaving(false) }
   }
 
   return (
@@ -7599,6 +7759,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
   const [messageBadge, setMessageBadge] = useState(0)
   const [messageMention, setMessageMention] = useState(false)
+  const [updateBadge, setUpdateBadge] = useState(false)
   const apiConfig = useApiConfig()
 
   // Buffer ICE candidates and answer SDP that arrive before CallWidget mounts
@@ -7607,7 +7768,14 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   useEffect(() => {
     const unsub = window.electronAPI.onOnlineState((state) => setIsOnline(state.isOnline))
-    return unsub
+    // Listen for update availability to show Settings badge
+    const unsubUpdate = window.electronAPI.onUpdateAvailable(() => setUpdateBadge(true))
+    const unsubDownloaded = window.electronAPI.onUpdateDownloaded(() => setUpdateBadge(true))
+    // Check initial update state
+    window.electronAPI.getUpdateState().then(state => {
+      if (state && (state.version !== null || state.downloaded)) setUpdateBadge(true)
+    }).catch(() => {})
+    return () => { unsub(); unsubUpdate(); unsubDownloaded() }
   }, [])
 
   // Listen for incoming-call events dispatched by MessagesPanel SSE
@@ -7655,7 +7823,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
-      <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} messageMention={messageMention} />
+      <Sidebar tab={tab} setTab={(t) => { setTab(t); if (t === 'settings') setUpdateBadge(false) }} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} messageMention={messageMention} updateBadge={updateBadge} />
 
       {/* Incoming call overlay — visible on any tab */}
       {incomingCall && apiConfig && (
