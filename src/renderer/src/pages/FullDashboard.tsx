@@ -27,6 +27,9 @@ declare module 'react' {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Module-level apiBase — set once when config loads, used to resolve relative asset URLs
+let _apiBase = ''
+
 interface Auth { userId: string; username: string; role: string }
 interface ApiConfig { apiBase: string; token: string }
 interface BundyStatus {
@@ -149,7 +152,10 @@ function card() {
 function useApiConfig() {
   const [config, setConfig] = useState<ApiConfig | null>(null)
   useEffect(() => {
-    window.electronAPI.getApiConfig().then(setConfig).catch(() => {})
+    window.electronAPI.getApiConfig().then(c => {
+      _apiBase = c.apiBase
+      setConfig(c)
+    }).catch(() => {})
   }, [])
   return config
 }
@@ -503,7 +509,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
   }
 
   return (
-    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
 
       {/* Timer Card */}
       <div style={{ ...card(), textAlign: 'center', padding: '28px 24px' }}>
@@ -941,10 +947,12 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
 
 function Avatar({ url, name, size = 30, radius = '50%' }: { url?: string | null; name: string; size?: number; radius?: string }) {
   const [err, setErr] = useState(false)
-  if (url && !err) {
+  // Resolve server-relative URLs (e.g. /uploads/avatars/...) using the stored apiBase
+  const resolvedUrl = url && url.startsWith('/') ? `${_apiBase}${url}` : url
+  if (resolvedUrl && !err) {
     return (
       <img
-        src={url} alt={name}
+        src={resolvedUrl} alt={name}
         onError={() => setErr(true)}
         style={{ width: size, height: size, borderRadius: radius, objectFit: 'cover', flexShrink: 0 }}
       />
@@ -7863,7 +7871,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         )}
 
         {tab === 'home' && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <HomePanel auth={auth} config={apiConfig} onOpenTask={(taskId) => { setPendingTaskId(taskId); setTab('tasks') }} />
           </div>
         )}
@@ -7886,12 +7894,12 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           </div>
         )}
         {tab === 'activity' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <ActivityPanel config={apiConfig} />
           </div>
         )}
         {tab === 'settings' && apiConfig && (
-          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
+          <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <SettingsPanel auth={auth} config={apiConfig} onLogout={onLogout} />
           </div>
         )}
