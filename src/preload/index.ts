@@ -102,6 +102,10 @@ const api = {
     ipcRenderer.invoke('send-crash-report', note),
   openFullWindow: (): Promise<void> =>
     ipcRenderer.invoke('open-full-window'),
+  focusWindow: (): Promise<void> =>
+    ipcRenderer.invoke('focus-window'),
+  getScreenSources: (): Promise<Array<{ id: string; name: string; thumbnail: string }>> =>
+    ipcRenderer.invoke('get-screen-sources'),
   getWindowMode: (): Promise<'popup' | 'full'> =>
     ipcRenderer.invoke('get-window-mode'),
   getApiConfig: (): Promise<{ apiBase: string; token: string }> =>

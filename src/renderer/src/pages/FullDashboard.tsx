@@ -12,7 +12,9 @@ import {
   Flag, GitBranch, Calendar, Clock, FolderPlus,
   LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft,
   Copy, Link, CornerDownRight, Image,
-  Smile, Pin, MessageCircle, ChevronUp
+  Smile, Pin, MessageCircle, ChevronUp,
+  Monitor, MonitorOff, UserPlus2, Wifi, WifiLow, WifiZero,
+  LogIn, LogOut as LogOutIcon, FolderOpen, ChevronDown
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -43,6 +45,7 @@ interface Conversation {
   unread?: number
   members: ChannelMember[]
   partnerId?: string    // for DM — the other user's id
+  createdBy?: string    // creator userId for leave/delete
 }
 interface ChatMessage {
   id: string; content: string; createdAt: string; editedAt: string | null
@@ -241,9 +244,9 @@ const NAV: NavItem[] = [
   { id: 'activity', icon: <Activity size={18} />, label: 'Activity' },
 ]
 
-function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
+function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge }: {
   tab: Tab; setTab: (t: Tab) => void
-  auth: Auth; onLogout: () => void; isOnline: boolean
+  auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number
 }) {
   return (
     <nav style={{
@@ -291,7 +294,16 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline }: {
               }}
             >
               {item.icon}
-              {item.label}
+              <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
+              {item.id === 'messages' && (messageBadge ?? 0) > 0 && (
+                <span style={{
+                  minWidth: 18, height: 18, borderRadius: 9, background: C.danger,
+                  color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center', padding: '0 5px',
+                }}>
+                  {messageBadge! > 99 ? '99+' : messageBadge}
+                </span>
+              )}
             </button>
           )
         })}
@@ -1247,6 +1259,16 @@ function IncomingCallOverlay({ payload, onAccept, onReject }: {
     audio.loop = true
     audio.volume = 0.6
     audio.play().catch(() => {})
+    // System notification for incoming call (works even when minimized)
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const n = new Notification(`Incoming ${payload.callType === 'video' ? 'Video' : 'Audio'} Call`, {
+        body: payload.fromName,
+        silent: false,
+      })
+      n.onclick = () => { window.electronAPI.focusWindow(); onAccept() }
+    }
+    // Bring window to front
+    window.electronAPI.focusWindow()
     return () => { audio.pause(); audio.src = '' }
   }, [])
 
@@ -1295,6 +1317,9 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
   const [allUsers, setAllUsers] = useState<UserInfo[]>([])
   const [busy, setBusy] = useState(false)
 
+  const isCreator = conv.createdBy === auth.userId
+  // For 'channel' type, admin check deferred to server
+
   useEffect(() => {
     fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
       .then(r => r.json())
@@ -1325,6 +1350,33 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
       })
       setMembers(prev => prev.filter(m => m.userId !== userId))
     } catch (err) { console.error('[ChannelSettings] removeMember failed:', err) } finally { setBusy(false) }
+  }
+
+  async function leaveChannel() {
+    if (!confirm(`Leave "${conv.name}"?`)) return
+    setBusy(true)
+    try {
+      await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: auth.userId }),
+      })
+      onClose()
+      // Channel removal handled by SSE or re-fetch
+      window.dispatchEvent(new CustomEvent('bundy-channel-left', { detail: { channelId: conv.id } }))
+    } catch (err) { console.error('[ChannelSettings] leave failed:', err) } finally { setBusy(false) }
+  }
+
+  async function deleteChannel() {
+    if (!confirm(`Delete "${conv.name}" permanently? This cannot be undone.`)) return
+    setBusy(true)
+    try {
+      await fetch(`${config.apiBase}/api/channels/${conv.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      onClose()
+    } catch (err) { console.error('[ChannelSettings] delete failed:', err) } finally { setBusy(false) }
   }
 
   const nonMembers = allUsers.filter(u => !members.some(m => m.userId === u.id))
@@ -1378,6 +1430,32 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
             </div>
           </>
         )}
+
+        {/* Leave / Delete actions */}
+        {conv.type !== 'dm' && (
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {!isCreator && (
+              <button onClick={leaveChannel} disabled={busy}
+                style={{
+                  padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.border}`,
+                  background: 'transparent', color: C.warning, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center',
+                }}>
+                <LogOut size={14} /> Leave {conv.type === 'group' ? 'Group' : 'Channel'}
+              </button>
+            )}
+            {isCreator && (
+              <button onClick={deleteChannel} disabled={busy}
+                style={{
+                  padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.danger}`,
+                  background: 'transparent', color: C.danger, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center',
+                }}>
+                <Trash2 size={14} /> Delete {conv.type === 'group' ? 'Group' : 'Channel'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1429,6 +1507,11 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // Pinned messages panel
   const [showPinned, setShowPinned] = useState(false)
   const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
+  // Shared media directory panel
+  const [showSharedMedia, setShowSharedMedia] = useState(false)
+  const [sharedMediaTab, setSharedMediaTab] = useState<'links' | 'media' | 'files'>('media')
+  const [sharedMedia, setSharedMedia] = useState<{ links: any[]; media: any[]; files: any[] }>({ links: [], media: [], files: [] })
+  const [loadingSharedMedia, setLoadingSharedMedia] = useState(false)
   // Active call state
   const [activeCall, setActiveCall] = useState<{
     targetUser: { id: string; name: string; avatar: string | null }
@@ -1515,7 +1598,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const loadChannels = useCallback(async () => {
     try {
       const data = await apiFetch('/api/channels') as { channels: Array<{
-        id: string; type: string; name: string | null
+        id: string; type: string; name: string | null; createdBy?: string
         members: Array<{ userId: string; user: UserInfo }>
         messages: Array<{ content: string; createdAt: string; sender: { username: string; alias: string | null } }>
         unread?: number
@@ -1537,7 +1620,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
         const last = ch.messages[0]
         return {
           id: ch.id, type: ch.type as Conversation['type'], name, avatar, partnerId,
-          members: ch.members,
+          members: ch.members, createdBy: ch.createdBy,
           lastMessage: last ? `${last.sender.alias ?? last.sender.username}: ${last.content}` : undefined,
           lastTime: last?.createdAt,
           unread: ch.unread ?? 0,
@@ -1546,6 +1629,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       setChannels(convs)
     } catch { /* offline */ }
   }, [apiFetch, auth.userId])
+
+  // Broadcast total unread count to FullDashboard for sidebar badge
+  useEffect(() => {
+    const total = channels.reduce((sum, c) => sum + (c.unread ?? 0), 0)
+    window.dispatchEvent(new CustomEvent('bundy-unread-update', { detail: { count: total } }))
+  }, [channels])
 
   const loadMessages = useCallback(async (conv: Conversation) => {
     setLoadingMsgs(true)
@@ -1619,9 +1708,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 if (isCurrentChannel) {
                   if (parentMsgId) {
                     // Thread reply — update reply count on parent + add to thread panel if open
-                    setMessages(prev => prev.map(m =>
-                      m.id === parentMsgId ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m
-                    ))
+                    // Skip replyCount increment for own messages (sendThreadReply already did it)
+                    if (payload.senderId !== auth.userId) {
+                      setMessages(prev => prev.map(m =>
+                        m.id === parentMsgId ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m
+                      ))
+                    }
                     setThreadMessages(prev => {
                       if (prev.some(m => m.id === payload.id)) return prev
                       return [...prev, {
@@ -1687,8 +1779,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     ? { ...m, content: payload.content, editedAt: payload.editedAt }
                     : m
                 ))
+                setThreadMessages(prev => prev.map(m =>
+                  m.id === payload.messageId
+                    ? { ...m, content: payload.content, editedAt: payload.editedAt }
+                    : m
+                ))
               } else if (ev === 'channel-message-delete') {
                 setMessages(prev => prev.filter(m => m.id !== payload.messageId))
+                setThreadMessages(prev => prev.filter(m => m.id !== payload.messageId))
               } else if (ev === 'channel-typing') {
                 const channelId = payload.channelId as string
                 if (payload.userId !== auth.userId) {
@@ -1727,8 +1825,15 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               } else if (ev === 'channel-created') {
                 // A new channel/DM/group was created that includes us — reload list
                 loadChannels()
+              } else if (ev === 'channel-deleted') {
+                // A channel was deleted — remove from list, clear if active
+                const { channelId } = payload as { channelId: string }
+                setChannels(prev => prev.filter(c => c.id !== channelId))
+                setSelected(prev => prev?.id === channelId ? null : prev)
               } else if (ev === 'channel-reaction') {
                 const { messageId, userId, emoji, action } = payload as { messageId: string; userId: string; emoji: string; action: 'add' | 'remove'; userName: string }
+                // Skip SSE for own reactions — already handled optimistically in toggleReaction
+                if (userId === auth.userId) continue
                 const updateReaction = (prev: ChatMessage[]) => prev.map(m => {
                   if (m.id !== messageId) return m
                   const reactions = [...(m.reactions ?? [])]
@@ -1805,6 +1910,17 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   }, [])
 
   useEffect(() => { loadChannels() }, [loadChannels])
+
+  // Handle self-leave from ChannelSettingsModal
+  useEffect(() => {
+    const onLeft = (e: Event) => {
+      const { channelId } = (e as CustomEvent<{ channelId: string }>).detail
+      setChannels(prev => prev.filter(c => c.id !== channelId))
+      setSelected(prev => prev?.id === channelId ? null : prev)
+    }
+    window.addEventListener('bundy-channel-left', onLeft)
+    return () => window.removeEventListener('bundy-channel-left', onLeft)
+  }, [])
 
   useEffect(() => {
     if (!selected) return
@@ -1972,6 +2088,16 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       const data = await apiFetch(`/api/channels/${selected.id}/pins`)
       setPinnedMessages(data.messages ?? [])
     } catch { setPinnedMessages([]) }
+  }
+
+  async function loadSharedMedia() {
+    if (!selected) return
+    setLoadingSharedMedia(true)
+    try {
+      const data = await apiFetch(`/api/channels/${selected.id}/shared-media`) as { links: any[]; media: any[]; files: any[] }
+      setSharedMedia(data)
+    } catch { setSharedMedia({ links: [], media: [], files: [] }) }
+    finally { setLoadingSharedMedia(false) }
   }
 
   // Open thread panel
@@ -2242,6 +2368,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: showPinned ? C.accent : C.textMuted, padding: 4 }}>
               <Pin size={16} />
             </button>
+            <button onClick={() => { setShowSharedMedia(!showSharedMedia); if (!showSharedMedia) loadSharedMedia() }} title="Shared files & links"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSharedMedia ? C.accent : C.textMuted, padding: 4 }}>
+              <FolderOpen size={16} />
+            </button>
           </div>
 
           {/* Call in progress banner */}
@@ -2332,7 +2462,42 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(msg.createdAt)}</span>
                     </div>
                   )}
-                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32, position: 'relative' }}>
+                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32, position: 'relative', alignItems: 'flex-start', gap: 8 }}>
+                    {/* Hover action buttons — left side for own messages */}
+                    {isMe && isHovered && !isEditing && (
+                      <div style={{
+                        display: 'flex', gap: 2, background: C.contentBg,
+                        borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+                        border: `1px solid ${C.border}`, padding: 2, flexShrink: 0, alignSelf: 'center',
+                      }}>
+                        {!isAttachment && (() => {
+                          const ageMs = Date.now() - new Date(msg.createdAt).getTime()
+                          const canEdit = ageMs < 12 * 60 * 60 * 1000
+                          return canEdit ? (
+                            <button onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
+                              title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                              <Edit2 size={12} />
+                            </button>
+                          ) : null
+                        })()}
+                        <button onClick={() => handleDeleteMessage(msg.id)}
+                          title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
+                          <Trash2 size={12} />
+                        </button>
+                        <button onClick={() => togglePin(msg.id)}
+                          title={msg.isPinned ? 'Unpin' : 'Pin'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: msg.isPinned ? C.accent : C.textMuted, borderRadius: 4 }}>
+                          <Pin size={12} />
+                        </button>
+                        <button onClick={() => openThread(msg)}
+                          title="Reply in thread" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                          <MessageCircle size={12} />
+                        </button>
+                        <button onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
+                          title="React" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                          <Smile size={12} />
+                        </button>
+                      </div>
+                    )}
                     <div style={{ maxWidth: '72%' }}>
                       {isEditing ? (
                         <div style={{
@@ -2416,16 +2581,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         </div>
                       )}
                     </div>
-                    {/* Hover action buttons — shown for all messages */}
-                    {isHovered && !isEditing && (
+                    {/* Hover action buttons — right side for other people's messages */}
+                    {!isMe && isHovered && !isEditing && (
                       <div style={{
-                        position: 'absolute', top: -6, [isMe ? 'left' : 'right']: isMe ? undefined : -60,
-                        ...(isMe ? { right: 'calc(72% + 4px)' } : { left: 32 }),
                         display: 'flex', gap: 2, background: C.contentBg,
                         borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
-                        border: `1px solid ${C.border}`, padding: 2, zIndex: 10,
+                        border: `1px solid ${C.border}`, padding: 2, flexShrink: 0, alignSelf: 'center',
                       }}>
-                        {/* Quick emoji reactions */}
                         <button onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
                           title="React" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
                           <Smile size={12} />
@@ -2438,25 +2600,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                           title={msg.isPinned ? 'Unpin' : 'Pin'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: msg.isPinned ? C.accent : C.textMuted, borderRadius: 4 }}>
                           <Pin size={12} />
                         </button>
-                        {isMe && !isAttachment && (
-                          <button onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
-                            title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                            <Edit2 size={12} />
-                          </button>
-                        )}
-                        {isMe && (
-                          <button onClick={() => handleDeleteMessage(msg.id)}
-                            title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
-                            <Trash2 size={12} />
-                          </button>
-                        )}
                       </div>
                     )}
                     {/* Emoji picker popup */}
                     {emojiPickerMsgId === msg.id && (
                       <div style={{
-                        position: 'absolute', top: -36, [isMe ? 'left' : 'right']: isMe ? undefined : -60,
-                        ...(isMe ? { right: 'calc(72% + 4px)' } : { left: 32 }),
+                        position: 'absolute', top: -30, ...(isMe ? { right: 8 } : { left: 40 }),
                         display: 'flex', gap: 4, background: C.contentBg,
                         borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
                         border: `1px solid ${C.border}`, padding: '4px 8px', zIndex: 20,
@@ -2629,6 +2778,108 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Shared media directory panel */}
+          {showSharedMedia && (
+            <div style={{
+              width: 300, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              display: 'flex', flexDirection: 'column', flexShrink: 0,
+            }}>
+              <div style={{
+                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <FolderOpen size={14} /> Shared Files
+                </span>
+                <button onClick={() => setShowSharedMedia(false)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
+                  <X size={14} />
+                </button>
+              </div>
+              {/* Tabs */}
+              <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+                {(['media', 'files', 'links'] as const).map(tab => (
+                  <button key={tab} onClick={() => setSharedMediaTab(tab)}
+                    style={{
+                      flex: 1, padding: '8px 0', border: 'none', cursor: 'pointer',
+                      background: sharedMediaTab === tab ? C.accent + '15' : 'transparent',
+                      color: sharedMediaTab === tab ? C.accent : C.textMuted,
+                      fontWeight: sharedMediaTab === tab ? 700 : 400, fontSize: 12,
+                      borderBottom: sharedMediaTab === tab ? `2px solid ${C.accent}` : '2px solid transparent',
+                    }}>
+                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px' }}>
+                {loadingSharedMedia ? (
+                  <div style={{ textAlign: 'center', padding: 20, color: C.textMuted }}><Loader size={16} /></div>
+                ) : sharedMediaTab === 'media' ? (
+                  sharedMedia.media.length === 0 ? (
+                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared media</div>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                      {sharedMedia.media.map((m, i) => (
+                        <a key={i} href={`${config.apiBase}${m.url}`} target="_blank" rel="noopener noreferrer"
+                          style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: '#0001' }}>
+                          {m.url.match(/\.(mp4|webm|mov)$/i) ? (
+                            <video src={`${config.apiBase}${m.url}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            <img src={`${config.apiBase}${m.url}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  )
+                ) : sharedMediaTab === 'files' ? (
+                  sharedMedia.files.length === 0 ? (
+                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared files</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {sharedMedia.files.map((f, i) => (
+                        <a key={i} href={`${config.apiBase}${f.url}`} target="_blank" rel="noopener noreferrer"
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                            borderRadius: 8, border: `1px solid ${C.border}`, textDecoration: 'none',
+                          }}>
+                          <Paperclip size={14} color={C.textMuted} />
+                          <div style={{ flex: 1, overflow: 'hidden' }}>
+                            <div style={{ fontSize: 12, color: C.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {f.filename.replace(/^\d+-/, '')}
+                            </div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{f.sender} · {new Date(f.createdAt).toLocaleDateString()}</div>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  sharedMedia.links.length === 0 ? (
+                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared links</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {sharedMedia.links.map((l, i) => (
+                        <a key={i} href={l.url} target="_blank" rel="noopener noreferrer"
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                            borderRadius: 8, border: `1px solid ${C.border}`, textDecoration: 'none',
+                          }}>
+                          <ExternalLink size={14} color={C.accent} />
+                          <div style={{ flex: 1, overflow: 'hidden' }}>
+                            <div style={{ fontSize: 12, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {l.url.replace(/^https?:\/\//, '').slice(0, 50)}
+                            </div>
+                            <div style={{ fontSize: 10, color: C.textMuted }}>{l.sender} · {new Date(l.createdAt).toLocaleDateString()}</div>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  )
+                )}
               </div>
             </div>
           )}
@@ -2961,7 +3212,7 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
 
 // ─── CallControls (shared between CallWidget + ConferenceWidget) ────────────
 
-function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActive, windowMode, onSetWindowMode, onHangup, participantCount, callDuration }: {
+function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActive, windowMode, onSetWindowMode, onHangup, participantCount, callDuration, screenSharing, onToggleScreenShare, onInvite, connectionQuality }: {
   muted: boolean; onToggleMute: () => void
   videoOff: boolean; onToggleVideo: () => void
   videoActive: boolean
@@ -2970,6 +3221,9 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
   onHangup: () => void
   participantCount?: number
   callDuration?: number
+  screenSharing?: boolean; onToggleScreenShare?: () => void
+  onInvite?: () => void
+  connectionQuality?: 'good' | 'fair' | 'poor' | 'disconnected'
 }) {
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60)
@@ -3001,6 +3255,24 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
       <button onClick={onToggleVideo} style={btnStyle(videoOff && videoActive)} title={videoActive ? (videoOff ? 'Turn on camera' : 'Turn off camera') : 'Start video'}>
         {videoActive && !videoOff ? <Video size={iconSize} /> : <VideoOff size={iconSize} />}
       </button>
+      {onToggleScreenShare && windowMode !== 'mini' && (
+        <button onClick={onToggleScreenShare} style={btnStyle(!!screenSharing)} title={screenSharing ? 'Stop sharing' : 'Share screen'}>
+          {screenSharing ? <MonitorOff size={iconSize} /> : <Monitor size={iconSize} />}
+        </button>
+      )}
+      {onInvite && windowMode !== 'mini' && (
+        <button onClick={onInvite} style={btnStyle(false)} title="Invite to call">
+          <UserPlus2 size={iconSize} />
+        </button>
+      )}
+      {connectionQuality && windowMode !== 'mini' && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: windowMode === 'mini' ? 36 : 48, height: windowMode === 'mini' ? 36 : 48 }} title={`Connection: ${connectionQuality}`}>
+          {connectionQuality === 'good' ? <Wifi size={iconSize} color="#22c55e" /> :
+           connectionQuality === 'fair' ? <WifiLow size={iconSize} color="#eab308" /> :
+           connectionQuality === 'poor' ? <WifiZero size={iconSize} color="#ef4444" /> :
+           <WifiOff size={iconSize} color="#6b7280" />}
+        </div>
+      )}
       {windowMode !== 'mini' && (
         <button onClick={() => onSetWindowMode('mini')} style={btnStyle(false)} title="Minimize to mini window">
           <Minimize2 size={iconSize} />
@@ -3061,6 +3333,9 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   const [showControls, setShowControls] = useState(true)
   const hideTimer = useRef<NodeJS.Timeout | null>(null)
   const renegotiating = useRef(false)
+  const [screenSharing, setScreenSharing] = useState(false)
+  const screenShareStream = useRef<MediaStream | null>(null)
+  const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor' | 'disconnected'>('good')
 
   // Track remote video availability (when peer adds/removes video)
   const [remoteHasVideo, setRemoteHasVideo] = useState(false)
@@ -3108,7 +3383,12 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       remoteVideo.current.srcObject = remoteStreamRef.current
       remoteVideo.current.play().catch(() => {})
     }
-  }, [windowMode])
+    // Also re-attach local stream on mode switch
+    if (localStream.current && localVideo.current && videoActive) {
+      localVideo.current.srcObject = localStream.current
+      localVideo.current.play().catch(() => {})
+    }
+  }, [windowMode, videoActive])
 
   // Dragging logic for mini mode
   useEffect(() => {
@@ -3327,6 +3607,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   function cleanup(sendEnd: boolean) {
     pc.current?.close()
     localStream.current?.getTracks().forEach(t => t.stop())
+    screenShareStream.current?.getTracks().forEach(t => t.stop())
     if (sendEnd) {
       fetch(`${config.apiBase}/api/calls`, {
         method: 'POST',
@@ -3375,6 +3656,86 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   }
 
   function hangup() { cleanup(true); setStatus('ended'); onEnd() }
+
+  async function toggleScreenShare() {
+    if (!pc.current) return
+    if (screenSharing) {
+      // Stop screen sharing — restore camera or remove video
+      screenShareStream.current?.getTracks().forEach(t => t.stop())
+      screenShareStream.current = null
+      const senders = pc.current.getSenders()
+      const videoSender = senders.find(s => s.track?.kind === 'video')
+      if (videoSender) {
+        if (videoActive && localStream.current) {
+          const camTrack = localStream.current.getVideoTracks()[0]
+          if (camTrack) await videoSender.replaceTrack(camTrack)
+        } else {
+          await videoSender.replaceTrack(null)
+        }
+      }
+      setScreenSharing(false)
+    } else {
+      // Start screen sharing
+      try {
+        const sources = await (window as any).electronAPI.getScreenSources()
+        if (!sources || sources.length === 0) return
+        // Use the first screen source (primary display)
+        const source = sources.find((s: any) => s.name === 'Entire Screen' || s.name === 'Screen 1') || sources[0]
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: source.id } } as any,
+        })
+        screenShareStream.current = stream
+        const screenTrack = stream.getVideoTracks()[0]
+        screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
+        const senders = pc.current.getSenders()
+        const videoSender = senders.find(s => s.track?.kind === 'video')
+        if (videoSender) {
+          await videoSender.replaceTrack(screenTrack)
+        } else {
+          pc.current.addTrack(screenTrack, stream)
+          renegotiating.current = true
+          const offer = await pc.current.createOffer()
+          await pc.current.setLocalDescription(offer)
+          await fetch(`${config.apiBase}/api/calls`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
+          })
+        }
+        setScreenSharing(true)
+        if (!videoActive) { setVideoActive(true); setVideoOff(false) }
+      } catch (err) { console.error('[CallWidget] screen share failed:', err) }
+    }
+  }
+
+  // Connection quality monitoring
+  useEffect(() => {
+    if (status !== 'connected' || !pc.current) return
+    let prev = { bytesReceived: 0, timestamp: 0 }
+    const interval = setInterval(async () => {
+      if (!pc.current) return
+      try {
+        const stats = await pc.current.getStats()
+        let packetsLost = 0, packetsReceived = 0, currentRoundTrip = 0
+        stats.forEach((report: any) => {
+          if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+            packetsLost = report.packetsLost || 0
+            packetsReceived = report.packetsReceived || 0
+          }
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            currentRoundTrip = report.currentRoundTripTime || 0
+          }
+        })
+        const total = packetsLost + packetsReceived
+        const lossRate = total > 0 ? packetsLost / total : 0
+        if (lossRate > 0.1 || currentRoundTrip > 0.5) setConnectionQuality('poor')
+        else if (lossRate > 0.03 || currentRoundTrip > 0.2) setConnectionQuality('fair')
+        else setConnectionQuality('good')
+      } catch { /* ignore */ }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [status])
 
   const handleDragStart = (e: React.MouseEvent) => {
     dragOffset.current = { x: e.clientX - position.x, y: e.clientY - position.y }
@@ -3442,7 +3803,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         <div style={{ padding: '6px 10px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
-            onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined} />
+            onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined}
+            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
         </div>
         {/* Hidden local video for non-video mini mode (needed for renegotiation) */}
         {!showVideo && <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />}
@@ -3500,7 +3862,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       }}>
         <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
           videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
-          onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined} />
+          onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined}
+          screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
       </div>
     </div>
   )
@@ -3541,6 +3904,9 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const mountedRef = useRef(true)
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const iceRestartTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  const [screenSharing, setScreenSharing] = useState(false)
+  const screenShareStream = useRef<MediaStream | null>(null)
+  const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor' | 'disconnected'>('good')
 
   useEffect(() => {
     mountedRef.current = true
@@ -3835,6 +4201,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     for (const [, audioEl] of audioElementsRef.current) { audioEl.pause(); audioEl.srcObject = null }
     audioElementsRef.current.clear()
     localStream.current?.getTracks().forEach(t => t.stop())
+    screenShareStream.current?.getTracks().forEach(t => t.stop())
     if (sendLeave) {
       fetch(`${config.apiBase}/api/calls`, {
         method: 'POST',
@@ -3879,6 +4246,86 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   }
 
   function handleLeave() { cleanupAll(true); onLeave() }
+
+  async function toggleScreenShare() {
+    if (screenSharing) {
+      screenShareStream.current?.getTracks().forEach(t => t.stop())
+      screenShareStream.current = null
+      for (const [, peer] of peersRef.current) {
+        const videoSender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
+        if (videoSender) {
+          if (videoActive && localStream.current) {
+            const camTrack = localStream.current.getVideoTracks()[0]
+            if (camTrack) await videoSender.replaceTrack(camTrack)
+          } else {
+            await videoSender.replaceTrack(null)
+          }
+        }
+      }
+      setScreenSharing(false)
+    } else {
+      try {
+        const sources = await (window as any).electronAPI.getScreenSources()
+        if (!sources || sources.length === 0) return
+        const source = sources.find((s: any) => s.name === 'Entire Screen' || s.name === 'Screen 1') || sources[0]
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: source.id } } as any,
+        })
+        screenShareStream.current = stream
+        const screenTrack = stream.getVideoTracks()[0]
+        screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
+        for (const [peerId, peer] of peersRef.current) {
+          const videoSender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
+          if (videoSender) {
+            await videoSender.replaceTrack(screenTrack)
+          } else {
+            peer.pc.addTrack(screenTrack, stream)
+            const offer = await peer.pc.createOffer()
+            await peer.pc.setLocalDescription(offer)
+            await fetch(`${config.apiBase}/api/calls`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
+            })
+          }
+        }
+        setScreenSharing(true)
+        if (!videoActive) { setVideoActive(true); setVideoOff(false) }
+      } catch (err) { console.error('[Conference] screen share failed:', err) }
+    }
+  }
+
+  // Connection quality monitoring (average across all peers)
+  useEffect(() => {
+    if (peersRef.current.size === 0) return
+    const interval = setInterval(async () => {
+      let worstQuality: 'good' | 'fair' | 'poor' | 'disconnected' = 'good'
+      for (const [, peer] of peersRef.current) {
+        try {
+          const stats = await peer.pc.getStats()
+          let packetsLost = 0, packetsReceived = 0, rtt = 0
+          stats.forEach((report: any) => {
+            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+              packetsLost = report.packetsLost || 0
+              packetsReceived = report.packetsReceived || 0
+            }
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+              rtt = report.currentRoundTripTime || 0
+            }
+          })
+          const total = packetsLost + packetsReceived
+          const lossRate = total > 0 ? packetsLost / total : 0
+          let q: typeof worstQuality = 'good'
+          if (lossRate > 0.1 || rtt > 0.5) q = 'poor'
+          else if (lossRate > 0.03 || rtt > 0.2) q = 'fair'
+          if (q === 'poor' || (q === 'fair' && worstQuality === 'good')) worstQuality = q
+        } catch { /* ignore */ }
+      }
+      setConnectionQuality(worstQuality)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [peers.size])
 
   const handleDragStart = (e: React.MouseEvent) => {
     dragOffset.current = { x: e.clientX - position.x, y: e.clientY - position.y }
@@ -3935,7 +4382,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
         <div style={{ padding: '4px 8px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
-            onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration} />
+            onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
+            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
         </div>
         <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
       </div>
@@ -3971,7 +4419,8 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
         <div style={{ padding: '10px 24px', borderRadius: 16, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent' }}>
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
-            onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration} />
+            onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
+            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
         </div>
       </div>
       <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
@@ -6885,6 +7334,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null)
   const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
+  const [messageBadge, setMessageBadge] = useState(0)
   const apiConfig = useApiConfig()
 
   // Buffer ICE candidates and answer SDP that arrive before CallWidget mounts
@@ -6920,21 +7370,27 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       const { taskId } = (e as CustomEvent<{ taskId: string }>).detail
       if (taskId) { setPendingTaskId(taskId); setTab('tasks') }
     }
+    function onUnreadUpdate(e: Event) {
+      const { count } = (e as CustomEvent<{ count: number }>).detail
+      setMessageBadge(count)
+    }
     window.addEventListener('bundy-incoming-call', onIncoming)
     window.addEventListener('bundy-call-ice', onIce)
     window.addEventListener('bundy-call-answer', onAnswer)
     window.addEventListener('bundy-open-task', onOpenTask)
+    window.addEventListener('bundy-unread-update', onUnreadUpdate)
     return () => {
       window.removeEventListener('bundy-incoming-call', onIncoming)
       window.removeEventListener('bundy-call-ice', onIce)
       window.removeEventListener('bundy-call-answer', onAnswer)
       window.removeEventListener('bundy-open-task', onOpenTask)
+      window.removeEventListener('bundy-unread-update', onUnreadUpdate)
     }
   }, [])
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
-      <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} />
+      <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} />
 
       {/* Incoming call overlay — visible on any tab */}
       {incomingCall && apiConfig && (

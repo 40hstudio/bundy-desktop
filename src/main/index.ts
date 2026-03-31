@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   ipcMain,
   Menu,
   nativeImage,
@@ -239,10 +240,11 @@ async function openFullWindow(): Promise<void> {
     callback(['media', 'microphone', 'camera', 'audioCapture', 'videoCapture'].includes(permission))
   })
 
-  fullWindowIds.add(fullNativeWin.webContents.id)
+  const wcId = fullNativeWin.webContents.id
+  fullWindowIds.add(wcId)
 
   fullNativeWin.on('closed', () => {
-    if (fullNativeWin) fullWindowIds.delete(fullNativeWin.webContents.id)
+    fullWindowIds.delete(wcId)
     fullNativeWin = null
   })
 
@@ -539,6 +541,26 @@ ipcMain.handle('install-update', () => {
 })
 
 ipcMain.handle('open-full-window', () => void openFullWindow())
+
+ipcMain.handle('focus-window', () => {
+  const win = fullNativeWin ?? popupWin
+  if (win) {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  }
+})
+
+ipcMain.handle('get-screen-sources', async () => {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 150, height: 150 },
+  })
+  return sources.map(s => ({
+    id: s.id, name: s.name,
+    thumbnail: s.thumbnail.toDataURL(),
+  }))
+})
 
 ipcMain.handle('get-window-mode', (event) => {
   return fullWindowIds.has(event.sender.id) ? 'full' : 'popup'
