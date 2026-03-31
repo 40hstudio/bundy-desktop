@@ -11,7 +11,8 @@ import {
   Mic, Maximize2, Minimize2, Move, Search,
   Flag, GitBranch, Calendar, Clock, FolderPlus,
   LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft,
-  Copy, Link, CornerDownRight, Image
+  Copy, Link, CornerDownRight, Image,
+  Smile, Pin, MessageCircle, ChevronUp
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -47,6 +48,12 @@ interface ChatMessage {
   id: string; content: string; createdAt: string; editedAt: string | null
   sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
   reads?: { userId: string }[]
+  reactions?: { emoji: string; userId: string; user: { id: string; username: string; alias: string | null } }[]
+  parentMessageId?: string | null
+  replyCount?: number
+  isPinned?: boolean
+  pinnedAt?: string | null
+  pinnedBy?: string | null
 }
 interface Task {
   id: string; title: string; description: string | null
@@ -1409,6 +1416,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const [searching, setSearching] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const searchTimer = useRef<NodeJS.Timeout | null>(null)
+  // Pagination state
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // Thread panel state
+  const [threadParent, setThreadParent] = useState<ChatMessage | null>(null)
+  const [threadMessages, setThreadMessages] = useState<ChatMessage[]>([])
+  const [threadInput, setThreadInput] = useState('')
+  const [sendingThread, setSendingThread] = useState(false)
+  // Emoji picker state
+  const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null)
+  // Pinned messages panel
+  const [showPinned, setShowPinned] = useState(false)
+  const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
   // Active call state
   const [activeCall, setActiveCall] = useState<{
     targetUser: { id: string; name: string; avatar: string | null }
@@ -1530,17 +1550,24 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const loadMessages = useCallback(async (conv: Conversation) => {
     setLoadingMsgs(true)
     try {
-      const data = await apiFetch(`/api/channels/${conv.id}/messages`) as {
+      const data = await apiFetch(`/api/channels/${conv.id}/messages?limit=50`) as {
         messages: Array<{
           id: string; content: string; createdAt: string; editedAt: string | null
           sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
           reads: { userId: string }[]
+          reactions?: ChatMessage['reactions']
+          parentMessageId?: string | null; replyCount?: number
+          isPinned?: boolean; pinnedAt?: string | null; pinnedBy?: string | null
         }>
+        hasMore?: boolean
       }
       setMessages(data.messages.map(m => ({
         id: m.id, content: m.content, createdAt: m.createdAt, editedAt: m.editedAt,
-        sender: m.sender, reads: m.reads,
+        sender: m.sender, reads: m.reads, reactions: m.reactions ?? [],
+        parentMessageId: m.parentMessageId, replyCount: m.replyCount ?? 0,
+        isPinned: m.isPinned ?? false, pinnedAt: m.pinnedAt, pinnedBy: m.pinnedBy,
       })))
+      setHasMore(data.hasMore ?? false)
       // Clear unread for this channel immediately
       setChannels(prev => prev.map(c => c.id === conv.id ? { ...c, unread: 0 } : c))
       // Mark as read on server
@@ -1548,7 +1575,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
         method: 'POST',
         headers: { Authorization: `Bearer ${config.token}` },
       }).catch(() => {})
-    } catch { setMessages([]) } finally {
+    } catch { setMessages([]); setHasMore(false) } finally {
       setLoadingMsgs(false)
     }
   }, [apiFetch, config])
@@ -1587,22 +1614,47 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               const payload = JSON.parse(dataMatch[1])
               if (ev === 'channel-message') {
                 const channelId = payload.channelId as string
+                const parentMsgId = payload.parentMessageId as string | null | undefined
                 const isCurrentChannel = selectedRef.current?.id === channelId
                 if (isCurrentChannel) {
-                  setMessages(prev => {
-                    if (prev.some(m => m.id === payload.id)) return prev
-                    return [...prev, {
-                      id: payload.id, content: payload.content,
-                      createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
-                      sender: {
-                        id: payload.senderId,
-                        username: payload.senderName,
-                        alias: payload.senderAlias ?? payload.senderName,
-                        avatarUrl: payload.senderAvatar ?? null,
-                      },
-                      reads: [],
-                    }]
-                  })
+                  if (parentMsgId) {
+                    // Thread reply — update reply count on parent + add to thread panel if open
+                    setMessages(prev => prev.map(m =>
+                      m.id === parentMsgId ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m
+                    ))
+                    setThreadMessages(prev => {
+                      if (prev.some(m => m.id === payload.id)) return prev
+                      return [...prev, {
+                        id: payload.id, content: payload.content,
+                        createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
+                        parentMessageId: parentMsgId, replyCount: 0, reactions: [],
+                        sender: {
+                          id: payload.senderId,
+                          username: payload.senderName,
+                          alias: payload.senderAlias ?? payload.senderName,
+                          avatarUrl: payload.senderAvatar ?? null,
+                        },
+                        reads: [],
+                      }]
+                    })
+                  } else {
+                    setMessages(prev => {
+                      if (prev.some(m => m.id === payload.id)) return prev
+                      return [...prev, {
+                        id: payload.id, content: payload.content,
+                        createdAt: payload.createdAt, editedAt: payload.editedAt ?? null,
+                        parentMessageId: null, replyCount: 0, reactions: [],
+                        isPinned: false, pinnedAt: null, pinnedBy: null,
+                        sender: {
+                          id: payload.senderId,
+                          username: payload.senderName,
+                          alias: payload.senderAlias ?? payload.senderName,
+                          avatarUrl: payload.senderAvatar ?? null,
+                        },
+                        reads: [],
+                      }]
+                    })
+                  }
                   // Mark as read since we're viewing it
                   fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
                     method: 'POST',
@@ -1675,6 +1727,28 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               } else if (ev === 'channel-created') {
                 // A new channel/DM/group was created that includes us — reload list
                 loadChannels()
+              } else if (ev === 'channel-reaction') {
+                const { messageId, userId, emoji, action } = payload as { messageId: string; userId: string; emoji: string; action: 'add' | 'remove'; userName: string }
+                const updateReaction = (prev: ChatMessage[]) => prev.map(m => {
+                  if (m.id !== messageId) return m
+                  const reactions = [...(m.reactions ?? [])]
+                  if (action === 'add') {
+                    if (!reactions.some(r => r.emoji === emoji && r.userId === userId)) {
+                      reactions.push({ emoji, userId, user: { id: userId, username: payload.userName, alias: null } })
+                    }
+                  } else {
+                    const idx = reactions.findIndex(r => r.emoji === emoji && r.userId === userId)
+                    if (idx >= 0) reactions.splice(idx, 1)
+                  }
+                  return { ...m, reactions }
+                })
+                setMessages(updateReaction)
+                setThreadMessages(updateReaction)
+              } else if (ev === 'channel-pin') {
+                const { messageId, isPinned, pinnedBy } = payload as { messageId: string; isPinned: boolean; pinnedBy: string }
+                setMessages(prev => prev.map(m =>
+                  m.id === messageId ? { ...m, isPinned, pinnedBy: isPinned ? pinnedBy : null, pinnedAt: isPinned ? new Date().toISOString() : null } : m
+                ))
               } else if (ev === 'call-invite') {
                 window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
               } else if (ev === 'call-answer') {
@@ -1735,6 +1809,11 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   useEffect(() => {
     if (!selected) return
     loadMessages(selected)
+    // Close thread/pinned panel when switching channels
+    setThreadParent(null)
+    setThreadMessages([])
+    setShowPinned(false)
+    setEmojiPickerMsgId(null)
   }, [selected, loadMessages])
 
   // After new channel created, open it
@@ -1829,6 +1908,123 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     setShowSearch(false)
     setSearchQuery('')
     setSearchResults([])
+  }
+
+  // Load older messages (pagination)
+  async function loadOlderMessages() {
+    if (!selected || loadingMore || !hasMore || messages.length === 0) return
+    setLoadingMore(true)
+    try {
+      const oldest = messages[0]
+      const data = await apiFetch(`/api/channels/${selected.id}/messages?before=${oldest.id}&limit=50`)
+      const older: ChatMessage[] = (data.messages ?? []).map((m: ChatMessage & { reactions?: ChatMessage['reactions'] }) => ({
+        ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0,
+        isPinned: m.isPinned ?? false,
+      }))
+      setMessages(prev => [...older, ...prev])
+      setHasMore(data.hasMore ?? false)
+    } catch { /* offline */ } finally { setLoadingMore(false) }
+  }
+
+  // Emoji reactions
+  const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
+
+  async function toggleReaction(msgId: string, emoji: string, isThread = false) {
+    if (!selected) return
+    try {
+      const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/reactions`, {
+        method: 'POST',
+        body: JSON.stringify({ emoji }),
+      })
+      const action = res.action as 'added' | 'removed'
+      const updateFn = (prev: ChatMessage[]) => prev.map(m => {
+        if (m.id !== msgId) return m
+        const reactions = [...(m.reactions ?? [])]
+        if (action === 'added') {
+          reactions.push({ emoji, userId: auth.userId, user: { id: auth.userId, username: auth.username, alias: null } })
+        } else {
+          const idx = reactions.findIndex(r => r.emoji === emoji && r.userId === auth.userId)
+          if (idx >= 0) reactions.splice(idx, 1)
+        }
+        return { ...m, reactions }
+      })
+      if (isThread) setThreadMessages(updateFn)
+      else setMessages(updateFn)
+    } catch { /* offline */ }
+    setEmojiPickerMsgId(null)
+  }
+
+  // Pin/unpin messages
+  async function togglePin(msgId: string) {
+    if (!selected) return
+    try {
+      const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/pin`, { method: 'POST' })
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, isPinned: res.isPinned, pinnedAt: res.pinnedAt, pinnedBy: res.pinnedBy } : m
+      ))
+    } catch { /* offline */ }
+  }
+
+  // Load pinned messages
+  async function loadPinnedMessages() {
+    if (!selected) return
+    try {
+      const data = await apiFetch(`/api/channels/${selected.id}/pins`)
+      setPinnedMessages(data.messages ?? [])
+    } catch { setPinnedMessages([]) }
+  }
+
+  // Open thread panel
+  async function openThread(msg: ChatMessage) {
+    setThreadParent(msg)
+    setThreadInput('')
+    try {
+      const data = await apiFetch(`/api/channels/${selected!.id}/messages?parentMessageId=${msg.id}`)
+      setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({
+        ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0,
+      })))
+    } catch { setThreadMessages([]) }
+  }
+
+  // Send thread reply
+  async function sendThreadReply() {
+    if (!threadInput.trim() || !selected || !threadParent || sendingThread) return
+    const content = threadInput.trim()
+    setSendingThread(true)
+    setThreadInput('')
+    try {
+      await apiFetch(`/api/channels/${selected.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content, parentMessageId: threadParent.id }),
+      })
+      // Reload thread
+      const data = await apiFetch(`/api/channels/${selected.id}/messages?parentMessageId=${threadParent.id}`)
+      setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({
+        ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0,
+      })))
+      // Update reply count in main messages
+      setMessages(prev => prev.map(m => m.id === threadParent.id ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m))
+    } catch { /* offline */ } finally { setSendingThread(false) }
+  }
+
+  // Group reactions by emoji for display
+  function groupReactions(reactions: NonNullable<ChatMessage['reactions']>) {
+    const map = new Map<string, { emoji: string; count: number; users: string[]; reacted: boolean }>()
+    for (const r of reactions) {
+      const existing = map.get(r.emoji)
+      if (existing) {
+        existing.count++
+        existing.users.push(r.user.alias ?? r.user.username)
+        if (r.userId === auth.userId) existing.reacted = true
+      } else {
+        map.set(r.emoji, {
+          emoji: r.emoji, count: 1,
+          users: [r.user.alias ?? r.user.username],
+          reacted: r.userId === auth.userId,
+        })
+      }
+    }
+    return Array.from(map.values())
   }
 
   const channelList = channels.filter(c => c.type === 'channel')
@@ -2042,6 +2238,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 <Settings2 size={16} />
               </button>
             )}
+            <button onClick={() => { setShowPinned(!showPinned); if (!showPinned) loadPinnedMessages() }} title="Pinned messages"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showPinned ? C.accent : C.textMuted, padding: 4 }}>
+              <Pin size={16} />
+            </button>
           </div>
 
           {/* Call in progress banner */}
@@ -2084,7 +2284,20 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           })()}
 
           {/* Messages */}
+          <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
           <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            {/* Load older messages button */}
+            {hasMore && (
+              <button onClick={loadOlderMessages} disabled={loadingMore}
+                style={{
+                  alignSelf: 'center', padding: '6px 16px', borderRadius: 20, border: `1px solid ${C.border}`,
+                  background: C.contentBg, color: C.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                {loadingMore ? <Loader size={12} /> : <ChevronUp size={12} />}
+                {loadingMore ? 'Loading…' : 'Load older messages'}
+              </button>
+            )}
             {loadingMsgs && messages.length === 0 && (
               <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}>
                 <Loader size={18} />
@@ -2099,11 +2312,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               const plainUrls = isAttachment ? [] : extractUrls(msg.content).filter(u => !isImageUrl(u))
               const isEditing = editingMsgId === msg.id
               const isHovered = hoveredMsgId === msg.id
+              const grouped = groupReactions(msg.reactions ?? [])
               return (
                 <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}
                   onMouseEnter={() => setHoveredMsgId(msg.id)}
-                  onMouseLeave={() => setHoveredMsgId(null)}
+                  onMouseLeave={() => { setHoveredMsgId(null); if (emojiPickerMsgId === msg.id) setEmojiPickerMsgId(null) }}
                 >
+                  {/* Pinned indicator */}
+                  {msg.isPinned && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingLeft: isMe ? 0 : 32, marginBottom: 2, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+                      <Pin size={10} color={C.accent} />
+                      <span style={{ fontSize: 10, color: C.accent, fontWeight: 600 }}>Pinned</span>
+                    </div>
+                  )}
                   {showHeader && !isMe && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <Avatar url={msg.sender.avatarUrl} name={senderName} size={24} />
@@ -2158,6 +2379,35 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       {plainUrls.map((url, ui) => (
                         <OgPreview key={ui} url={url} config={config} />
                       ))}
+                      {/* Reactions display */}
+                      {grouped.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+                          {grouped.map(r => (
+                            <button key={r.emoji} onClick={() => toggleReaction(msg.id, r.emoji)}
+                              title={r.users.join(', ')}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 3,
+                                padding: '2px 6px', borderRadius: 10, border: `1px solid ${r.reacted ? C.accent : C.border}`,
+                                background: r.reacted ? C.accentLight : '#f8faff', cursor: 'pointer', fontSize: 12,
+                              }}>
+                              <span>{r.emoji}</span>
+                              <span style={{ fontSize: 10, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {/* Thread reply count */}
+                      {(msg.replyCount ?? 0) > 0 && (
+                        <button onClick={() => openThread(msg)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 4, marginTop: 4,
+                            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                            color: C.accent, fontSize: 11, fontWeight: 600,
+                          }}>
+                          <MessageCircle size={12} />
+                          {msg.replyCount} {msg.replyCount === 1 ? 'reply' : 'replies'}
+                        </button>
+                      )}
                       {isMe && (
                         <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2, userSelect: 'none' }}>
                           {formatTime(msg.createdAt)}
@@ -2166,25 +2416,60 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         </div>
                       )}
                     </div>
-                    {/* Hover action buttons */}
-                    {isHovered && !isEditing && isMe && (
+                    {/* Hover action buttons — shown for all messages */}
+                    {isHovered && !isEditing && (
                       <div style={{
                         position: 'absolute', top: -6, [isMe ? 'left' : 'right']: isMe ? undefined : -60,
-                        ...(isMe ? { right: 'calc(72% + 4px)' } : {}),
+                        ...(isMe ? { right: 'calc(72% + 4px)' } : { left: 32 }),
                         display: 'flex', gap: 2, background: C.contentBg,
                         borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
-                        border: `1px solid ${C.border}`, padding: 2,
+                        border: `1px solid ${C.border}`, padding: 2, zIndex: 10,
                       }}>
-                        {!isAttachment && (
+                        {/* Quick emoji reactions */}
+                        <button onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
+                          title="React" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                          <Smile size={12} />
+                        </button>
+                        <button onClick={() => openThread(msg)}
+                          title="Reply in thread" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
+                          <MessageCircle size={12} />
+                        </button>
+                        <button onClick={() => togglePin(msg.id)}
+                          title={msg.isPinned ? 'Unpin' : 'Pin'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: msg.isPinned ? C.accent : C.textMuted, borderRadius: 4 }}>
+                          <Pin size={12} />
+                        </button>
+                        {isMe && !isAttachment && (
                           <button onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
                             title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
                             <Edit2 size={12} />
                           </button>
                         )}
-                        <button onClick={() => handleDeleteMessage(msg.id)}
-                          title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
-                          <Trash2 size={12} />
-                        </button>
+                        {isMe && (
+                          <button onClick={() => handleDeleteMessage(msg.id)}
+                            title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {/* Emoji picker popup */}
+                    {emojiPickerMsgId === msg.id && (
+                      <div style={{
+                        position: 'absolute', top: -36, [isMe ? 'left' : 'right']: isMe ? undefined : -60,
+                        ...(isMe ? { right: 'calc(72% + 4px)' } : { left: 32 }),
+                        display: 'flex', gap: 4, background: C.contentBg,
+                        borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                        border: `1px solid ${C.border}`, padding: '4px 8px', zIndex: 20,
+                      }}>
+                        {QUICK_EMOJIS.map(e => (
+                          <button key={e} onClick={() => toggleReaction(msg.id, e)}
+                            style={{
+                              background: 'none', border: 'none', cursor: 'pointer',
+                              fontSize: 16, padding: '2px 4px', borderRadius: 6,
+                            }}>
+                            {e}
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -2208,6 +2493,145 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               </div>
             )}
             <div ref={messagesEndRef} />
+          </div>
+
+          {/* Thread side panel */}
+          {threadParent && (
+            <div style={{
+              width: 320, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              display: 'flex', flexDirection: 'column', flexShrink: 0,
+            }}>
+              {/* Thread header */}
+              <div style={{
+                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Thread</span>
+                <button onClick={() => { setThreadParent(null); setThreadMessages([]) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
+                  <X size={14} />
+                </button>
+              </div>
+              {/* Parent message */}
+              <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, background: '#f8faff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Avatar url={threadParent.sender.avatarUrl} name={threadParent.sender.alias ?? threadParent.sender.username} size={20} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{threadParent.sender.alias ?? threadParent.sender.username}</span>
+                  <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(threadParent.createdAt)}</span>
+                </div>
+                <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+                  {renderMessageContent(threadParent.content)}
+                </div>
+              </div>
+              {/* Thread replies */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {threadMessages.length === 0 && (
+                  <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No replies yet</div>
+                )}
+                {threadMessages.map(reply => {
+                  const rName = reply.sender.alias ?? reply.sender.username
+                  const rIsMe = reply.sender.id === auth.userId
+                  const rGrouped = groupReactions(reply.reactions ?? [])
+                  return (
+                    <div key={reply.id}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                        <Avatar url={reply.sender.avatarUrl} name={rName} size={18} />
+                        <span style={{ fontSize: 11, fontWeight: 700, color: rIsMe ? C.accent : C.text }}>{rName}</span>
+                        <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(reply.createdAt)}</span>
+                      </div>
+                      <div style={{ paddingLeft: 24, fontSize: 13, color: C.text, lineHeight: 1.5 }}>
+                        {renderMessageContent(reply.content)}
+                      </div>
+                      {rGrouped.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 3, paddingLeft: 24 }}>
+                          {rGrouped.map(r => (
+                            <button key={r.emoji} onClick={() => toggleReaction(reply.id, r.emoji, true)}
+                              title={r.users.join(', ')}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 2,
+                                padding: '1px 5px', borderRadius: 8, border: `1px solid ${r.reacted ? C.accent : C.border}`,
+                                background: r.reacted ? C.accentLight : '#f8faff', cursor: 'pointer', fontSize: 11,
+                              }}>
+                              <span>{r.emoji}</span>
+                              <span style={{ fontSize: 9, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Thread input */}
+              <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                <textarea
+                  value={threadInput}
+                  onChange={e => setThreadInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadReply() }
+                  }}
+                  placeholder="Reply…"
+                  rows={1}
+                  style={{
+                    flex: 1, resize: 'none', padding: '8px 10px', fontSize: 12,
+                    border: `1px solid ${C.border}`, borderRadius: 8, outline: 'none',
+                    color: C.text, background: '#fff', minHeight: 32, maxHeight: 80,
+                    fontFamily: 'inherit',
+                  }}
+                />
+                <button onClick={sendThreadReply} disabled={!threadInput.trim() || sendingThread}
+                  style={{
+                    padding: '8px 10px', borderRadius: 8, border: 'none',
+                    background: threadInput.trim() ? C.accent : C.contentBg,
+                    color: threadInput.trim() ? '#fff' : C.textMuted,
+                    cursor: threadInput.trim() ? 'pointer' : 'default', flexShrink: 0,
+                  }}>
+                  {sendingThread ? <Loader size={14} /> : <Send size={14} />}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Pinned messages side panel */}
+          {showPinned && (
+            <div style={{
+              width: 300, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              display: 'flex', flexDirection: 'column', flexShrink: 0,
+            }}>
+              <div style={{
+                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Pin size={14} /> Pinned Messages
+                </span>
+                <button onClick={() => setShowPinned(false)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
+                  <X size={14} />
+                </button>
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px' }}>
+                {pinnedMessages.length === 0 && (
+                  <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No pinned messages</div>
+                )}
+                {pinnedMessages.map(pm => (
+                  <div key={pm.id} style={{
+                    padding: '10px 12px', borderRadius: 8, background: '#f8faff',
+                    border: `1px solid ${C.border}`, marginBottom: 8,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <Avatar url={pm.sender.avatarUrl} name={pm.sender.alias ?? pm.sender.username} size={18} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>{pm.sender.alias ?? pm.sender.username}</span>
+                      <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(pm.createdAt)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: C.text, lineHeight: 1.4 }}>
+                      {renderMessageContent(pm.content)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           </div>
 
           {/* Input */}
@@ -2315,6 +2739,7 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
   const [, setMentionSearch] = useState<string | null>(null)
   const [allUsers, setAllUsers] = useState<UserInfo[]>([])
   const [mentionResults, setMentionResults] = useState<UserInfo[]>([])
+  const [dragOver, setDragOver] = useState(false)
 
   // Load users once for @mention
   useEffect(() => {
@@ -2388,12 +2813,10 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
     setTimeout(() => el.focus(), 0)
   }
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !channelId) return
+  async function uploadFileBlob(file: File) {
+    if (!channelId) return
     setUploading(true)
     try {
-      // Upload file to server so it persists cross-process
       const form = new FormData()
       form.append('file', file)
       const res = await fetch(`${config.apiBase}/api/channels/${channelId}/attachments`, {
@@ -2403,7 +2826,6 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
       })
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
       const { url, filename } = await res.json() as { url: string; filename: string }
-      // Send a message with a clickable attachment link
       const content = `[📎 ${filename}](${config.apiBase}${url})`
       await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
         method: 'POST',
@@ -2412,8 +2834,21 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
       })
     } catch { /* ignore upload errors */ } finally {
       setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''
     }
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await uploadFileBlob(file)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) uploadFileBlob(file)
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -2427,7 +2862,25 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
   }
 
   return (
-    <div style={{ padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, background: C.contentBg, flexShrink: 0, position: 'relative' }}>
+    <div
+      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      style={{
+        padding: '10px 16px 14px', borderTop: `1px solid ${dragOver ? C.accent : C.border}`,
+        background: dragOver ? C.accentLight : C.contentBg, flexShrink: 0, position: 'relative',
+        transition: 'background 0.15s, border-color 0.15s',
+      }}>
+      {/* Drag & drop overlay */}
+      {dragOver && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(108, 92, 231, 0.08)', borderRadius: 8, zIndex: 30, pointerEvents: 'none',
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: C.accent }}>Drop file to upload</span>
+        </div>
+      )}
+
       {/* @mention dropdown */}
       {mentionResults.length > 0 && (
         <div style={{
