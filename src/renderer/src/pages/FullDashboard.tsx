@@ -10,7 +10,8 @@ import {
   Bold, Italic, List, ExternalLink, FileText, PhoneIncoming,
   Mic, Maximize2, Minimize2, Move, Search,
   Flag, GitBranch, Calendar, Clock, FolderPlus,
-  LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft
+  LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft,
+  Copy, Link, CornerDownRight, Image
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -70,7 +71,9 @@ interface Task {
 }
 interface TaskComment {
   id: string; body: string; createdAt: string; attachmentUrl: string | null; attachmentName: string | null
+  parentCommentId: string | null
   user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+  replies?: TaskComment[]
 }
 interface TaskAttachment {
   id: string; url: string; name: string; mimeType: string | null; createdAt: string
@@ -338,7 +341,7 @@ const ACTION_COLORS: Record<string, string> = {
   'break-start': '#f59e0b', 'break-end': '#6366f1',
 }
 
-function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | null }) {
+function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: ApiConfig | null; onOpenTask?: (taskId: string) => void }) {
   const [status, setStatus] = useState<BundyStatus | null>(null)
   const [todayTasks, setTodayTasks] = useState<Task[]>([])
   const [loadingTasks, setLoadingTasks] = useState(false)
@@ -380,7 +383,7 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
     if (!config) return
     setLoadingTasks(true)
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks?assigneeId=me&dueDate=today`, {
+      const res = await fetch(`${config.apiBase}/api/tasks?assigneeId=me&dueDate=today&includeSubtasks=1`, {
         headers: { 'Authorization': `Bearer ${config.token}` },
       })
       if (res.ok) {
@@ -524,9 +527,10 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
             </div>
           ) : (
             todayTasks.map(task => (
-              <div key={task.id} style={{
+              <div key={task.id} onClick={() => onOpenTask?.(task.id)} style={{
                 ...neu(), padding: '10px 12px',
                 display: 'flex', alignItems: 'center', gap: 10,
+                cursor: 'pointer',
               }}>
                 {/* Status icon */}
                 <div style={{
@@ -539,7 +543,9 @@ function HomePanel({ auth: _auth, config }: { auth: Auth; config: ApiConfig | nu
                   <div style={{
                     fontSize: 13, color: C.text,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    display: 'flex', alignItems: 'center', gap: 4,
                   }}>
+                    {task.parentTaskId && <CornerDownRight size={10} color={C.textMuted} style={{ flexShrink: 0 }} />}
                     {task.title}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
@@ -1047,6 +1053,9 @@ function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
 
 // Parses text with [label](url) markdown links and bare https:// URLs.
 // isMe controls link colour so it's readable on both blue and white bubbles.
+// Task links matching /tasks/<id> are intercepted and opened in-app.
+const TASK_LINK_RE = /\/tasks\/([a-z0-9]+)$/i
+
 function parseContent(text: string, isMe = false): React.ReactNode {
   const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
   const result: React.ReactNode[] = []
@@ -1061,7 +1070,22 @@ function parseContent(text: string, isMe = false): React.ReactNode {
     const label = m[1] ?? m[3]
     const url = m[2] ?? m[3]
     const linkColor = isMe ? 'rgba(255,255,255,0.9)' : C.accent
-    if (isImageUrl(url)) {
+    const taskMatch = TASK_LINK_RE.exec(url)
+    if (taskMatch) {
+      // Task link — open in-app
+      const taskId = taskMatch[1]
+      result.push(
+        <a
+          key={keyIdx++}
+          href={url}
+          onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId } })) }}
+          style={{ color: linkColor, textDecoration: 'underline', cursor: 'pointer', wordBreak: 'break-all', WebkitUserSelect: 'text', userSelect: 'text' }}
+        >
+          <CheckSquare size={10} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />
+          {label.replace(/^https?:\/\/[^/]+/, '').startsWith('/tasks/') ? 'Open Task' : label}
+        </a>
+      )
+    } else if (isImageUrl(url)) {
       result.push(
         <img key={keyIdx++} src={url} alt={label ?? ''} onClick={() => window.electronAPI.openExternal(url)}
           style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, display: 'block', marginTop: 4, cursor: 'pointer' }}
@@ -3524,7 +3548,7 @@ const PRIORITY_COLORS: Record<string, string> = {
   urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e', none: '#9ca3af'
 }
 
-function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
+function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { config: ApiConfig; auth: Auth; pendingTaskId?: string | null; onPendingTaskHandled?: () => void }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress' | 'overdue'>('mine')
@@ -3579,6 +3603,14 @@ function TasksPanel({ config, auth }: { config: ApiConfig; auth: Auth }) {
   }, [apiFetch, filter, selectedProjectId])
 
   useEffect(() => { load() }, [load])
+
+  // Handle pending task from external navigation (e.g. Home panel, chat link)
+  useEffect(() => {
+    if (pendingTaskId) {
+      setDetailTaskId(pendingTaskId)
+      onPendingTaskHandled?.()
+    }
+  }, [pendingTaskId, onPendingTaskHandled])
 
   async function handleDrop(targetStatus: string) {
     if (!dragId) return
@@ -4158,6 +4190,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   const [commentText, setCommentText] = useState('')
   const [commentAttach, setCommentAttach] = useState<File | null>(null)
   const [addingComment, setAddingComment] = useState(false)
+  const [replyTo, setReplyTo] = useState<TaskComment | null>(null)
   const [savingField, setSavingField] = useState<string | null>(null)
   const [users, setUsers] = useState<UserInfo[]>([])
   const [editingTitle, setEditingTitle] = useState(false)
@@ -4177,6 +4210,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   const [uploadingAttach, setUploadingAttach] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const [lightboxName, setLightboxName] = useState<string>('')
+  const [copiedLink, setCopiedLink] = useState(false)
   // Subtask navigation stack
   const [viewTaskId, setViewTaskId] = useState(taskId)
   const [parentStack, setParentStack] = useState<string[]>([])
@@ -4221,7 +4255,15 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     setSavingField(fieldName ?? null)
     try {
       const d = await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
-      setDetail(d.task)
+      // Merge server response with local state (server omits comments/subtasks/activities)
+      setDetail(prev => prev ? {
+        ...prev,
+        ...d.task,
+        comments: prev.comments,
+        subtasks: prev.subtasks,
+        activities: prev.activities,
+        attachments: prev.attachments,
+      } : d.task)
       setComments(d.task.comments ?? comments)
       setActivities(d.task.activities ?? activities)
       onUpdated(d.task)
@@ -4245,12 +4287,14 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   async function addComment() {
     if (!commentText.trim() && !commentAttach) return
     setAddingComment(true)
+    const parentId = replyTo?.id ?? null
     try {
       if (commentAttach) {
         // Multipart form data for attachment
         const formData = new FormData()
         if (commentText.trim()) formData.append('body', commentText.trim())
         formData.append('file', commentAttach)
+        if (parentId) formData.append('parentCommentId', parentId)
         const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/comments`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${config.token}` },
@@ -4258,15 +4302,25 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const d = await res.json() as { comment: TaskComment }
-        setComments(prev => [...prev, d.comment])
+        if (parentId) {
+          // Add reply to parent comment
+          setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
+        } else {
+          setComments(prev => [...prev, d.comment])
+        }
       } else {
         const d = await apiFetch(`/api/tasks/${viewTaskId}/comments`, {
-          method: 'POST', body: JSON.stringify({ body: commentText.trim() }),
+          method: 'POST', body: JSON.stringify({ body: commentText.trim(), parentCommentId: parentId }),
         }) as { comment: TaskComment }
-        setComments(prev => [...prev, d.comment])
+        if (parentId) {
+          setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
+        } else {
+          setComments(prev => [...prev, d.comment])
+        }
       }
       setCommentText('')
       setCommentAttach(null)
+      setReplyTo(null)
     } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
   }
 
@@ -4464,6 +4518,19 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
             <Trash2 size={14} />
           </button>
         )}
+        <button
+          onClick={() => {
+            const link = `${config.apiBase}/tasks/${viewTaskId}`
+            navigator.clipboard.writeText(link).then(() => {
+              setCopiedLink(true)
+              setTimeout(() => setCopiedLink(false), 2000)
+            })
+          }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: copiedLink ? C.success : C.textMuted, padding: 4, flexShrink: 0 }}
+          title={copiedLink ? 'Copied!' : 'Copy task link'}
+        >
+          {copiedLink ? <Check size={14} /> : <Link size={14} />}
+        </button>
         {parentStack.length > 0 && (
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0 }} title="Close drawer">
             <X size={16} />
@@ -4491,7 +4558,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
         {([
           { key: 'detail' as const, label: 'Details', icon: <AlignLeft size={12} /> },
-          { key: 'comments' as const, label: `Comments (${comments.length})`, icon: <MessageSquare size={12} /> },
+          { key: 'comments' as const, label: `Comments (${comments.length + comments.reduce((n, c) => n + (c.replies?.length ?? 0), 0)})`, icon: <MessageSquare size={12} /> },
           { key: 'activity' as const, label: 'Activity', icon: <Activity size={12} /> },
         ]).map(tab => (
           <button
@@ -4619,8 +4686,25 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                             alt={att.name}
                             onClick={() => { setLightboxUrl(`${config.apiBase}${att.url}`); setLightboxName(att.name) }}
                             style={{ width: 100, height: 80, objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+                            onError={e => {
+                              const el = e.currentTarget as HTMLImageElement
+                              el.style.display = 'none'
+                              // Show fallback file icon
+                              const fallback = el.parentElement?.querySelector('.att-fallback') as HTMLElement
+                              if (fallback) fallback.style.display = 'flex'
+                            }}
                           />
-                        ) : (
+                        ) : null}
+                        {isImage && (
+                          <button
+                            className="att-fallback"
+                            onClick={() => window.electronAPI.openExternal(`${config.apiBase}${att.url}`)}
+                            style={{ display: 'none', alignItems: 'center', justifyContent: 'center', width: 100, height: 80, color: C.accent, background: 'none', border: 'none', cursor: 'pointer' }}
+                          >
+                            <Image size={24} />
+                          </button>
+                        )}
+                        {!isImage && (
                           <button
                             onClick={() => window.electronAPI.openExternal(`${config.apiBase}${att.url}`)}
                             style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', color: C.accent, fontSize: 11, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}
@@ -4800,6 +4884,13 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                       <span style={{ flex: 1, fontSize: 12, color: C.text, textDecoration: subDone ? 'line-through' : 'none', opacity: subDone ? 0.5 : 1 }}>
                         {sub.title}
                       </span>
+                      <span style={{
+                        fontSize: 9, fontWeight: 600, color: TASK_STATUS_COLORS[sub.status] ?? C.textMuted,
+                        background: (TASK_STATUS_COLORS[sub.status] ?? C.textMuted) + '18',
+                        borderRadius: 8, padding: '1px 6px', flexShrink: 0,
+                      }}>
+                        {TASK_STATUS_LABELS[sub.status] ?? sub.status}
+                      </span>
                       {sub._count?.comments > 0 && (
                         <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}>
                           <MessageSquare size={9} /> {sub._count.comments}
@@ -4842,27 +4933,120 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
               {comments.length === 0 && (
                 <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 20, fontSize: 12 }}>No comments yet</div>
               )}
-              {comments.map(c => (
-                <div key={c.id} style={{ display: 'flex', gap: 10 }}>
-                  <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={28} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(c.createdAt)}</span>
+              {comments.map(c => {
+                const isImage = c.attachmentName && c.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(c.attachmentName)
+                return (
+                  <div key={c.id}>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={28} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
+                          <span style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(c.createdAt)}</span>
+                        </div>
+                        {c.body && (
+                          <div
+                            onClick={(e) => {
+                              const target = e.target as HTMLElement
+                              if (target.tagName === 'A') { e.preventDefault(); const href = target.getAttribute('href'); if (href) window.electronAPI.openExternal(href) }
+                            }}
+                            style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 2 }}
+                            dangerouslySetInnerHTML={{ __html: linkifyText(c.body) }}
+                          />
+                        )}
+                        {/* OG preview for URLs in comment */}
+                        {c.body && extractUrls(c.body).filter(u => !isImageUrl(u)).slice(0, 1).map(u => (
+                          <OgPreview key={u} url={u} config={config} />
+                        ))}
+                        {c.attachmentName && c.attachmentUrl && (
+                          isImage ? (
+                            <img
+                              src={`${config.apiBase}${c.attachmentUrl}`}
+                              alt={c.attachmentName}
+                              onClick={() => { setLightboxUrl(`${config.apiBase}${c.attachmentUrl}`); setLightboxName(c.attachmentName!) }}
+                              style={{ maxWidth: 200, maxHeight: 150, borderRadius: 8, marginTop: 6, cursor: 'pointer', objectFit: 'cover', display: 'block' }}
+                            />
+                          ) : (
+                            <button
+                              onClick={() => window.electronAPI.openExternal(`${config.apiBase}${c.attachmentUrl}`)}
+                              style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+                            >
+                              <FileText size={11} /> {c.attachmentName}
+                            </button>
+                          )
+                        )}
+                        <button
+                          onClick={() => { setReplyTo(c); commentTextareaRef.current?.focus() }}
+                          style={{ fontSize: 10, color: C.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', marginTop: 2, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3 }}
+                        >
+                          <CornerDownRight size={9} /> Reply{(c.replies?.length ?? 0) > 0 ? ` (${c.replies!.length})` : ''}
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 2, whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                    {c.attachmentName && (
-                      <button
-                        onClick={() => window.electronAPI.openExternal(`${config.apiBase}${c.attachmentUrl}`)}
-                        style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
-                      >
-                        <FileText size={11} /> {c.attachmentName}
-                      </button>
+                    {/* Thread replies */}
+                    {(c.replies ?? []).length > 0 && (
+                      <div style={{ marginLeft: 38, marginTop: 6, borderLeft: `2px solid ${C.border}`, paddingLeft: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {c.replies!.map(r => {
+                          const rIsImage = r.attachmentName && r.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(r.attachmentName)
+                          return (
+                            <div key={r.id} style={{ display: 'flex', gap: 8 }}>
+                              <Avatar url={r.user.avatarUrl} name={r.user.alias ?? r.user.username} size={22} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: C.text }}>{r.user.alias ?? r.user.username}</span>
+                                  <span style={{ fontSize: 9, color: C.textMuted }}>{timeAgo(r.createdAt)}</span>
+                                </div>
+                                {r.body && (
+                                  <div
+                                    onClick={(e) => {
+                                      const target = e.target as HTMLElement
+                                      if (target.tagName === 'A') { e.preventDefault(); const href = target.getAttribute('href'); if (href) window.electronAPI.openExternal(href) }
+                                    }}
+                                    style={{ fontSize: 12, color: C.text, lineHeight: 1.5, marginTop: 1 }}
+                                    dangerouslySetInnerHTML={{ __html: linkifyText(r.body) }}
+                                  />
+                                )}
+                                {r.attachmentName && r.attachmentUrl && (
+                                  rIsImage ? (
+                                    <img
+                                      src={`${config.apiBase}${r.attachmentUrl}`}
+                                      alt={r.attachmentName}
+                                      onClick={() => { setLightboxUrl(`${config.apiBase}${r.attachmentUrl}`); setLightboxName(r.attachmentName!) }}
+                                      style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, marginTop: 4, cursor: 'pointer', objectFit: 'cover', display: 'block' }}
+                                    />
+                                  ) : (
+                                    <button
+                                      onClick={() => window.electronAPI.openExternal(`${config.apiBase}${r.attachmentUrl}`)}
+                                      style={{ fontSize: 10, color: C.accent, display: 'flex', alignItems: 'center', gap: 3, marginTop: 3, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+                                    >
+                                      <FileText size={10} /> {r.attachmentName}
+                                    </button>
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
                     )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
+
+            {/* Reply indicator */}
+            {replyTo && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+                ...neu(), borderRadius: 8, marginBottom: 4, fontSize: 11, color: C.textMuted,
+              }}>
+                <CornerDownRight size={10} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Replying to <strong style={{ color: C.text }}>{replyTo.user.alias ?? replyTo.user.username}</strong>
+                </span>
+                <button onClick={() => setReplyTo(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 0 }}><X size={10} /></button>
+              </div>
+            )}
 
             {/* Markdown toolbar */}
             <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
@@ -5022,7 +5206,7 @@ function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, 
   const [sectionId, setSectionId] = useState('')
   const [assigneeId, setAssigneeId] = useState(auth.userId)
   const [dueDate, setDueDate] = useState('')
-  const [startDate, setStartDate] = useState('')
+  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0])
   const [estimatedHours, setEstimatedHours] = useState('')
   const [users, setUsers] = useState<UserInfo[]>([])
   const [saving, setSaving] = useState(false)
@@ -5933,6 +6117,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [isOnline, setIsOnline] = useState(true)
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null)
   const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
   const apiConfig = useApiConfig()
 
   // Buffer ICE candidates and answer SDP that arrive before CallWidget mounts
@@ -5947,6 +6132,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   // Listen for incoming-call events dispatched by MessagesPanel SSE
   // (so we can show the overlay regardless of which tab is active)
   // Also buffer ICE candidates and answer SDP that arrive before the CallWidget mounts
+  // Also listen for task link clicks from chat messages
   useEffect(() => {
     function onIncoming(e: Event) {
       const payload = (e as CustomEvent<IncomingCallPayload>).detail
@@ -5963,13 +6149,19 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       const payload = (e as CustomEvent<{ sdp?: string }>).detail
       if (payload.sdp) answerSdpRef.current = payload.sdp
     }
+    function onOpenTask(e: Event) {
+      const { taskId } = (e as CustomEvent<{ taskId: string }>).detail
+      if (taskId) { setPendingTaskId(taskId); setTab('tasks') }
+    }
     window.addEventListener('bundy-incoming-call', onIncoming)
     window.addEventListener('bundy-call-ice', onIce)
     window.addEventListener('bundy-call-answer', onAnswer)
+    window.addEventListener('bundy-open-task', onOpenTask)
     return () => {
       window.removeEventListener('bundy-incoming-call', onIncoming)
       window.removeEventListener('bundy-call-ice', onIce)
       window.removeEventListener('bundy-call-answer', onAnswer)
+      window.removeEventListener('bundy-open-task', onOpenTask)
     }
   }, [])
 
@@ -6016,7 +6208,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
         {tab === 'home' && (
           <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto' }}>
-            <HomePanel auth={auth} config={apiConfig} />
+            <HomePanel auth={auth} config={apiConfig} onOpenTask={(taskId) => { setPendingTaskId(taskId); setTab('tasks') }} />
           </div>
         )}
         {/* MessagesPanel: always mounted (SSE stays alive), hidden via visibility when on other tabs */}
@@ -6034,7 +6226,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         )}
         {tab === 'tasks' && apiConfig && (
           <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <TasksPanel config={apiConfig} auth={auth} />
+            <TasksPanel config={apiConfig} auth={auth} pendingTaskId={pendingTaskId} onPendingTaskHandled={() => setPendingTaskId(null)} />
           </div>
         )}
         {tab === 'activity' && apiConfig && (
