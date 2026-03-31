@@ -4581,7 +4581,16 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                   </div>
                 </div>
               ) : detail.description ? (
-                <div onClick={(e) => { if ((e.target as HTMLElement).tagName !== 'A') setEditingDesc(true) }}
+                <div onClick={(e) => {
+                  const target = e.target as HTMLElement
+                  if (target.tagName === 'A') {
+                    e.preventDefault()
+                    const href = target.getAttribute('href')
+                    if (href) window.electronAPI.openExternal(href)
+                  } else {
+                    setEditingDesc(true)
+                  }
+                }}
                   style={{ fontSize: 13, color: C.text, lineHeight: 1.6, cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}
                   dangerouslySetInnerHTML={{ __html: linkifyText(detail.description) }}
                 />
@@ -4612,13 +4621,13 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                             style={{ width: 100, height: 80, objectFit: 'cover', display: 'block', cursor: 'pointer' }}
                           />
                         ) : (
-                          <a
-                            href={`${config.apiBase}${att.url}`} target="_blank" rel="noreferrer"
-                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', color: C.accent, fontSize: 11, textDecoration: 'none' }}
+                          <button
+                            onClick={() => window.electronAPI.openExternal(`${config.apiBase}${att.url}`)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', color: C.accent, fontSize: 11, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}
                           >
                             <FileText size={14} />
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</span>
-                          </a>
+                          </button>
                         )}
                         {isImage && (
                           <div style={{ padding: '4px 6px', fontSize: 9, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</div>
@@ -4843,13 +4852,12 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                     </div>
                     <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 2, whiteSpace: 'pre-wrap' }}>{c.body}</div>
                     {c.attachmentName && (
-                      <a
-                        href={`${config.apiBase}${c.attachmentUrl}`}
-                        target="_blank" rel="noreferrer"
-                        style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}
+                      <button
+                        onClick={() => window.electronAPI.openExternal(`${config.apiBase}${c.attachmentUrl}`)}
+                        style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
                       >
                         <FileText size={11} /> {c.attachmentName}
-                      </a>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -4977,13 +4985,12 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
           />
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
             <span style={{ color: '#fff', fontSize: 13 }}>{lightboxName}</span>
-            <a
-              href={lightboxUrl} download={lightboxName} target="_blank" rel="noreferrer"
-              onClick={e => e.stopPropagation()}
-              style={{ color: C.accent, fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
+            <button
+              onClick={e => { e.stopPropagation(); window.electronAPI.openExternal(lightboxUrl!) }}
+              style={{ color: C.accent, fontSize: 12, fontWeight: 600, textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
             >
               Download
-            </a>
+            </button>
           </div>
           <button
             onClick={() => setLightboxUrl(null)}
