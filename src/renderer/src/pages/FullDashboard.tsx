@@ -56,6 +56,7 @@ interface Task {
   assigneeId: string | null
   sectionId?: string | null
   order?: number
+  parentTaskId?: string | null
   project: { id: string; name: string; color: string } | null
   section: { id: string; name: string } | null
   assignee: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
@@ -64,11 +65,16 @@ interface Task {
   comments?: TaskComment[]
   subtasks?: Task[]
   activities?: TaskActivityItem[]
+  attachments?: TaskAttachment[]
   _count: { comments: number; subtasks: number }
 }
 interface TaskComment {
   id: string; body: string; createdAt: string; attachmentUrl: string | null; attachmentName: string | null
   user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+}
+interface TaskAttachment {
+  id: string; url: string; name: string; mimeType: string | null; createdAt: string
+  creator: { id: string; username: string; alias: string | null; avatarUrl: string | null }
 }
 interface TaskActivityItem {
   id: string; type: string; oldVal: string | null; newVal: string | null; createdAt: string
@@ -181,6 +187,16 @@ function insertMarkdownAt(
   })
 }
 
+function linkifyText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/(https?:\/\/[^\s<&]+(?:&amp;[^\s<&]+)*)/g, (m) => {
+      const href = m.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      return `<a href="${href}" target="_blank" rel="noreferrer" style="color:${C.accent};text-decoration:underline;word-break:break-all">${m}</a>`
+    })
+    .replace(/\n/g, '<br>')
+}
+
 function simpleMarkdown(md: string): string {
   return md
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -196,6 +212,10 @@ function simpleMarkdown(md: string): string {
     .replace(/_(.+?)_/g, '<em>$1</em>')
     .replace(/~~(.+?)~~/g, '<del>$1</del>')
     .replace(/`([^`]+)`/g, '<code style="background:rgba(128,128,128,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.85em">$1</code>')
+    .replace(/(https?:\/\/[^\s<&]+(?:&amp;[^\s<&]+)*)/g, (m) => {
+      const href = m.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      return `<a href="${href}" target="_blank" rel="noreferrer" style="color:${C.accent};text-decoration:underline;word-break:break-all">${m}</a>`
+    })
     .replace(/\n/g, '<br>')
 }
 
@@ -4152,7 +4172,14 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const commentTextareaRef = useRef<HTMLTextAreaElement>(null)
   const [detailSections, setDetailSections] = useState<TaskSection[]>([])
-
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([])
+  const attachInputRef = useRef<HTMLInputElement>(null)
+  const [uploadingAttach, setUploadingAttach] = useState(false)
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+  const [lightboxName, setLightboxName] = useState<string>('')
+  // Subtask navigation stack
+  const [viewTaskId, setViewTaskId] = useState(taskId)
+  const [parentStack, setParentStack] = useState<string[]>([])
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
       ...opts,
@@ -4166,18 +4193,20 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   useEffect(() => {
     setLoadingDetail(true)
     setLoadError(null)
+    setActiveTab('detail')
     Promise.all([
-      apiFetch(`/api/tasks/${taskId}`),
+      apiFetch(`/api/tasks/${viewTaskId}`),
       apiFetch('/api/users'),
     ]).then(([taskData, userData]: [{ task: Task }, { users: UserInfo[] }]) => {
       setDetail(taskData.task)
       setComments(taskData.task.comments ?? [])
       setActivities(taskData.task.activities ?? [])
+      setAttachments(taskData.task.attachments ?? [])
       setEditTitle(taskData.task.title)
       setEditDesc(taskData.task.description ?? '')
       setUsers(userData.users)
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
-  }, [taskId, apiFetch])
+  }, [viewTaskId, apiFetch])
 
   // Load sections when project changes
   useEffect(() => {
@@ -4191,7 +4220,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     if (!detail) return
     setSavingField(fieldName ?? null)
     try {
-      const d = await apiFetch(`/api/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
+      const d = await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
       setDetail(d.task)
       setComments(d.task.comments ?? comments)
       setActivities(d.task.activities ?? activities)
@@ -4221,8 +4250,8 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         // Multipart form data for attachment
         const formData = new FormData()
         if (commentText.trim()) formData.append('body', commentText.trim())
-        formData.append('attachment', commentAttach)
-        const res = await fetch(`${config.apiBase}/api/tasks/${taskId}/comments`, {
+        formData.append('file', commentAttach)
+        const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/comments`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${config.token}` },
           body: formData,
@@ -4231,7 +4260,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         const d = await res.json() as { comment: TaskComment }
         setComments(prev => [...prev, d.comment])
       } else {
-        const d = await apiFetch(`/api/tasks/${taskId}/comments`, {
+        const d = await apiFetch(`/api/tasks/${viewTaskId}/comments`, {
           method: 'POST', body: JSON.stringify({ body: commentText.trim() }),
         }) as { comment: TaskComment }
         setComments(prev => [...prev, d.comment])
@@ -4244,8 +4273,8 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   async function deleteTask() {
     setDeleting(true)
     try {
-      await apiFetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
-      onDeleted(taskId)
+      await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'DELETE' })
+      onDeleted(viewTaskId)
     } catch (err) { console.error('[TaskDetail] delete failed:', err) } finally { setDeleting(false) }
   }
 
@@ -4257,7 +4286,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         method: 'POST',
         body: JSON.stringify({
           title: newSubtaskTitle.trim(),
-          parentTaskId: taskId,
+          parentTaskId: viewTaskId,
           projectId: detail.projectId,
           assigneeId: detail.assigneeId,
         }),
@@ -4294,6 +4323,49 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     const before = commentText.slice(0, s), after = commentText.slice(e)
     setCommentText(before + wrap[0] + sel + wrap[1] + after)
     setTimeout(() => { ta.focus(); ta.setSelectionRange(s + wrap[0].length, s + wrap[0].length + sel.length) }, 0)
+  }
+
+  async function uploadAttachment(file: File) {
+    if (file.size > 15 * 1024 * 1024) { alert('File must be under 15MB'); return }
+    setUploadingAttach(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/attachments`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}` },
+        body: fd,
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const d = await res.json() as { attachment: TaskAttachment }
+      setAttachments(prev => [...prev, d.attachment])
+    } catch (err) { console.error('[TaskDetail] uploadAttachment failed:', err) } finally { setUploadingAttach(false) }
+  }
+
+  async function deleteAttachment(attId: string) {
+    setAttachments(prev => prev.filter(a => a.id !== attId))
+    try {
+      await apiFetch(`/api/tasks/${viewTaskId}/attachments`, {
+        method: 'DELETE', body: JSON.stringify({ attachmentId: attId }),
+      })
+    } catch (err) {
+      console.error('[TaskDetail] deleteAttachment failed:', err)
+      // Re-fetch to restore
+      apiFetch(`/api/tasks/${viewTaskId}`).then((d: { task: Task }) => setAttachments(d.task.attachments ?? []))
+    }
+  }
+
+  function openSubtask(subId: string) {
+    setParentStack(prev => [...prev, viewTaskId])
+    setViewTaskId(subId)
+  }
+
+  function goBackToParent() {
+    const parentId = parentStack[parentStack.length - 1]
+    if (parentId) {
+      setParentStack(prev => prev.slice(0, -1))
+      setViewTaskId(parentId)
+    }
   }
 
   const canDelete = detail ? (detail.createdBy === auth.userId || auth.role === 'admin') : false
@@ -4336,9 +4408,17 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     }}>
       {/* Header */}
       <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0, marginTop: 1 }}>
-          <X size={16} />
-        </button>
+        {parentStack.length > 0 ? (
+          <button onClick={goBackToParent} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4, flexShrink: 0, marginTop: 1, display: 'flex', alignItems: 'center', gap: 2, fontSize: 11 }}
+            title="Back to parent task"
+          >
+            <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} />
+          </button>
+        ) : (
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0, marginTop: 1 }}>
+            <X size={16} />
+          </button>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           {editingTitle ? (
             <input
@@ -4364,6 +4444,11 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            {parentStack.length > 0 && (
+              <span style={{ fontSize: 10, fontWeight: 600, color: C.accent, background: C.accent + '18', borderRadius: 4, padding: '1px 6px' }}>
+                Subtask
+              </span>
+            )}
             {detail.project && (
               <span style={{ fontSize: 10, fontWeight: 600, color: detail.project.color, background: detail.project.color + '18', borderRadius: 4, padding: '1px 6px' }}>
                 {detail.project.name}
@@ -4377,6 +4462,11 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
         {canDelete && (
           <button onClick={() => setConfirmDelete(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.danger, padding: 4, flexShrink: 0 }} title="Delete">
             <Trash2 size={14} />
+          </button>
+        )}
+        {parentStack.length > 0 && (
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, flexShrink: 0 }} title="Close drawer">
+            <X size={16} />
           </button>
         )}
       </div>
@@ -4490,12 +4580,72 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                     }}>Cancel</button>
                   </div>
                 </div>
+              ) : detail.description ? (
+                <div onClick={(e) => { if ((e.target as HTMLElement).tagName !== 'A') setEditingDesc(true) }}
+                  style={{ fontSize: 13, color: C.text, lineHeight: 1.6, cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}
+                  dangerouslySetInnerHTML={{ __html: linkifyText(detail.description) }}
+                />
               ) : (
                 <div onClick={() => setEditingDesc(true)}
-                  style={{ fontSize: 13, color: detail.description ? C.text : C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}>
-                  {detail.description || 'Click to add description…'}
+                  style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}>
+                  Click to add description…
                 </div>
               )}
+            </div>
+
+            {/* Attachments */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Paperclip size={10} /> Attachments ({attachments.length})
+              </div>
+              {attachments.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  {attachments.map(att => {
+                    const isImage = att.mimeType?.startsWith('image/')
+                    return (
+                      <div key={att.id} style={{ position: 'relative', ...neu(), borderRadius: 8, overflow: 'hidden', width: isImage ? 100 : undefined, maxWidth: 200 }}>
+                        {isImage ? (
+                          <img
+                            src={`${config.apiBase}${att.url}`}
+                            alt={att.name}
+                            onClick={() => { setLightboxUrl(`${config.apiBase}${att.url}`); setLightboxName(att.name) }}
+                            style={{ width: 100, height: 80, objectFit: 'cover', display: 'block', cursor: 'pointer' }}
+                          />
+                        ) : (
+                          <a
+                            href={`${config.apiBase}${att.url}`} target="_blank" rel="noreferrer"
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', color: C.accent, fontSize: 11, textDecoration: 'none' }}
+                          >
+                            <FileText size={14} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</span>
+                          </a>
+                        )}
+                        {isImage && (
+                          <div style={{ padding: '4px 6px', fontSize: 9, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</div>
+                        )}
+                        <button
+                          onClick={() => deleteAttachment(att.id)}
+                          style={{ position: 'absolute', top: 2, right: 2, width: 18, height: 18, borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.5)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, padding: 0 }}
+                          title="Remove"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <input ref={attachInputRef} type="file" style={{ display: 'none' }} accept="*/*"
+                onChange={e => { const f = e.target.files?.[0]; if (f) uploadAttachment(f); e.target.value = '' }}
+              />
+              <button
+                onClick={() => attachInputRef.current?.click()}
+                disabled={uploadingAttach}
+                style={{ ...neu(), padding: '5px 10px', border: 'none', cursor: 'pointer', fontSize: 11, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 4, opacity: uploadingAttach ? 0.5 : 1 }}
+              >
+                {uploadingAttach ? <Loader size={11} className="spin" /> : <Plus size={11} />}
+                {uploadingAttach ? 'Uploading…' : 'Add attachment'}
+              </button>
             </div>
 
             {/* Meta grid: dates, hours, assignee, project */}
@@ -4624,9 +4774,11 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                 {(detail.subtasks ?? []).map(sub => {
                   const subDone = sub.status === 'done'
                   return (
-                    <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, ...neu(), padding: '7px 10px', borderRadius: 8 }}>
+                    <div key={sub.id} style={{ display: 'flex', alignItems: 'center', gap: 8, ...neu(), padding: '7px 10px', borderRadius: 8, cursor: 'pointer' }}
+                      onClick={() => openSubtask(sub.id)}
+                    >
                       <button
-                        onClick={() => toggleSubtask(sub.id, sub.status)}
+                        onClick={(e) => { e.stopPropagation(); toggleSubtask(sub.id, sub.status) }}
                         style={{
                           width: 16, height: 16, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
                           border: `2px solid ${subDone ? C.success : C.border}`,
@@ -4639,7 +4791,13 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                       <span style={{ flex: 1, fontSize: 12, color: C.text, textDecoration: subDone ? 'line-through' : 'none', opacity: subDone ? 0.5 : 1 }}>
                         {sub.title}
                       </span>
+                      {sub._count?.comments > 0 && (
+                        <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}>
+                          <MessageSquare size={9} /> {sub._count.comments}
+                        </span>
+                      )}
                       {sub.assignee && <Avatar url={sub.assignee.avatarUrl} name={sub.assignee.alias ?? sub.assignee.username} size={18} />}
+                      <ChevronRight size={12} color={C.textMuted} style={{ opacity: 0.4 }} />
                     </div>
                   )
                 })}
@@ -4800,6 +4958,41 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
           </div>
         )}
       </div>
+
+      {/* Lightbox overlay */}
+      {lightboxUrl && (
+        <div
+          onClick={() => setLightboxUrl(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', zIndex: 100, cursor: 'zoom-out',
+          }}
+        >
+          <img
+            src={lightboxUrl}
+            alt={lightboxName}
+            onClick={e => e.stopPropagation()}
+            style={{ maxWidth: '90%', maxHeight: '80vh', objectFit: 'contain', borderRadius: 8, cursor: 'default' }}
+          />
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ color: '#fff', fontSize: 13 }}>{lightboxName}</span>
+            <a
+              href={lightboxUrl} download={lightboxName} target="_blank" rel="noreferrer"
+              onClick={e => e.stopPropagation()}
+              style={{ color: C.accent, fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
+            >
+              Download
+            </a>
+          </div>
+          <button
+            onClick={() => setLightboxUrl(null)}
+            style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}
+          >
+            <X size={24} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
