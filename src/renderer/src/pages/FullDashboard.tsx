@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import {
   Home, MessageSquare, CheckSquare, Activity, Settings,
   LogOut, Play, Pause, RotateCcw, Square, Plus, Trash2,
@@ -244,9 +245,9 @@ const NAV: NavItem[] = [
   { id: 'activity', icon: <Activity size={18} />, label: 'Activity' },
 ]
 
-function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge }: {
+function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge, messageMention }: {
   tab: Tab; setTab: (t: Tab) => void
-  auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number
+  auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number; messageMention?: boolean
 }) {
   return (
     <nav style={{
@@ -297,11 +298,13 @@ function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge }: {
               <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
               {item.id === 'messages' && (messageBadge ?? 0) > 0 && (
                 <span style={{
-                  minWidth: 18, height: 18, borderRadius: 9, background: C.danger,
+                  minWidth: 18, height: 18, borderRadius: 9,
+                  background: messageMention ? '#f59e0b' : C.danger,
                   color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex',
                   alignItems: 'center', justifyContent: 'center', padding: '0 5px',
+                  title: messageMention ? 'You were mentioned' : undefined,
                 }}>
-                  {messageBadge! > 99 ? '99+' : messageBadge}
+                  {messageMention ? '@' : (messageBadge! > 99 ? '99+' : messageBadge)}
                 </span>
               )}
             </button>
@@ -1159,8 +1162,27 @@ function extractUrls(text: string): string[] {
   return urls
 }
 
+// Auth-aware image component: fetches with bearer token so protected uploads render
+function AuthImage({ src, config, alt, style, onClick }: { src: string; config: ApiConfig; alt?: string; style?: React.CSSProperties; onClick?: () => void }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    if (!src) return
+    let objectUrl: string | null = null
+    let cancelled = false
+    fetch(src, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob() })
+      .then(blob => { if (!cancelled) { objectUrl = URL.createObjectURL(blob); setBlobUrl(objectUrl) } })
+      .catch(() => { if (!cancelled) setError(true) })
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
+  }, [src, config.token])
+  if (error) return <div style={{ ...style, background: '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><FileText size={14} /></div>
+  if (!blobUrl) return <div style={{ ...style, background: '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><Loader size={14} /></div>
+  return <img src={blobUrl} alt={alt} style={style} onClick={onClick} />
+}
+
 // Inline image attachment (when message content matches attachment pattern)
-function InlineAttachment({ content, isMe }: { content: string; isMe: boolean; config?: ApiConfig }) {
+function InlineAttachment({ content, isMe, config }: { content: string; isMe: boolean; config?: ApiConfig }) {
   // Match [📎 filename](url) — allow any characters in filename including _ and spaces
   const match = content.match(/^\[📎\s([^\]]+?)\]\((https?:\/\/\S+?)\)\s*$/)
   if (!match) return null
@@ -1171,6 +1193,31 @@ function InlineAttachment({ content, isMe }: { content: string; isMe: boolean; c
   const [imgLoaded, setImgLoaded] = useState(false)
 
   if (isImageUrl(cleanUrl)) {
+    if (config) {
+      // Use auth-aware image loading for protected uploads
+      return (
+        <div style={{ marginTop: 4 }}>
+          <AuthImage
+            src={cleanUrl}
+            config={config}
+            alt={filename}
+            style={{
+              maxWidth: '100%', maxHeight: expanded ? 400 : 180,
+              objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', display: 'block',
+            }}
+            onClick={() => setExpanded(!expanded)}
+          />
+          {expanded && (
+            <button
+              onClick={() => window.electronAPI.openExternal(cleanUrl)}
+              style={{ marginTop: 4, fontSize: 10, color: isMe ? 'rgba(255,255,255,0.8)' : C.accent, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
+            >
+              <ExternalLink size={10} /> Open full size
+            </button>
+          )}
+        </div>
+      )
+    }
     if (imgError) {
       // Fallback to download card when image fails
       return (
@@ -1473,6 +1520,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const [channels, setChannels] = useState<Conversation[]>([])
   const [selected, setSelected] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [mentionedChannels, setMentionedChannels] = useState<Set<string>>(new Set())
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
@@ -1567,19 +1615,28 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       // If we were in this conference, leave
       setMyConference(prev => prev?.channelId === payload.channelId ? null : prev)
     }
+    const onConfInvite = (e: Event) => {
+      const payload = (e as CustomEvent<{ from: string; fromName: string; channelId: string; channelName: string }>).detail
+      if (Notification.permission === 'granted') {
+        new Notification(`📞 Call invite from ${payload.fromName}`, { body: `Join #${payload.channelName}` })
+      }
+    }
     window.addEventListener('bundy-active-conferences', onActiveConfs)
     window.addEventListener('bundy-conference-joined', onConfJoined)
     window.addEventListener('bundy-conference-left', onConfLeft)
     window.addEventListener('bundy-conference-ended', onConfEnded)
+    window.addEventListener('bundy-conference-invite', onConfInvite)
     return () => {
       window.removeEventListener('bundy-active-conferences', onActiveConfs)
       window.removeEventListener('bundy-conference-joined', onConfJoined)
       window.removeEventListener('bundy-conference-left', onConfLeft)
       window.removeEventListener('bundy-conference-ended', onConfEnded)
+      window.removeEventListener('bundy-conference-invite', onConfInvite)
     }
   }, [])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesScrollRef = useRef<HTMLDivElement>(null)
   const typingTimers = useRef<Record<string, NodeJS.Timeout>>({})
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
@@ -1633,8 +1690,9 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // Broadcast total unread count to FullDashboard for sidebar badge
   useEffect(() => {
     const total = channels.reduce((sum, c) => sum + (c.unread ?? 0), 0)
-    window.dispatchEvent(new CustomEvent('bundy-unread-update', { detail: { count: total } }))
-  }, [channels])
+    const hasMention = channels.some(c => mentionedChannels.has(c.id) && (c.unread ?? 0) > 0)
+    window.dispatchEvent(new CustomEvent('bundy-unread-update', { detail: { count: total, mention: hasMention } }))
+  }, [channels, mentionedChannels])
 
   const loadMessages = useCallback(async (conv: Conversation) => {
     setLoadingMsgs(true)
@@ -1659,6 +1717,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       setHasMore(data.hasMore ?? false)
       // Clear unread for this channel immediately
       setChannels(prev => prev.map(c => c.id === conv.id ? { ...c, unread: 0 } : c))
+      setMentionedChannels(prev => { const next = new Set(prev); next.delete(conv.id); return next })
       // Mark as read on server
       fetch(`${config.apiBase}/api/channels/${conv.id}/read`, {
         method: 'POST',
@@ -1754,12 +1813,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                   }).catch(() => {})
                 } else if (payload.senderId !== auth.userId) {
                   // Not our own message in another channel — increment unread + notify
+                  const isMention = !!payload.content && (
+                    payload.content.toLowerCase().includes(`@${auth.username.toLowerCase()}`) ||
+                    (auth.username && payload.content.toLowerCase().includes(`@${auth.username.toLowerCase()}`))
+                  )
                   setChannels(prev => prev.map(c =>
                     c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
                   ))
+                  if (isMention) {
+                    setMentionedChannels(prev => new Set([...prev, channelId]))
+                  }
                   // Desktop notification
                   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                    void new Notification(`New message`, {
+                    void new Notification(isMention ? `📣 You were mentioned` : `New message`, {
                       body: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`,
                       silent: false,
                     })
@@ -1878,6 +1944,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 window.dispatchEvent(new CustomEvent('bundy-conference-answer', { detail: payload }))
               } else if (ev === 'conference-ice') {
                 window.dispatchEvent(new CustomEvent('bundy-conference-ice', { detail: payload }))
+              } else if (ev === 'conference-mute') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-mute', { detail: payload }))
+              } else if (ev === 'conference-invite') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-invite', { detail: payload }))
               } else if (ev === 'active-conferences') {
                 window.dispatchEvent(new CustomEvent('bundy-active-conferences', { detail: payload }))
               }
@@ -2026,10 +2096,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     setSearchResults([])
   }
 
-  // Load older messages (pagination)
+  // Load older messages (pagination) — preserves scroll position
   async function loadOlderMessages() {
     if (!selected || loadingMore || !hasMore || messages.length === 0) return
     setLoadingMore(true)
+    const container = messagesScrollRef.current
+    const prevScrollHeight = container?.scrollHeight ?? 0
+    const prevScrollTop = container?.scrollTop ?? 0
     try {
       const oldest = messages[0]
       const data = await apiFetch(`/api/channels/${selected.id}/messages?before=${oldest.id}&limit=50`)
@@ -2037,8 +2110,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
         ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0,
         isPinned: m.isPinned ?? false,
       }))
-      setMessages(prev => [...older, ...prev])
-      setHasMore(data.hasMore ?? false)
+      flushSync(() => {
+        setMessages(prev => [...older, ...prev])
+        setHasMore(data.hasMore ?? false)
+      })
+      // After DOM update, restore scroll position so user stays at same position
+      if (container) {
+        container.scrollTop = prevScrollTop + (container.scrollHeight - prevScrollHeight)
+      }
     } catch { /* offline */ } finally { setLoadingMore(false) }
   }
 
@@ -2259,19 +2338,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           {channelList.length > 0 && (
             <>
               <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
-              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} onClick={() => setSelected(c)} />)}
+              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
             </>
           )}
           {groupList.length > 0 && (
             <>
               <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Groups</div>
-              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} onClick={() => setSelected(c)} />)}
+              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
             </>
           )}
           {dmList.length > 0 && (
             <>
               <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Direct Messages</div>
-              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} onClick={() => setSelected(c)} />)}
+              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
             </>
           )}
           {channels.length === 0 && (
@@ -2415,7 +2494,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 
           {/* Messages */}
           <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <div ref={messagesScrollRef} style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {/* Load older messages button */}
             {hasMore && (
               <button onClick={loadOlderMessages} disabled={loadingMore}
@@ -2823,16 +2902,18 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared media</div>
                   ) : (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-                      {sharedMedia.media.map((m, i) => (
-                        <a key={i} href={`${config.apiBase}${m.url}`} target="_blank" rel="noopener noreferrer"
-                          style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: '#0001' }}>
-                          {m.url.match(/\.(mp4|webm|mov)$/i) ? (
-                            <video src={`${config.apiBase}${m.url}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          ) : (
-                            <img src={`${config.apiBase}${m.url}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          )}
-                        </a>
-                      ))}
+                      {sharedMedia.media.map((m, i) => {
+                        const fullUrl = `${config.apiBase}${m.url}`
+                        return (
+                          <div key={i} onClick={() => window.electronAPI.openExternal(fullUrl)} style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: '#e8edf5', cursor: 'pointer' }}>
+                            {m.url.match(/\.(mp4|webm|mov)$/i) ? (
+                              <video src={fullUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            ) : (
+                              <AuthImage src={fullUrl} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )
                 ) : sharedMediaTab === 'files' ? (
@@ -2914,7 +2995,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   )
 }
 
-function ConvRow({ conv, selected, typingUsers, hasActiveCall, onClick }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; onClick: () => void }) {
+function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -2964,12 +3045,12 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, onClick }: { conv
       )}
       {(conv.unread ?? 0) > 0 && !selected && (
         <div style={{
-          minWidth: 18, height: 18, borderRadius: 9, background: C.accent,
+          minWidth: 18, height: 18, borderRadius: 9, background: isMentioned ? '#f59e0b' : C.accent,
           color: '#fff', fontSize: 10, fontWeight: 700,
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
           flexShrink: 0,
         }}>
-          {conv.unread}
+          {isMentioned ? '@' : conv.unread}
         </div>
       )}
     </button>
@@ -3336,6 +3417,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   const [screenSharing, setScreenSharing] = useState(false)
   const screenShareStream = useRef<MediaStream | null>(null)
   const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor' | 'disconnected'>('good')
+  const [screenSources, setScreenSources] = useState<Array<{ id: string; name: string; thumbnail: string }> | null>(null)
 
   // Track remote video availability (when peer adds/removes video)
   const [remoteHasVideo, setRemoteHasVideo] = useState(false)
@@ -3389,6 +3471,15 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       localVideo.current.play().catch(() => {})
     }
   }, [windowMode, videoActive])
+
+  // Fix: when remote first enables video mid-call, the <video> element may not
+  // have existed yet. Re-attach the stream as soon as remoteHasVideo becomes true.
+  useEffect(() => {
+    if (remoteHasVideo && remoteStreamRef.current && remoteVideo.current) {
+      remoteVideo.current.srcObject = remoteStreamRef.current
+      remoteVideo.current.play().catch(() => {})
+    }
+  }, [remoteHasVideo])
 
   // Dragging logic for mini mode
   useEffect(() => {
@@ -3675,38 +3766,45 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       }
       setScreenSharing(false)
     } else {
-      // Start screen sharing
+      // Fetch sources and show picker
       try {
         const sources = await (window as any).electronAPI.getScreenSources()
         if (!sources || sources.length === 0) return
-        // Use the first screen source (primary display)
-        const source = sources.find((s: any) => s.name === 'Entire Screen' || s.name === 'Screen 1') || sources[0]
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: source.id } } as any,
-        })
-        screenShareStream.current = stream
-        const screenTrack = stream.getVideoTracks()[0]
-        screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
-        const senders = pc.current.getSenders()
-        const videoSender = senders.find(s => s.track?.kind === 'video')
-        if (videoSender) {
-          await videoSender.replaceTrack(screenTrack)
-        } else {
-          pc.current.addTrack(screenTrack, stream)
-          renegotiating.current = true
-          const offer = await pc.current.createOffer()
-          await pc.current.setLocalDescription(offer)
-          await fetch(`${config.apiBase}/api/calls`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
-          })
-        }
-        setScreenSharing(true)
-        if (!videoActive) { setVideoActive(true); setVideoOff(false) }
-      } catch (err) { console.error('[CallWidget] screen share failed:', err) }
+        // Show picker modal
+        setScreenSources(sources.map((s: any) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail ?? '' })))
+      } catch (err) { console.error('[CallWidget] getScreenSources failed:', err) }
     }
+  }
+
+  async function startScreenShare(sourceId: string) {
+    if (!pc.current) return
+    setScreenSources(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+      })
+      screenShareStream.current = stream
+      const screenTrack = stream.getVideoTracks()[0]
+      screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
+      const senders = pc.current.getSenders()
+      const videoSender = senders.find(s => s.track?.kind === 'video')
+      if (videoSender) {
+        await videoSender.replaceTrack(screenTrack)
+      } else {
+        pc.current.addTrack(screenTrack, stream)
+        renegotiating.current = true
+        const offer = await pc.current.createOffer()
+        await pc.current.setLocalDescription(offer)
+        await fetch(`${config.apiBase}/api/calls`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
+        })
+      }
+      setScreenSharing(true)
+      if (!videoActive) { setVideoActive(true); setVideoOff(false) }
+    } catch (err) { console.error('[CallWidget] screen share failed:', err) }
   }
 
   // Connection quality monitoring
@@ -3743,6 +3841,38 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   }
 
   const showVideo = videoActive || remoteHasVideo
+
+  // Screen source picker modal
+  if (screenSources !== null) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ background: '#1a1a2e', borderRadius: 16, padding: 24, maxWidth: 560, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <span style={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>Share Screen</span>
+            <button onClick={() => setScreenSources(null)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
+            {screenSources.map(src => (
+              <button key={src.id} onClick={() => startScreenShare(src.id)}
+                style={{ background: 'rgba(255,255,255,0.05)', border: '2px solid transparent', borderRadius: 10, padding: 8, cursor: 'pointer', textAlign: 'center', transition: 'border-color 0.1s' }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = '#6366f1')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = 'transparent')}
+              >
+                {src.thumbnail ? (
+                  <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 6, display: 'block', marginBottom: 6 }} />
+                ) : (
+                  <div style={{ width: '100%', aspectRatio: '16/9', background: '#0f0f23', borderRadius: 6, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Monitor size={28} color="#6366f1" />
+                  </div>
+                )}
+                <span style={{ color: '#fff', fontSize: 11, fontWeight: 600, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{src.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // ─── Mini mode ──────────────────────────────────────────────────────
   if (windowMode === 'mini') {
@@ -3907,6 +4037,12 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const [screenSharing, setScreenSharing] = useState(false)
   const screenShareStream = useRef<MediaStream | null>(null)
   const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor' | 'disconnected'>('good')
+  const [screenSources, setScreenSources] = useState<Array<{ id: string; name: string; thumbnail: string }> | null>(null)
+  const [showInvite, setShowInvite] = useState(false)
+  const [inviteUsers, setInviteUsers] = useState<UserInfo[]>([])
+  const [peerMuted, setPeerMuted] = useState<Map<string, boolean>>(new Map())
+  const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
+  const speakingTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
     mountedRef.current = true
@@ -3965,14 +4101,15 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     }
 
     peerConn.ontrack = e => {
-      let remoteStream = e.streams[0]
-      if (!remoteStream) {
-        if (!peerData.stream) peerData.stream = new MediaStream()
-        peerData.stream.addTrack(e.track)
-        remoteStream = peerData.stream
+      // Always create a new MediaStream to force React re-render when tracks change
+      if (e.streams[0]) {
+        peerData.stream = new MediaStream(e.streams[0].getTracks())
       } else {
-        peerData.stream = remoteStream
+        const existingTracks = peerData.stream ? peerData.stream.getTracks() : []
+        const allTracks = [...existingTracks.filter(t => t.id !== e.track.id), e.track]
+        peerData.stream = new MediaStream(allTracks)
       }
+      const remoteStream = peerData.stream
       console.log(`[Conference] ontrack from ${peerId}, tracks:`, remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`))
       // Imperative audio element per peer (survives re-renders)
       if (e.track.kind === 'audio') {
@@ -4179,12 +4316,19 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       onLeave()
     }
 
+    const onConfMute = (e: Event) => {
+      const payload = (e as CustomEvent<{ from: string; channelId: string; muted: boolean }>).detail
+      if (payload.channelId !== channelId) return
+      setPeerMuted(prev => { const next = new Map(prev); next.set(payload.from, payload.muted); return next })
+    }
+
     window.addEventListener('bundy-conference-offer', onConfOffer)
     window.addEventListener('bundy-conference-answer', onConfAnswer)
     window.addEventListener('bundy-conference-ice', onConfIce)
     window.addEventListener('bundy-conference-joined', onConfJoined)
     window.addEventListener('bundy-conference-left', onConfLeft)
     window.addEventListener('bundy-conference-ended', onConfEnded)
+    window.addEventListener('bundy-conference-mute', onConfMute)
     ctrl.signal.addEventListener('abort', () => {
       window.removeEventListener('bundy-conference-offer', onConfOffer)
       window.removeEventListener('bundy-conference-answer', onConfAnswer)
@@ -4192,6 +4336,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       window.removeEventListener('bundy-conference-joined', onConfJoined)
       window.removeEventListener('bundy-conference-left', onConfLeft)
       window.removeEventListener('bundy-conference-ended', onConfEnded)
+      window.removeEventListener('bundy-conference-mute', onConfMute)
     })
   }
 
@@ -4209,11 +4354,6 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
         body: JSON.stringify({ action: 'conference-leave', channelId }),
       }).catch(() => {})
     }
-  }
-
-  function toggleMute() {
-    localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
-    setMuted(!muted)
   }
 
   async function toggleVideo() {
@@ -4247,6 +4387,17 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
 
   function handleLeave() { cleanupAll(true); onLeave() }
 
+  function toggleMute() {
+    const newMuted = !muted
+    localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
+    setMuted(newMuted)
+    fetch(`${config.apiBase}/api/calls`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'conference-mute', channelId, muted: newMuted }),
+    }).catch(() => {})
+  }
+
   async function toggleScreenShare() {
     if (screenSharing) {
       screenShareStream.current?.getTracks().forEach(t => t.stop())
@@ -4267,33 +4418,53 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       try {
         const sources = await (window as any).electronAPI.getScreenSources()
         if (!sources || sources.length === 0) return
-        const source = sources.find((s: any) => s.name === 'Entire Screen' || s.name === 'Screen 1') || sources[0]
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: source.id } } as any,
-        })
-        screenShareStream.current = stream
-        const screenTrack = stream.getVideoTracks()[0]
-        screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
-        for (const [peerId, peer] of peersRef.current) {
-          const videoSender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
-          if (videoSender) {
-            await videoSender.replaceTrack(screenTrack)
-          } else {
-            peer.pc.addTrack(screenTrack, stream)
-            const offer = await peer.pc.createOffer()
-            await peer.pc.setLocalDescription(offer)
-            await fetch(`${config.apiBase}/api/calls`, {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
-            })
-          }
-        }
-        setScreenSharing(true)
-        if (!videoActive) { setVideoActive(true); setVideoOff(false) }
-      } catch (err) { console.error('[Conference] screen share failed:', err) }
+        setScreenSources(sources)
+      } catch (err) { console.error('[Conference] getScreenSources failed:', err) }
     }
+  }
+
+  async function startScreenShare(sourceId: string) {
+    setScreenSources(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+      })
+      screenShareStream.current = stream
+      const screenTrack = stream.getVideoTracks()[0]
+      screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
+      for (const [peerId, peer] of peersRef.current) {
+        const videoSender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
+        if (videoSender) {
+          await videoSender.replaceTrack(screenTrack)
+        } else {
+          peer.pc.addTrack(screenTrack, stream)
+          const offer = await peer.pc.createOffer()
+          await peer.pc.setLocalDescription(offer)
+          await fetch(`${config.apiBase}/api/calls`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
+          })
+        }
+      }
+      setScreenSharing(true)
+      if (!videoActive) { setVideoActive(true); setVideoOff(false) }
+    } catch (err) { console.error('[Conference] screen share failed:', err) }
+  }
+
+  async function loadInviteUsers() {
+    try {
+      const res = await fetch(`${config.apiBase}/api/channels/${channelId}/members`, {
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const data = await res.json()
+      const inConf = new Set([auth.userId, ...Array.from(peersRef.current.keys())])
+      const others = (data.members ?? data ?? []).filter((u: UserInfo) => !inConf.has(u.id))
+      setInviteUsers(others)
+      setShowInvite(true)
+    } catch (err) { console.error('[Conference] loadInviteUsers failed:', err) }
   }
 
   // Connection quality monitoring (average across all peers)
@@ -4337,10 +4508,14 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const gridCols = totalParticipants <= 2 ? 1 : totalParticipants <= 4 ? 2 : 3
 
   function renderParticipantTile(id: string, stream: MediaStream | null, name: string, avatar: string | null, isSelf: boolean) {
+    const isMuted = isSelf ? muted : !!peerMuted.get(id)
+    const isSpeaking = speakingPeers.has(id)
     return (
       <div key={id} style={{
         background: '#0f0f23', borderRadius: 10, overflow: 'hidden', position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0,
+        outline: isSpeaking ? '2px solid #22c55e' : '2px solid transparent',
+        transition: 'outline-color 0.15s',
       }}>
         {stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled ? (
           <video autoPlay playsInline muted={isSelf} ref={el => { if (el && el.srcObject !== stream) { el.srcObject = stream; el.play().catch(() => {}) } }}
@@ -4351,9 +4526,10 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
             <div style={{ color: '#fff', fontSize: windowMode === 'mini' ? 10 : 12, fontWeight: 600, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
           </div>
         )}
-        <span style={{ position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 10, textShadow: '0 1px 3px rgba(0,0,0,0.7)' }}>
-          {isSelf ? 'You' : name}
-        </span>
+        <div style={{ position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 10, textShadow: '0 1px 3px rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', gap: 3 }}>
+          <span>{isSelf ? 'You' : name}</span>
+          {isMuted && <MicOff size={8} color="#f87171" />}
+        </div>
       </div>
     )
   }
@@ -4361,38 +4537,123 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   // ─── Mini mode ──────────────────────────────────────────────────────
   if (windowMode === 'mini') {
     return (
-      <div style={{
-        position: 'fixed', left: position.x, top: position.y, zIndex: 9998,
-        width: 300, height: 200, background: '#1a1a2e', borderRadius: 12,
-        boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
-      }}>
-        <div onMouseDown={handleDragStart} onDoubleClick={() => setWindowMode('normal')} style={{
-          padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 6,
-          cursor: isDragging ? 'grabbing' : 'grab', background: 'rgba(255,255,255,0.05)', flexShrink: 0,
+      <>
+        {screenSources && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 480, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+              <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Choose what to share</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {screenSources.map(src => (
+                  <button key={src.id} onClick={() => startScreenShare(src.id)}
+                    style={{ background: '#0f1426', border: '2px solid #334155', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                    <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 4, aspectRatio: '16/9', objectFit: 'cover', background: '#000' }} />
+                    <span style={{ color: '#e2e8f0', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {showInvite && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+              <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Invite to call</div>
+              {inviteUsers.length === 0 ? (
+                <div style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
+              ) : inviteUsers.map(u => (
+                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #334155' }}>
+                  <Avatar url={u.avatarUrl ?? null} name={u.alias ?? u.username} size={32} />
+                  <span style={{ flex: 1, color: '#e2e8f0', fontSize: 13 }}>{u.alias ?? u.username}</span>
+                  <button onClick={async () => {
+                    await fetch(`${config.apiBase}/api/calls`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'conference-invite', to: u.id, channelId }),
+                    }).catch(() => {})
+                    setInviteUsers(prev => prev.filter(x => x.id !== u.id))
+                  }} style={{ background: C.accent, border: 'none', borderRadius: 6, color: '#fff', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Invite</button>
+                </div>
+              ))}
+              <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Close</button>
+            </div>
+          </div>
+        )}
+        <div style={{
+          position: 'fixed', left: position.x, top: position.y, zIndex: 9998,
+          width: 300, height: 200, background: '#1a1a2e', borderRadius: 12,
+          boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
         }}>
-          <Move size={10} color="#94a3b8" />
-          <Hash size={10} color="#94a3b8" />
-          <span style={{ color: '#fff', fontSize: 10, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{channelName}</span>
-          <span style={{ color: '#94a3b8', fontSize: 10 }}><Users size={10} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
+          <div onMouseDown={handleDragStart} onDoubleClick={() => setWindowMode('normal')} style={{
+            padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 6,
+            cursor: isDragging ? 'grabbing' : 'grab', background: 'rgba(255,255,255,0.05)', flexShrink: 0,
+          }}>
+            <Move size={10} color="#94a3b8" />
+            <Hash size={10} color="#94a3b8" />
+            <span style={{ color: '#fff', fontSize: 10, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{channelName}</span>
+            <span style={{ color: '#94a3b8', fontSize: 10 }}><Users size={10} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
+          </div>
+          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: `repeat(${Math.min(gridCols, 2)}, 1fr)`, gap: 2, padding: 2, minHeight: 0 }}>
+            {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
+            {peerList.slice(0, 3).map(([id, p]) => renderParticipantTile(id, p.stream, p.name, p.avatar, false))}
+          </div>
+          <div style={{ padding: '4px 8px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
+            <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
+              videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
+              onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
+              screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
+          </div>
+          <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
         </div>
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: `repeat(${Math.min(gridCols, 2)}, 1fr)`, gap: 2, padding: 2, minHeight: 0 }}>
-          {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
-          {peerList.slice(0, 3).map(([id, p]) => renderParticipantTile(id, p.stream, p.name, p.avatar, false))}
-        </div>
-        <div style={{ padding: '4px 8px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
-          <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
-            videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
-            onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
-            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
-        </div>
-        <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
-      </div>
+      </>
     )
   }
 
   // ─── Normal / fullscreen mode ───────────────────────────────────────
   const isFs = windowMode === 'fullscreen'
   return (
+    <>
+      {screenSources && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 520, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Choose what to share</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+              {screenSources.map(src => (
+                <button key={src.id} onClick={() => startScreenShare(src.id)}
+                  style={{ background: '#0f1426', border: '2px solid #334155', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                  <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 4, aspectRatio: '16/9', objectFit: 'cover', background: '#000' }} />
+                  <span style={{ color: '#e2e8f0', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {showInvite && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Invite to call</div>
+            {inviteUsers.length === 0 ? (
+              <div style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
+            ) : inviteUsers.map(u => (
+              <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #334155' }}>
+                <Avatar url={u.avatarUrl ?? null} name={u.alias ?? u.username} size={32} />
+                <span style={{ flex: 1, color: '#e2e8f0', fontSize: 13 }}>{u.alias ?? u.username}</span>
+                <button onClick={async () => {
+                  await fetch(`${config.apiBase}/api/calls`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'conference-invite', to: u.id, channelId }),
+                  }).catch(() => {})
+                  setInviteUsers(prev => prev.filter(x => x.id !== u.id))
+                }} style={{ background: C.accent, border: 'none', borderRadius: 6, color: '#fff', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Invite</button>
+              </div>
+            ))}
+            <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Close</button>
+          </div>
+        </div>
+      )}
     <div style={{
       position: 'fixed', inset: 0, background: isFs ? '#000' : 'rgba(0,0,0,0.85)', zIndex: 9998,
       display: 'flex', flexDirection: 'column',
@@ -4420,11 +4681,13 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
             onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
-            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
+            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality}
+            onInvite={loadInviteUsers} />
         </div>
       </div>
       <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
     </div>
+    </>
   )
 }
 
@@ -7335,6 +7598,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
   const [messageBadge, setMessageBadge] = useState(0)
+  const [messageMention, setMessageMention] = useState(false)
   const apiConfig = useApiConfig()
 
   // Buffer ICE candidates and answer SDP that arrive before CallWidget mounts
@@ -7371,8 +7635,9 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       if (taskId) { setPendingTaskId(taskId); setTab('tasks') }
     }
     function onUnreadUpdate(e: Event) {
-      const { count } = (e as CustomEvent<{ count: number }>).detail
+      const { count, mention } = (e as CustomEvent<{ count: number; mention?: boolean }>).detail
       setMessageBadge(count)
+      setMessageMention(!!mention)
     }
     window.addEventListener('bundy-incoming-call', onIncoming)
     window.addEventListener('bundy-call-ice', onIce)
@@ -7390,7 +7655,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
-      <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} />
+      <Sidebar tab={tab} setTab={setTab} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} messageMention={messageMention} />
 
       {/* Incoming call overlay — visible on any tab */}
       {incomingCall && apiConfig && (
