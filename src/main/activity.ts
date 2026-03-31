@@ -88,6 +88,11 @@ async function getActiveWindowFn(): Promise<ActiveWindowFn> {
 
 async function pollActiveWindow(): Promise<void> {
   try {
+    // Only track the active window when user has recent input activity
+    // to avoid logging the idle screen/screensaver as "used app"
+    const now = Date.now()
+    if (now - lastActivityTs > ACTIVITY_GRACE_MS) return // user is idle, skip
+
     const fn = await getActiveWindowFn()
     const win = await fn()
     if (win?.owner?.name) {
@@ -143,8 +148,28 @@ function stopActiveTimer(): void {
   }
 }
 
+/**
+ * Align windows to clock boundaries: :00, :10, :20, :30, :40, :50.
+ * E.g. if user logs in at 8:35, the first window is 8:30–8:40 (partial),
+ * then 8:40–8:50, etc.
+ */
+function alignedWindowStart(): Date {
+  const now = new Date()
+  now.setSeconds(0, 0)
+  now.setMinutes(Math.floor(now.getMinutes() / 10) * 10)
+  return now
+}
+
+function msUntilNextBoundary(): number {
+  const now = Date.now()
+  const msIntoWindow = now % WINDOW_MS
+  return WINDOW_MS - msIntoWindow
+}
+
 function flushHeartbeat(): void {
-  const totalSeconds = WINDOW_MS / 1000
+  const now = Date.now()
+  const totalSeconds = Math.round((now - windowStart.getTime()) / 1000)
+  if (totalSeconds <= 0) return
   const topApps = { ...appSeconds }
   const topUrls = { ...urlSeconds }
   void sendHeartbeat({
@@ -165,7 +190,19 @@ function flushHeartbeat(): void {
   keyActiveSeconds = 0
   appSeconds = {}
   urlSeconds = {}
-  windowStart = new Date()
+  windowStart = alignedWindowStart()
+}
+
+function scheduleHeartbeat(): void {
+  if (heartbeatTimer) return
+  // Fire at the next 10-minute boundary, then every 10 minutes
+  const delay = msUntilNextBoundary()
+  heartbeatTimer = setTimeout(() => {
+    flushHeartbeat()
+    heartbeatTimer = null
+    // Now start a repeating interval aligned to boundaries
+    scheduleHeartbeat()
+  }, delay)
 }
 
 export async function startActivity(): Promise<void> {
@@ -206,9 +243,9 @@ export async function startActivity(): Promise<void> {
 
   uIOhook.start()
 
-  windowStart = new Date()
+  windowStart = alignedWindowStart()
   startActiveTimer()
-  heartbeatTimer = setInterval(flushHeartbeat, WINDOW_MS)
+  scheduleHeartbeat()
 
   // Start app/URL polling
   void pollActiveWindow()
@@ -225,7 +262,7 @@ export function stopActivity(): void {
   stopActiveTimer()
 
   if (heartbeatTimer) {
-    clearInterval(heartbeatTimer)
+    clearTimeout(heartbeatTimer)
     heartbeatTimer = null
   }
 

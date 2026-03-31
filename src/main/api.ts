@@ -151,8 +151,8 @@ export async function submitReport(content: string): Promise<void> {
   }
 }
 
-export async function sendDesktopHeartbeat(): Promise<string | null> {
-  if (!store.get('desktopToken')) return null
+export async function sendDesktopHeartbeat(): Promise<{ currentStatus: string | null; midnightClockOut: boolean }> {
+  if (!store.get('desktopToken')) return { currentStatus: null, midnightClockOut: false }
   try {
     const res = await fetch(`${baseUrl()}/api/desktop/heartbeat`, {
       method: 'POST',
@@ -160,14 +160,14 @@ export async function sendDesktopHeartbeat(): Promise<string | null> {
     })
     if (res.ok) {
       updateReachable(true)
-      const data = (await res.json()) as { currentStatus?: string }
-      return data.currentStatus ?? null
+      const data = (await res.json()) as { currentStatus?: string; midnightClockOut?: boolean }
+      return { currentStatus: data.currentStatus ?? null, midnightClockOut: data.midnightClockOut ?? false }
     }
     updateReachable(false)
   } catch {
     updateReachable(false)
   }
-  return null
+  return { currentStatus: null, midnightClockOut: false }
 }
 
 export async function breakOnQuit(): Promise<void> {

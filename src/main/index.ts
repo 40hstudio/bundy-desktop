@@ -300,8 +300,13 @@ async function pollAndPush(): Promise<void> {
   try {
     // Send heartbeat first so the web app knows desktop is online
     // before we make any other request
-    await sendDesktopHeartbeat()
+    const heartbeatResult = await sendDesktopHeartbeat()
     broadcastOnlineState()
+
+    // If the server auto-clocked-out at midnight, bring the app window to front
+    if (heartbeatResult.midnightClockOut) {
+      handleMidnightClockOut()
+    }
 
     const status = await getBundyStatus()
     cachedStatus = status
@@ -336,6 +341,59 @@ async function pollAndPush(): Promise<void> {
   }
 }
 
+/** Called when the server reports a midnight auto-clock-out. Bring app to front. */
+function handleMidnightClockOut(): void {
+  // Stop all monitoring
+  stopScreenshots()
+  stopActivity()
+
+  // Bring the full dashboard window to front
+  void openFullWindow()
+
+  // Send a notification
+  const { Notification } = require('electron') as typeof import('electron')
+  const notif = new Notification({
+    title: 'Bundy — Auto Clock-Out',
+    body: 'You have been automatically clocked out at midnight. Clock in again if you need overtime.',
+  })
+  notif.show()
+}
+
+// ── Local midnight timer (WIB = UTC+7) ─────────────────────────────────────
+let midnightTimer: NodeJS.Timeout | null = null
+
+function startMidnightTimer(): void {
+  if (midnightTimer) return
+  scheduleMidnightCheck()
+}
+
+function scheduleMidnightCheck(): void {
+  // Calculate ms until next midnight WIB (UTC+7)
+  const now = new Date()
+  const wibNow = new Date(now.getTime() + 7 * 3600_000)
+  const tomorrow = new Date(Date.UTC(wibNow.getUTCFullYear(), wibNow.getUTCMonth(), wibNow.getUTCDate() + 1))
+  // tomorrow is midnight WIB in UTC terms
+  const midnightUtc = new Date(tomorrow.getTime() - 7 * 3600_000)
+  const msUntilMidnight = midnightUtc.getTime() - now.getTime()
+
+  // Schedule check 2 seconds after midnight to let the server heartbeat handle it first
+  const delay = Math.max(msUntilMidnight + 2000, 1000)
+  midnightTimer = setTimeout(() => {
+    midnightTimer = null
+    // Trigger a poll which will detect the midnight clock-out via the server
+    void pollAndPush()
+    // Re-schedule for next midnight
+    scheduleMidnightCheck()
+  }, delay)
+}
+
+function stopMidnightTimer(): void {
+  if (midnightTimer) {
+    clearTimeout(midnightTimer)
+    midnightTimer = null
+  }
+}
+
 function startPoller(): void {
   if (statusPollerTimer) return
   // Fire heartbeat immediately so the server sees the desktop as online
@@ -343,6 +401,7 @@ function startPoller(): void {
   sendDesktopHeartbeat()
   void pollAndPush()
   statusPollerTimer = setInterval(() => void pollAndPush(), 30_000)
+  startMidnightTimer()
 
   // Real-time sync: listen for SSE events so web actions update instantly
   // onReconnect: SSE reconnects ~5s after server restart — drain queue then check for updates
@@ -357,6 +416,7 @@ function startPoller(): void {
 
 function stopPoller(): void {
   disconnectSSE()
+  stopMidnightTimer()
   if (statusPollerTimer) {
     clearInterval(statusPollerTimer)
     statusPollerTimer = null

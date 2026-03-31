@@ -5779,142 +5779,456 @@ function ManageSectionsModal({ config, projectId, projectName, sections: initial
 
 // ─── Activity Panel ───────────────────────────────────────────────────────────
 
-const ACTION_COLORS_ACT: Record<string, string> = {
-  CHECK_IN: C.success, CLOCK_OUT: C.danger,
-  BREAK: C.warning, BACK: C.accent,
+interface ActivityScreenshot {
+  id: string; url: string; capturedAt: string; displayIndex: number
+  topApp: string | null; mouseActivePct: number | null; keyActivePct: number | null; activityPct: number | null
 }
-const ACTION_ICONS_ACT: Record<string, React.ReactNode> = {
-  CHECK_IN: <Play size={13} />, CLOCK_OUT: <Square size={13} />,
-  BREAK: <Pause size={13} />, BACK: <RotateCcw size={13} />,
+interface ActivityWindow {
+  windowStart: string; mouseEvents: number; keyEvents: number
+  activeSeconds: number; mouseActiveSeconds: number; keyActiveSeconds: number; totalSeconds: number
 }
-const ACTION_LABELS_ACT: Record<string, string> = {
-  CHECK_IN: 'Clocked In', CLOCK_OUT: 'Clocked Out',
-  BREAK: 'Break Started', BACK: 'Resumed',
+interface ActivityStats {
+  activityPercent: number; mousePercent: number; keyPercent: number
+  mouseEvents: number; keyEvents: number; totalTrackedMinutes: number
+}
+interface ManualTimeReq {
+  id: string; startTime: string; endTime: string; reason: string; status: string; adminNote: string | null; createdAt: string
+}
+interface ActivityData {
+  screenshots: ActivityScreenshot[]; activity: ActivityWindow[]
+  topApps: { name: string; seconds: number }[]; topUrls: { name: string; seconds: number }[]
+  timeLogs: { action: string; timestamp: string }[]; manualRequests: ManualTimeReq[]; stats: ActivityStats
+}
+
+interface TimelineSlot {
+  slotTime: Date; screenshot: ActivityScreenshot | null; isBreak: boolean; isOffline: boolean
+  activityPct: number | null; window: ActivityWindow | null
+}
+
+function buildActivityTimeline(screenshots: ActivityScreenshot[], timeLogs: { action: string; timestamp: string }[], activityWindows: ActivityWindow[]): TimelineSlot[] {
+  const firstCheckIn = timeLogs.find(l => l.action === 'CHECK_IN')
+  if (!firstCheckIn) return []
+  const start = new Date(firstCheckIn.timestamp)
+  const lastLog = timeLogs[timeLogs.length - 1]
+  const isOpen = !lastLog || lastLog.action !== 'CLOCK_OUT'
+  const lastClockOut = [...timeLogs].reverse().find(l => l.action === 'CLOCK_OUT')
+  const end = isOpen ? new Date() : new Date(lastClockOut!.timestamp)
+
+  // Build break ranges
+  const breaks: { start: Date; end: Date | null }[] = []
+  let bStart: Date | null = null
+  for (const log of timeLogs) {
+    const t = new Date(log.timestamp)
+    if (log.action === 'BREAK') bStart = t
+    else if (log.action === 'BACK' && bStart) { breaks.push({ start: bStart, end: t }); bStart = null }
+    else if (log.action === 'CLOCK_OUT') bStart = t
+    else if (log.action === 'CHECK_IN' && bStart) { breaks.push({ start: bStart, end: t }); bStart = null }
+  }
+  if (bStart) breaks.push({ start: bStart, end: null })
+
+  // Round start down to 10-min boundary
+  const roundedStart = new Date(start)
+  roundedStart.setSeconds(0, 0)
+  roundedStart.setMinutes(Math.floor(roundedStart.getMinutes() / 10) * 10)
+
+  const slots: TimelineSlot[] = []
+  for (let t = roundedStart.getTime(); t <= end.getTime(); t += 10 * 60_000) {
+    const slotTime = new Date(t)
+    const slotEnd = t + 10 * 60_000
+
+    // Match screenshot
+    const ss = screenshots.find(s => {
+      const ct = new Date(s.capturedAt).getTime()
+      return ct >= t && ct < slotEnd
+    }) ?? null
+
+    // Match activity window
+    const win = activityWindows.find(w => {
+      const wt = new Date(w.windowStart).getTime()
+      return Math.abs(wt - t) < 5 * 60_000
+    }) ?? null
+
+    const isBreak = breaks.some(b => slotTime >= b.start && slotTime < (b.end ?? end))
+    const isOffline = !ss && !isBreak && !win
+
+    let actPct: number | null = null
+    if (win) {
+      actPct = win.totalSeconds > 0
+        ? Math.round((((win.mouseActiveSeconds + win.keyActiveSeconds) / 2) / win.totalSeconds) * 100)
+        : 0
+    } else if (ss?.activityPct != null) {
+      actPct = ss.activityPct
+    }
+
+    slots.push({ slotTime, screenshot: ss, isBreak, isOffline, activityPct: actPct, window: win })
+  }
+  return slots
 }
 
 function ActivityPanel({ config }: { config: ApiConfig }) {
-  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const now = new Date(Date.now() + 7 * 3600_000)
+    return now.toISOString().slice(0, 10)
+  })
+  const [data, setData] = useState<ActivityData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [stats, setStats] = useState({ workMs: 0, breakMs: 0 })
-  const [screenshotCount, setScreenshotCount] = useState(0)
-  const [activityWindows, setActivityWindows] = useState<{ windowStart: string; activeSeconds: number; totalSeconds: number }[]>([])
+  const [manualReqForm, setManualReqForm] = useState<{ startTime: string; endTime: string; reason: string } | null>(null)
+  const [manualSubmitting, setManualSubmitting] = useState(false)
+  const timelineRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { loadActivity() }, [config])
+  const todayStr = (() => { const n = new Date(Date.now() + 7 * 3600_000); return n.toISOString().slice(0, 10) })()
+  const isToday = selectedDate === todayStr
 
-  async function loadActivity() {
+  const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [bundyData, actData, ssData] = await Promise.all([
-        fetch(`${config.apiBase}/api/bundy`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()) as Promise<{ todayLogs: LogEntry[] }>,
-        fetch(`${config.apiBase}/api/user/activity-today`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()) as Promise<{ summaries: { windowStart: string; activeSeconds: number; totalSeconds: number }[] }>,
-        fetch(`${config.apiBase}/api/user/screenshots-today`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.json()).catch(() => ({ screenshots: [] })) as Promise<{ screenshots: unknown[] }>,
-      ])
-      setLogs(bundyData.todayLogs ?? [])
-      setActivityWindows(actData.summaries ?? [])
-      setScreenshotCount((ssData.screenshots ?? []).length)
-
-      let workMs = 0, breakMs = 0, lastIn: number | null = null, lastBreak: number | null = null
-      for (const log of (bundyData.todayLogs ?? [])) {
-        const t = new Date(log.timestamp).getTime()
-        if (log.action === 'CHECK_IN' || log.action === 'BACK') { lastIn = t; lastBreak = null }
-        else if (log.action === 'BREAK') {
-          if (lastIn != null) { workMs += t - lastIn; lastIn = null }
-          lastBreak = t
-        } else if (log.action === 'CLOCK_OUT') {
-          if (lastIn != null) workMs += t - lastIn
-          if (lastBreak != null) breakMs += t - lastBreak
-          lastIn = null; lastBreak = null
-        }
+      const res = await fetch(`${config.apiBase}/api/user/activity?date=${selectedDate}`, {
+        headers: { Authorization: `Bearer ${config.token}` }
+      })
+      if (res.ok) {
+        const json = await res.json() as ActivityData
+        setData(json)
       }
-      if (lastIn != null) workMs += Date.now() - lastIn
-      if (lastBreak != null) breakMs += Date.now() - lastBreak
-      setStats({ workMs, breakMs })
-    } catch { /* offline */ } finally { setLoading(false) }
+    } catch { /* offline */ }
+    finally { setLoading(false) }
+  }, [config, selectedDate])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  // Auto-scroll timeline to end
+  useEffect(() => {
+    if (timelineRef.current) timelineRef.current.scrollLeft = timelineRef.current.scrollWidth
+  }, [data])
+
+  const timeline = data ? buildActivityTimeline(data.screenshots, data.timeLogs, data.activity) : []
+
+  // Work/break time from logs
+  const { workMs, breakMs } = (() => {
+    if (!data) return { workMs: 0, breakMs: 0 }
+    let wMs = 0, bMs = 0, lastIn: number | null = null, lastBreak: number | null = null
+    for (const log of data.timeLogs) {
+      const t = new Date(log.timestamp).getTime()
+      if (log.action === 'CHECK_IN' || log.action === 'BACK') { lastIn = t; lastBreak = null }
+      else if (log.action === 'BREAK') { if (lastIn != null) { wMs += t - lastIn; lastIn = null }; lastBreak = t }
+      else if (log.action === 'CLOCK_OUT') { if (lastIn != null) wMs += t - lastIn; if (lastBreak != null) bMs += t - lastBreak; lastIn = null; lastBreak = null }
+    }
+    if (lastIn != null && isToday) wMs += Date.now() - lastIn
+    if (lastBreak != null && isToday) bMs += Date.now() - lastBreak
+    return { workMs: wMs, breakMs: bMs }
+  })()
+
+  function changeDate(delta: number) {
+    const d = new Date(selectedDate + 'T12:00:00')
+    d.setDate(d.getDate() + delta)
+    const ds = d.toISOString().slice(0, 10)
+    if (ds <= todayStr) setSelectedDate(ds)
   }
 
-  // Compute total active seconds
-  const totalActiveSeconds = activityWindows.reduce((s, w) => s + w.activeSeconds, 0)
-  const totalTrackedSeconds = activityWindows.reduce((s, w) => s + w.totalSeconds, 0)
-  const activePercent = totalTrackedSeconds > 0 ? Math.round((totalActiveSeconds / totalTrackedSeconds) * 100) : 0
+  function actColor(pct: number): string {
+    if (pct > 60) return C.success
+    if (pct > 30) return C.warning
+    return C.danger
+  }
+
+  // Handle manual time request submit
+  async function submitManualRequest() {
+    if (!manualReqForm) return
+    setManualSubmitting(true)
+    try {
+      const res = await fetch(`${config.apiBase}/api/bundy/manual-request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
+        body: JSON.stringify(manualReqForm),
+      })
+      if (res.ok) {
+        setManualReqForm(null)
+        loadData()
+      } else {
+        const json = await res.json().catch(() => ({})) as { error?: string }
+        alert(json.error ?? 'Failed to submit request')
+      }
+    } catch { alert('Network error') }
+    finally { setManualSubmitting(false) }
+  }
+
+  // Open manual time request with pre-filled slot times (break/offline ranges)
+  function openManualRequest(slot: TimelineSlot) {
+    const startTime = slot.slotTime.toISOString()
+    const endTime = new Date(slot.slotTime.getTime() + 10 * 60_000).toISOString()
+    setManualReqForm({ startTime, endTime, reason: '' })
+  }
 
   return (
-    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, WebkitAppRegion: 'no-drag' }}>
+      {/* Header with date navigation */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>Today's Activity</div>
-        <button onClick={loadActivity} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button onClick={() => changeDate(-1)} style={{
+            background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px',
+            cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center',
+          }}>
+            <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} />
+          </button>
+          <input
+            type="date" value={selectedDate} max={todayStr}
+            onChange={e => setSelectedDate(e.target.value)}
+            style={{
+              background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '6px 10px',
+              fontSize: 13, fontWeight: 600, color: C.text, outline: 'none',
+            }}
+          />
+          <button onClick={() => changeDate(1)} disabled={isToday} style={{
+            background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px',
+            cursor: isToday ? 'default' : 'pointer', color: isToday ? C.border : C.text,
+            display: 'flex', alignItems: 'center', opacity: isToday ? 0.4 : 1,
+          }}>
+            <ChevronRight size={14} />
+          </button>
+          {!isToday && (
+            <button onClick={() => setSelectedDate(todayStr)} style={{
+              background: C.accentLight, border: 'none', borderRadius: 6, padding: '4px 10px',
+              fontSize: 11, fontWeight: 600, color: C.accent, cursor: 'pointer',
+            }}>Today</button>
+          )}
+        </div>
+        <button onClick={loadData} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
           <RefreshCw size={15} />
         </button>
       </div>
 
-      {/* Stats grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
-          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Work Time</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>{formatMs(stats.workMs)}</div>
+      {loading ? (
+        <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}><Loader size={24} /></div>
+      ) : !data || (data.timeLogs.length === 0 && data.activity.length === 0) ? (
+        <div style={{ ...card(), textAlign: 'center', color: C.textMuted, padding: 40 }}>
+          No activity recorded for this date.
         </div>
-        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
-          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Break Time</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>{formatMs(stats.breakMs)}</div>
-        </div>
-        <div style={{ ...card(), textAlign: 'center', padding: '14px 10px' }}>
-          <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Screenshots</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.accent }}>{screenshotCount}</div>
-        </div>
-      </div>
-
-      {/* Activity rate */}
-      {totalTrackedSeconds > 0 && (
-        <div style={{ ...card() }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Active Rate</span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.accent }}>{activePercent}%</span>
-          </div>
-          <div style={{ height: 8, background: '#dde3ea', borderRadius: 4, overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${activePercent}%`, background: C.accent, borderRadius: 4, transition: 'width 0.5s' }} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
-            <span style={{ fontSize: 11, color: C.textMuted }}>Active: {Math.round(totalActiveSeconds / 60)} min</span>
-            <span style={{ fontSize: 11, color: C.textMuted }}>Total tracked: {Math.round(totalTrackedSeconds / 60)} min</span>
-          </div>
-        </div>
-      )}
-
-      {/* Timeline */}
-      <div style={{ ...card() }}>
-        <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 16 }}>Timeline</div>
-        {loading ? (
-          <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}><Loader size={20} /></div>
-        ) : logs.length === 0 ? (
-          <div style={{ color: C.textMuted, fontSize: 13, textAlign: 'center', padding: 20 }}>No activity recorded today.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {[...logs].reverse().map((log, i) => (
-              <div key={log.id} style={{
-                display: 'flex', alignItems: 'center', gap: 12,
-                padding: '10px 12px', borderRadius: 10,
-                background: i === 0 ? C.accentLight : 'transparent',
-              }}>
-                <div style={{
-                  width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
-                  background: `${ACTION_COLORS_ACT[log.action] ?? C.textMuted}22`,
-                  color: ACTION_COLORS_ACT[log.action] ?? C.textMuted,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  {ACTION_ICONS_ACT[log.action] ?? <Circle size={13} />}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                    {ACTION_LABELS_ACT[log.action] ?? log.action}
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: C.textMuted, fontVariantNumeric: 'tabular-nums' }}>
-                  {formatTime(log.timestamp)}
-                </div>
+      ) : (
+        <>
+          {/* Stats grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+            {[
+              { label: 'Active', value: `${data.stats.activityPercent}%`, color: C.accent, primary: true },
+              { label: 'Tracked', value: `${Math.floor(data.stats.totalTrackedMinutes / 60)}h ${data.stats.totalTrackedMinutes % 60}m`, color: C.text, primary: false },
+              { label: 'Mouse', value: `${data.stats.mousePercent}%`, color: C.text, primary: false },
+              { label: 'Keys', value: `${data.stats.keyPercent}%`, color: C.text, primary: false },
+            ].map(({ label, value, color, primary }) => (
+              <div key={label} style={{ ...card(), textAlign: 'center', padding: '12px 8px' }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: primary ? C.accent : color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 2 }}>{label}</div>
               </div>
             ))}
           </div>
-        )}
-      </div>
+
+          {/* Work/Break summary */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div style={{ ...card(), textAlign: 'center', padding: '12px 8px' }}>
+              <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Work Time</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>{formatMs(workMs)}</div>
+            </div>
+            <div style={{ ...card(), textAlign: 'center', padding: '12px 8px' }}>
+              <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Break Time</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>{formatMs(breakMs)}</div>
+            </div>
+          </div>
+
+          {/* Visual Timeline */}
+          {timeline.length > 0 && (
+            <div style={{ ...card() }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Timeline</span>
+                <span style={{ fontSize: 11, color: C.textMuted }}>{timeline.length} slots</span>
+              </div>
+              <div ref={timelineRef} style={{
+                display: 'flex', gap: 3, overflowX: 'auto', paddingBottom: 8,
+                scrollbarWidth: 'thin',
+              }}>
+                {timeline.map((slot, i) => {
+                  const timeLabel = slot.slotTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  const pct = slot.activityPct
+
+                  if (slot.isBreak) {
+                    return (
+                      <div key={i} onClick={() => isToday ? openManualRequest(slot) : undefined}
+                        style={{
+                          flexShrink: 0, width: 48, height: 64, borderRadius: 6,
+                          background: `${C.warning}15`, border: `1px solid ${C.warning}40`,
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                          cursor: isToday ? 'pointer' : 'default',
+                        }}>
+                        <div style={{ fontSize: 12 }}>☕</div>
+                        <div style={{ fontSize: 8, color: C.warning, fontWeight: 600, marginTop: 2 }}>{timeLabel}</div>
+                      </div>
+                    )
+                  }
+
+                  if (slot.isOffline) {
+                    return (
+                      <div key={i} onClick={() => isToday ? openManualRequest(slot) : undefined}
+                        style={{
+                          flexShrink: 0, width: 48, height: 64, borderRadius: 6,
+                          background: '#f1f5f9', border: '1px dashed #cbd5e1',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                          cursor: isToday ? 'pointer' : 'default', opacity: 0.6,
+                        }}>
+                        <div style={{ fontSize: 10, color: C.textMuted }}>—</div>
+                        <div style={{ fontSize: 8, color: C.textMuted, marginTop: 2 }}>{timeLabel}</div>
+                      </div>
+                    )
+                  }
+
+                  // Active slot with activity bar
+                  return (
+                    <div key={i} style={{
+                      flexShrink: 0, width: 48, height: 64, borderRadius: 6,
+                      border: `1px solid ${C.border}`, background: C.cardBg,
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
+                      overflow: 'hidden', position: 'relative',
+                    }}>
+                      {/* Activity fill bar from bottom */}
+                      {pct != null && (
+                        <div style={{
+                          position: 'absolute', bottom: 0, left: 0, right: 0,
+                          height: `${Math.max(pct, 4)}%`,
+                          background: actColor(pct),
+                          opacity: 0.3, transition: 'height 0.3s',
+                        }} />
+                      )}
+                      <div style={{ position: 'relative', zIndex: 1, textAlign: 'center', padding: '0 2px 4px' }}>
+                        {pct != null && (
+                          <div style={{ fontSize: 10, fontWeight: 700, color: actColor(pct) }}>{pct}%</div>
+                        )}
+                        <div style={{ fontSize: 8, color: C.textMuted, marginTop: 1 }}>{timeLabel}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Top Apps */}
+          {data.topApps.length > 0 && (
+            <div style={{ ...card() }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top Apps</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {data.topApps.map((app, i) => {
+                  const pct = Math.round((app.seconds / data.topApps[0].seconds) * 100)
+                  return (
+                    <div key={i}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                        <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{app.name}</span>
+                        <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(app.seconds / 60)}m</span>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: '#e2e8f0', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.accent }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Top URLs */}
+          {data.topUrls.length > 0 && (
+            <div style={{ ...card() }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top URLs</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {data.topUrls.map((url, i) => {
+                  const pct = Math.round((url.seconds / data.topUrls[0].seconds) * 100)
+                  return (
+                    <div key={i}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                        <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{url.name}</span>
+                        <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(url.seconds / 60)}m</span>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: '#e2e8f0', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.success }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Manual Time Requests */}
+          {data.manualRequests.length > 0 && (
+            <div style={{ ...card() }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Manual Time Requests</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {data.manualRequests.map(req => (
+                  <div key={req.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                    borderRadius: 8, background: req.status === 'approved' ? `${C.success}10` : req.status === 'rejected' ? `${C.danger}10` : `${C.warning}10`,
+                    border: `1px solid ${req.status === 'approved' ? C.success : req.status === 'rejected' ? C.danger : C.warning}30`,
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+                        {formatTime(req.startTime)} – {formatTime(req.endTime)}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>{req.reason}</div>
+                    </div>
+                    <div style={{
+                      fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                      color: req.status === 'approved' ? C.success : req.status === 'rejected' ? C.danger : C.warning,
+                    }}>
+                      {req.status}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Manual Time Request Modal */}
+      {manualReqForm && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => setManualReqForm(null)}>
+          <div style={{ ...card(), width: 340, maxWidth: '90%' }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 16 }}>Request Manual Time</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>Start Time</label>
+                <input type="datetime-local" value={manualReqForm.startTime.slice(0, 16)}
+                  onChange={e => setManualReqForm(f => f ? { ...f, startTime: new Date(e.target.value).toISOString() } : f)}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>End Time</label>
+                <input type="datetime-local" value={manualReqForm.endTime.slice(0, 16)}
+                  onChange={e => setManualReqForm(f => f ? { ...f, endTime: new Date(e.target.value).toISOString() } : f)}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>Reason</label>
+                <textarea value={manualReqForm.reason} placeholder="Why do you need this time logged?"
+                  onChange={e => setManualReqForm(f => f ? { ...f, reason: e.target.value } : f)}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text, minHeight: 60, resize: 'vertical' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setManualReqForm(null)} style={{
+                  flex: 1, padding: '8px 0', borderRadius: 8, border: `1px solid ${C.border}`,
+                  background: 'transparent', color: C.text, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}>Cancel</button>
+                <button onClick={submitManualRequest} disabled={manualSubmitting || !manualReqForm.reason.trim()} style={{
+                  flex: 1, padding: '8px 0', borderRadius: 8, border: 'none',
+                  background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600,
+                  cursor: manualSubmitting || !manualReqForm.reason.trim() ? 'default' : 'pointer',
+                  opacity: manualSubmitting || !manualReqForm.reason.trim() ? 0.5 : 1,
+                }}>{manualSubmitting ? '...' : 'Submit Request'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
