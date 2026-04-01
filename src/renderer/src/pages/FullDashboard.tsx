@@ -65,6 +65,7 @@ interface ChatMessage {
 }
 interface ThreadActivity {
   id: string
+  channelId: string
   channelName: string
   channelType: 'channel' | 'group' | 'dm'
   parentMessage: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null } }
@@ -1967,6 +1968,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // Threads view
   const [showThreadsView, setShowThreadsView] = useState(false)
   const [threadActivities, setThreadActivities] = useState<ThreadActivity[]>([])
+  const pendingThreadRef = useRef<ChatMessage | null>(null)
   const selectConv = (c: Conversation | null) => { if (c) setShowThreadsView(false); setSelected(c) }
   // Shared media directory panel
   const [showSharedMedia, setShowSharedMedia] = useState(false)
@@ -2202,6 +2204,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         reads: [],
                       }]
                     })
+                    // Update thread activity list
+                    setThreadActivities(prev => prev.map(t =>
+                      t.id === parentMsgId ? {
+                        ...t,
+                        replyCount: t.replyCount + 1,
+                        lastReply: {
+                          content: payload.content,
+                          sender: { alias: payload.senderAlias ?? null, username: payload.senderName, avatarUrl: payload.senderAvatar ?? null },
+                          createdAt: payload.createdAt,
+                        },
+                        unread: false,
+                      } : t
+                    ))
                   } else {
                     setMessages(prev => {
                       if (prev.some(m => m.id === payload.id)) return prev
@@ -2255,6 +2270,21 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     ? { ...c, lastMessage: `${payload.senderAlias ?? payload.senderName}: ${payload.content}`, lastTime: payload.createdAt }
                     : c
                 ))
+                // Update thread activity list for replies in non-current channels
+                if (parentMsgId && payload.senderId !== auth.userId && !isCurrentChannel) {
+                  setThreadActivities(prev => prev.map(t =>
+                    t.id === parentMsgId ? {
+                      ...t,
+                      replyCount: t.replyCount + 1,
+                      lastReply: {
+                        content: payload.content,
+                        sender: { alias: payload.senderAlias ?? null, username: payload.senderName, avatarUrl: payload.senderAvatar ?? null },
+                        createdAt: payload.createdAt,
+                      },
+                      unread: true,
+                    } : t
+                  ))
+                }
               } else if (ev === 'channel-message-edit') {
                 setMessages(prev => prev.map(m =>
                   m.id === payload.messageId
@@ -2412,31 +2442,31 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       setSelected(demoChannels[0])
       setThreadActivities([
         {
-          id: 'th1', channelName: '#general', channelType: 'channel',
+          id: 'th1', channelId: 'ch1', channelName: '#general', channelType: 'channel',
           parentMessage: { content: 'Hey team 👋 Quick update on the Q4 roadmap. I\'ve broken down the remaining work into three priorities...', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null } },
           lastReply: { content: 'I can take the dashboard redesign. Already started the Figma mockups.', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null }, createdAt: new Date(Date.now() - 1200_000).toISOString() },
           replyCount: 5, unread: true,
         },
         {
-          id: 'th2', channelName: '#engineering', channelType: 'channel',
+          id: 'th2', channelId: 'ch2', channelName: '#engineering', channelType: 'channel',
           parentMessage: { content: 'Just pushed the hotfix for the login timeout issue. Can someone review? PR #156', sender: { alias: 'Alex Kim', username: 'alex.k', avatarUrl: null } },
           lastReply: { content: 'LGTM! Approved and merged. Nice catch on the token refresh.', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null }, createdAt: new Date(Date.now() - 3600_000).toISOString() },
           replyCount: 3, unread: true,
         },
         {
-          id: 'th3', channelName: '#design', channelType: 'channel',
+          id: 'th3', channelId: 'ch3', channelName: '#design', channelType: 'channel',
           parentMessage: { content: 'New dashboard mockups are ready for review. Check the Figma link in the channel description.', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null } },
           lastReply: { content: 'Love the new color scheme! Just left some comments on the spacing.', sender: { alias: 'Lisa Martinez', username: 'lisa.m', avatarUrl: null }, createdAt: new Date(Date.now() - 7200_000).toISOString() },
           replyCount: 8, unread: false,
         },
         {
-          id: 'th4', channelName: 'Sarah Chen', channelType: 'dm',
+          id: 'th4', channelId: 'ch4', channelName: 'Sarah Chen', channelType: 'dm',
           parentMessage: { content: 'Can you share the API docs for the new endpoints?', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null } },
           lastReply: { content: 'Sure, just sent them over. Let me know if you need the auth tokens too.', sender: { alias: null, username: 'you', avatarUrl: null }, createdAt: new Date(Date.now() - 14400_000).toISOString() },
           replyCount: 4, unread: false,
         },
         {
-          id: 'th5', channelName: '#general', channelType: 'channel',
+          id: 'th5', channelId: 'ch1', channelName: '#general', channelType: 'channel',
           parentMessage: { content: 'Sprint review starts at 10 AM. @mike.t are you ready with the dashboard demo?', sender: { alias: 'Lisa Martinez', username: 'lisa.m', avatarUrl: null } },
           lastReply: { content: 'All set! Screen recording backup is ready too 😅', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null }, createdAt: new Date(Date.now() - 9000_000).toISOString() },
           replyCount: 4, unread: false,
@@ -2474,6 +2504,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     loadChannels()
   }, [loadChannels])
 
+  // Load thread activities when threads view is opened
+  useEffect(() => {
+    if (!showThreadsView || DEMO_MODE) return
+    apiFetch('/api/threads').then((data: any) => {
+      setThreadActivities(data.threads ?? [])
+    }).catch(() => {})
+  }, [showThreadsView, apiFetch])
+
   // Handle self-leave from ChannelSettingsModal
   useEffect(() => {
     const onLeft = (e: Event) => {
@@ -2493,7 +2531,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     setThreadMessages([])
     setShowPinned(false)
     setEmojiPickerMsgId(null)
-  }, [selected, loadMessages])
+    // Open thread if navigated from thread activity
+    if (pendingThreadRef.current) {
+      const pending = pendingThreadRef.current
+      pendingThreadRef.current = null
+      openThread(pending)
+    }
+  }, [selected, loadMessages]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // After new channel created, open it
   function handleCreated(id: string) {
@@ -2939,7 +2983,26 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               return (
                 <div key={thread.id}>
                   <button
-                    onClick={() => { setShowThreadsView(false); const ch = channels.find(c => c.name === thread.channelName || `#${c.name?.replace('#', '')}` === thread.channelName); if (ch) setSelected(ch) }}
+                    onClick={() => {
+                      setShowThreadsView(false)
+                      const ch = channels.find(c => c.id === thread.channelId)
+                        ?? channels.find(c => c.name === thread.channelName || `#${c.name?.replace('#', '')}` === thread.channelName)
+                      if (!ch) return
+                      const mockMsg: ChatMessage = {
+                        id: thread.id,
+                        content: thread.parentMessage.content,
+                        createdAt: '',
+                        editedAt: null,
+                        sender: { id: '', username: thread.parentMessage.sender.username, alias: thread.parentMessage.sender.alias, avatarUrl: thread.parentMessage.sender.avatarUrl },
+                        reactions: [], replyCount: thread.replyCount, reads: [],
+                      }
+                      if (selected?.id === ch.id) {
+                        openThread(mockMsg)
+                      } else {
+                        pendingThreadRef.current = mockMsg
+                        setSelected(ch)
+                      }
+                    }}
                     style={{
                       width: '100%', display: 'flex', flexDirection: 'column', gap: 8,
                       padding: '14px 20px', border: 'none', textAlign: 'left',
@@ -3020,16 +3083,21 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
             }}>
               {/* Channel/DM icon + name */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                {selected.type === 'dm' ? (
-                  <div style={{ position: 'relative', flexShrink: 0 }}>
-                    <Avatar url={selected.avatar} name={selected.name} size={28} />
-                    <div style={{
-                      position: 'absolute', bottom: -1, right: -1,
-                      width: 10, height: 10, borderRadius: '50%',
-                      background: C.success, border: `2px solid ${C.lgBg}`,
-                    }} />
-                  </div>
-                ) : selected.type === 'channel' ? (
+                {selected.type === 'dm' ? (() => {
+                  const partnerStatus = selected.members?.find(m => m.userId === selected.partnerId)?.user?.userStatus
+                    ?? selected.members?.[0]?.user?.userStatus
+                  const dotColor = partnerStatus === 'online' ? C.success : partnerStatus === 'break' ? C.warning : C.textMuted
+                  return (
+                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                      <Avatar url={selected.avatar} name={selected.name} size={28} />
+                      <div style={{
+                        position: 'absolute', bottom: -1, right: -1,
+                        width: 10, height: 10, borderRadius: '50%',
+                        background: dotColor, border: `2px solid ${C.lgBg}`,
+                      }} />
+                    </div>
+                  )
+                })() : selected.type === 'channel' ? (
                   <Hash size={18} color={C.textMuted} />
                 ) : (
                   <Users size={18} color={C.textMuted} />

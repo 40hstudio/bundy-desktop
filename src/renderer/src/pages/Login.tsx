@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 interface Props {
   onLogin: (auth: { userId: string; username: string; role: string }) => void
@@ -24,6 +24,11 @@ export default function Login({ onLogin }: Props): JSX.Element {
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [version, setVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.electronAPI?.getVersion().then(setVersion).catch(() => {})
+  }, [])
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
@@ -186,7 +191,7 @@ export default function Login({ onLogin }: Props): JSX.Element {
         position: 'absolute', bottom: 16, left: 0, right: 0,
         textAlign: 'center', fontSize: 10, color: 'rgba(255, 255, 255, 0.2)',
       }}>
-        v1.2.56
+        v{version ?? '…'}
       </div>
     </div>
   )
