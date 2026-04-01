@@ -2400,8 +2400,9 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   m.id === messageId ? { ...m, isPinned, pinnedBy: isPinned ? pinnedBy : null, pinnedAt: isPinned ? new Date().toISOString() : null } : m
                 ))
               } else if (ev === 'user-status') {
-                // Real-time user status update — normalize server values to 'online'/'break'/null
+                // Real-time user status update — this is the SOLE source of tracker status
                 const p = payload as Record<string, unknown>
+                console.log('[Bundy] SSE user-status event:', JSON.stringify(p))
                 const userId = p.userId as string
                 const normalized = normalizeStatus(p)
                 setChannels(prev => prev.map(c => ({
@@ -2557,24 +2558,37 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   }, [showThreadsView, apiFetch])
 
   // Periodically refresh member statuses so DM list stays up-to-date
+  // Periodically refresh user profile info (alias, avatar) — but NOT tracker status.
+  // Tracker status comes exclusively from SSE user-status events.
+  // The /api/users endpoint returns a free-text 'userStatus' profile field, NOT the bundy tracker state.
   useEffect(() => {
     if (DEMO_MODE) return
-    function refreshStatuses() {
+    function refreshUserInfo() {
       apiFetch('/api/users').then((data: { users: any[] }) => {
         if (data.users?.[0]) console.log('[Bundy] /api/users sample:', JSON.stringify(data.users[0]))
-        const statusMap: Record<string, string | null> = {}
-        for (const u of (data.users ?? [])) statusMap[u.id] = normalizeStatus(u)
+        const userMap: Record<string, any> = {}
+        for (const u of (data.users ?? [])) userMap[u.id] = u
         setChannels(prev => prev.map(c => ({
           ...c,
-          members: c.members.map(m =>
-            m.userId in statusMap ? { ...m, user: { ...m.user, userStatus: statusMap[m.userId] } } : m
-          ),
+          members: c.members.map(m => {
+            const u = userMap[m.userId]
+            if (!u) return m
+            // Update profile fields but PRESERVE userStatus (managed by SSE)
+            return {
+              ...m,
+              user: {
+                ...m.user,
+                alias: u.alias ?? m.user.alias,
+                avatarUrl: u.avatarUrl ?? m.user.avatarUrl,
+                // Don't touch userStatus — SSE is the sole source of tracker status
+              }
+            }
+          }),
         })))
       }).catch(() => {})
     }
-    // Fetch immediately on mount, then every 30 seconds
-    refreshStatuses()
-    const id = setInterval(refreshStatuses, 30_000)
+    refreshUserInfo()
+    const id = setInterval(refreshUserInfo, 30_000)
     return () => clearInterval(id)
   }, [apiFetch])
 
