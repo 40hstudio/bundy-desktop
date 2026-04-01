@@ -1977,6 +1977,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   const [sharedMediaTab, setSharedMediaTab] = useState<'links' | 'media' | 'files'>('media')
   const [sharedMedia, setSharedMedia] = useState<{ links: any[]; media: any[]; files: any[] }>({ links: [], media: [], files: [] })
   const [loadingSharedMedia, setLoadingSharedMedia] = useState(false)
+
+  // Activity-based presence: track when each user was last active
+  const lastSeenRef = useRef<Record<string, number>>({})
+  const [lastSeenTick, setLastSeenTick] = useState(0)
   // Active call state
   const [activeCall, setActiveCall] = useState<{
     targetUser: { id: string; name: string; avatar: string | null }
@@ -2051,6 +2055,23 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
       window.removeEventListener('bundy-conference-invite', onConfInvite)
     }
   }, [])
+
+  // Presence tick: re-render presence dots every 60s so they decay over time
+  useEffect(() => {
+    const id = setInterval(() => setLastSeenTick(t => t + 1), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
+  // Helper: get presence level for a user
+  const getPresence = useCallback((userId: string): 'active' | 'recent' | 'away' => {
+    void lastSeenTick // subscribe to tick updates
+    const ts = lastSeenRef.current[userId]
+    if (!ts) return 'away'
+    const ago = Date.now() - ts
+    if (ago <= 5 * 60_000) return 'active'  // 5 minutes
+    if (ago <= 30 * 60_000) return 'recent' // 30 minutes
+    return 'away'
+  }, [lastSeenTick])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesScrollRef = useRef<HTMLDivElement>(null)
@@ -2183,6 +2204,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
             const ev = eventMatch[1].trim()
             try {
               const payload = JSON.parse(dataMatch[1])
+              // Track activity for presence
+              if (payload.senderId && payload.senderId !== auth.userId) {
+                lastSeenRef.current[payload.senderId] = Date.now()
+              }
               if (ev === 'channel-message') {
                 const channelId = payload.channelId as string
                 const parentMsgId = payload.parentMessageId as string | null | undefined
@@ -2320,6 +2345,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
               } else if (ev === 'channel-typing') {
                 const channelId = payload.channelId as string
                 if (payload.userId !== auth.userId) {
+                  lastSeenRef.current[payload.userId] = Date.now()
                   const userName = payload.userName as string
                   setTypingMap(prev => {
                     const cur = prev[channelId] ?? []
@@ -3021,7 +3047,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   <Plus size={14} />
                 </button>
               </div>
-              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />)}
+              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} />)}
             </>
           )}
           {channels.length === 0 && (
@@ -3153,9 +3179,16 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
               {/* Channel/DM icon + name */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
                 {selected.type === 'dm' ? (() => {
+                  const partnerPresence = selected.partnerId && getPresence ? getPresence(selected.partnerId) : 'away'
+                  const dotColor = partnerPresence === 'active' ? C.success : partnerPresence === 'recent' ? C.warning : C.textMuted
                   return (
                     <div style={{ position: 'relative', flexShrink: 0 }}>
                       <Avatar url={selected.avatar} name={selected.name} size={28} />
+                      <div style={{
+                        position: 'absolute', bottom: -1, right: -1,
+                        width: 10, height: 10, borderRadius: '50%',
+                        background: dotColor, border: `2px solid ${C.lgBg}`,
+                      }} />
                     </div>
                   )
                 })() : selected.type === 'channel' ? (
@@ -3882,9 +3915,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   )
 }
 
-function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void }) {
+function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose, getPresence }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void; getPresence?: (userId: string) => 'active' | 'recent' | 'away' }) {
   const [hovered, setHovered] = useState(false)
   const hasUnread = (conv.unread ?? 0) > 0
+  // Activity-based presence for DM partner
+  const partnerId = conv.type === 'dm' ? conv.partnerId : undefined
+  const presence = partnerId && getPresence ? getPresence(partnerId) : 'away'
+  const presenceDotColor = presence === 'active' ? C.success : presence === 'recent' ? C.warning : C.textMuted
 
   return (
     <div
@@ -3912,6 +3949,12 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onCl
       {conv.type === 'dm' ? (
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <Avatar url={conv.avatar} name={conv.name} size={22} />
+          <div style={{
+            position: 'absolute', bottom: -1, right: -1,
+            width: 9, height: 9, borderRadius: '50%',
+            background: presenceDotColor,
+            border: `2px solid ${selected ? '#1e2a3a' : C.lgBg}`,
+          }} />
         </div>
       ) : conv.type === 'group' ? (
         <div style={{ position: 'relative', flexShrink: 0, width: 22, height: 22 }}>
