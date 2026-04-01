@@ -2542,7 +2542,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshStatuses() {
-      apiFetch('/api/users/statuses').then((data: any) => {
+      apiFetch('/api/users').then((data: { users: UserInfo[] }) => {
         const statusMap: Record<string, string | null> = {}
         for (const u of (data.users ?? [])) statusMap[u.id] = u.userStatus ?? null
         setChannels(prev => prev.map(c => ({
