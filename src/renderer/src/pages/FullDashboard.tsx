@@ -1914,7 +1914,7 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
   )
 }
 
-function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef }: {
+function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef, isVisible }: {
   config: ApiConfig; auth: Auth
   /** Set when user accepts an incoming call from IncomingCallOverlay */
   acceptedCall?: IncomingCallPayload | null
@@ -1922,6 +1922,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   iceBufferRef: React.MutableRefObject<RTCIceCandidateInit[]>
   /** Pre-buffered answer SDP from FullDashboard */
   answerSdpRef: React.MutableRefObject<string | null>
+  /** Whether the messages panel is the currently active tab (visible to the user) */
+  isVisible: boolean
 }) {
   const [channels, setChannels] = useState<Conversation[]>([])
   const [selected, setSelected] = useState<Conversation | null>(null)
@@ -2148,6 +2150,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // SSE for real-time messages + typing + read (with auto-reconnect)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const isVisibleRef = useRef(isVisible)
+  isVisibleRef.current = isVisible
   useEffect(() => {
     if (DEMO_MODE) return
     let dead = false
@@ -2237,11 +2241,18 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       }]
                     })
                   }
-                  // Mark as read since we're viewing it
-                  fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
-                    method: 'POST',
-                    headers: { Authorization: `Bearer ${config.token}` },
-                  }).catch(() => {})
+                  // Mark as read only when the messages panel is actually visible to the user
+                  if (isVisibleRef.current) {
+                    fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${config.token}` },
+                    }).catch(() => {})
+                  } else {
+                    // Panel is hidden — treat like an unread message so badge appears
+                    setChannels(prev => prev.map(c =>
+                      c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
+                    ))
+                  }
                   // Play subtle sound for incoming messages in the currently open chat
                   if (payload.senderId !== auth.userId) {
                     new Audio('sounds/new-message.mp3').play().catch(() => {})
@@ -2530,7 +2541,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // Periodically refresh member statuses so DM list stays up-to-date
   useEffect(() => {
     if (DEMO_MODE) return
-    const id = setInterval(() => {
+    function refreshStatuses() {
       apiFetch('/api/users/statuses').then((data: any) => {
         const statusMap: Record<string, string | null> = {}
         for (const u of (data.users ?? [])) statusMap[u.id] = u.userStatus ?? null
@@ -2541,7 +2552,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           ),
         })))
       }).catch(() => {})
-    }, 30_000)
+    }
+    // Fetch immediately on mount, then every 30 seconds
+    refreshStatuses()
+    const id = setInterval(refreshStatuses, 30_000)
     return () => clearInterval(id)
   }, [apiFetch])
 
@@ -2582,6 +2596,17 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       })
     })
   }
+
+  // When user switches back to the messages tab, mark the active channel as read
+  useEffect(() => {
+    if (!isVisible || !selected || DEMO_MODE) return
+    setChannels(prev => prev.map(c => c.id === selected.id ? { ...c, unread: 0 } : c))
+    setMentionedChannels(prev => { const next = new Set(prev); next.delete(selected.id); return next })
+    fetch(`${config.apiBase}/api/channels/${selected.id}/read`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}` },
+    }).catch(() => {})
+  }, [isVisible]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -9022,7 +9047,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             visibility: tab === 'messages' ? 'visible' : 'hidden',
             pointerEvents: tab === 'messages' ? 'auto' : 'none',
           }}>
-          <MessagesPanel config={apiConfig} auth={auth} acceptedCall={acceptedCall} iceBufferRef={iceBufferRef} answerSdpRef={answerSdpRef} />
+          <MessagesPanel config={apiConfig} auth={auth} acceptedCall={acceptedCall} iceBufferRef={iceBufferRef} answerSdpRef={answerSdpRef} isVisible={tab === 'messages'} />
           </div>
         )}
         {tab === 'tasks' && apiConfig && (
