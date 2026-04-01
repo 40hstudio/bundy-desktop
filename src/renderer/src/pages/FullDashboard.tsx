@@ -43,18 +43,6 @@ interface UserInfo {
 interface ChannelMember {
   userId: string; user: UserInfo
 }
-
-/** Normalize any server status value to the UI expected values: 'online' | 'break' | null */
-function normalizeStatus(u: Record<string, unknown>): string | null {
-  // Check multiple possible field names — server may use any of these
-  const raw = (u.userStatus ?? u.status ?? u.currentStatus ?? u.trackerStatus ?? null) as string | null
-  if (!raw) return null
-  const s = raw.trim().toUpperCase()
-  if (s === 'CHECK_IN' || s === 'BACK' || s === 'ONLINE' || s === 'ACTIVE') return 'online'
-  if (s === 'BREAK' || s === 'ON_BREAK') return 'break'
-  if (s === 'CLOCK_OUT' || s === 'NONE' || s === 'OUT' || s === 'OFFLINE') return null
-  return null
-}
 interface Conversation {
   id: string; type: 'channel' | 'group' | 'dm'
   name: string; avatar?: string | null
@@ -2093,10 +2081,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
         let name = ch.name ?? ''
         let avatar: string | null = null
         let partnerId: string | undefined
-        // Normalize member statuses from server format to UI format
-        const members = ch.members.map(m => ({
-          ...m, user: { ...m.user, userStatus: normalizeStatus(m.user as unknown as Record<string, unknown>) }
-        }))
+        const members = ch.members
         if (ch.type === 'dm') {
           const other = members.find(m => m.userId !== auth.userId)
           name = other?.user.alias ?? other?.user.username ?? 'DM'
@@ -2400,15 +2385,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   m.id === messageId ? { ...m, isPinned, pinnedBy: isPinned ? pinnedBy : null, pinnedAt: isPinned ? new Date().toISOString() : null } : m
                 ))
               } else if (ev === 'user-status') {
-                // Real-time user status update — this is the SOLE source of tracker status
-                const p = payload as Record<string, unknown>
-                console.log('[Bundy] SSE user-status event:', JSON.stringify(p))
-                const userId = p.userId as string
-                const normalized = normalizeStatus(p)
+                // Real-time user status update from server
+                const { userId, userStatus } = payload as { userId: string; userStatus: string | null }
+                console.log('[Bundy] SSE user-status event:', JSON.stringify(payload))
                 setChannels(prev => prev.map(c => ({
                   ...c,
                   members: c.members.map(m =>
-                    m.userId === userId ? { ...m, user: { ...m.user, userStatus: normalized } } : m
+                    m.userId === userId ? { ...m, user: { ...m.user, userStatus } } : m
                   ),
                 })))
               } else if (ev === 'call-invite') {
@@ -2557,15 +2540,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
     }).catch(() => {})
   }, [showThreadsView, apiFetch])
 
-  // Periodically refresh member statuses so DM list stays up-to-date
-  // Periodically refresh user profile info (alias, avatar) — but NOT tracker status.
-  // Tracker status comes exclusively from SSE user-status events.
-  // The /api/users endpoint returns a free-text 'userStatus' profile field, NOT the bundy tracker state.
+  // Periodically refresh user profile info (alias, avatar) from /api/users.
+  // Note: /api/users does NOT return tracker status — only profile fields.
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshUserInfo() {
       apiFetch('/api/users').then((data: { users: any[] }) => {
-        if (data.users?.[0]) console.log('[Bundy] /api/users sample:', JSON.stringify(data.users[0]))
         const userMap: Record<string, any> = {}
         for (const u of (data.users ?? [])) userMap[u.id] = u
         setChannels(prev => prev.map(c => ({
@@ -2573,14 +2553,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
           members: c.members.map(m => {
             const u = userMap[m.userId]
             if (!u) return m
-            // Update profile fields but PRESERVE userStatus (managed by SSE)
             return {
               ...m,
               user: {
                 ...m.user,
                 alias: u.alias ?? m.user.alias,
                 avatarUrl: u.avatarUrl ?? m.user.avatarUrl,
-                // Don't touch userStatus — SSE is the sole source of tracker status
               }
             }
           }),
@@ -3175,17 +3153,9 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
               {/* Channel/DM icon + name */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
                 {selected.type === 'dm' ? (() => {
-                  const partnerStatus = selected.members?.find(m => m.userId === selected.partnerId)?.user?.userStatus
-                    ?? selected.members?.[0]?.user?.userStatus
-                  const dotColor = partnerStatus === 'online' ? C.success : partnerStatus === 'break' ? C.warning : C.textMuted
                   return (
                     <div style={{ position: 'relative', flexShrink: 0 }}>
                       <Avatar url={selected.avatar} name={selected.name} size={28} />
-                      <div style={{
-                        position: 'absolute', bottom: -1, right: -1,
-                        width: 10, height: 10, borderRadius: '50%',
-                        background: dotColor, border: `2px solid ${C.lgBg}`,
-                      }} />
                     </div>
                   )
                 })() : selected.type === 'channel' ? (
@@ -3915,13 +3885,6 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
 function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void }) {
   const [hovered, setHovered] = useState(false)
   const hasUnread = (conv.unread ?? 0) > 0
-  // Use partnerId to find the correct DM partner — members[0] may be the current user
-  const dmPartner = conv.type === 'dm'
-    ? (conv.partnerId ? conv.members?.find(m => m.userId === conv.partnerId) : conv.members?.[0])
-    : null
-  const dmStatus = dmPartner?.user?.userStatus ?? null
-  const isOnlineDm = dmStatus === 'online'
-  const statusDotColor = dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted
 
   return (
     <div
@@ -3949,13 +3912,6 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onCl
       {conv.type === 'dm' ? (
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <Avatar url={conv.avatar} name={conv.name} size={22} />
-          {/* Online status dot */}
-          <div style={{
-            position: 'absolute', bottom: -1, right: -1,
-            width: 9, height: 9, borderRadius: '50%',
-            background: statusDotColor,
-            border: `2px solid ${selected ? '#1e2a3a' : C.lgBg}`,
-          }} />
         </div>
       ) : conv.type === 'group' ? (
         <div style={{ position: 'relative', flexShrink: 0, width: 22, height: 22 }}>
@@ -3979,17 +3935,6 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onCl
         }}>
           {conv.type === 'channel' ? conv.name.replace(/^#/, '') : conv.name}
         </span>
-        {conv.type === 'dm' && dmStatus && (
-          <span style={{
-            fontSize: 9, fontWeight: 700, marginLeft: 6, flexShrink: 0,
-            padding: '1px 6px', borderRadius: 10, letterSpacing: 0.5,
-            background: 'transparent',
-            color: dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted,
-            border: `1px solid ${dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted}`,
-          }}>
-            {dmStatus === 'online' ? 'In' : dmStatus === 'break' ? 'Break' : 'Out'}
-          </span>
-        )}
         {typingUsers.length > 0 && (
           <span style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', marginLeft: 6, flexShrink: 0 }}>typing…</span>
         )}
