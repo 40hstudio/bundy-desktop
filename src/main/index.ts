@@ -265,6 +265,15 @@ async function openFullWindow(): Promise<void> {
   fullNativeWin.webContents.once('did-finish-load', () => {
     flushUpdateState()
   })
+
+  // Enable DevTools via Cmd+Option+I in production builds too
+  fullNativeWin.webContents.on('before-input-event', (event, input) => {
+    if (input.meta && input.alt && input.key.toLowerCase() === 'i') {
+      fullNativeWin?.webContents.toggleDevTools()
+      event.preventDefault()
+    }
+  })
+
   app.dock?.show()
   fullNativeWin.show()
   fullNativeWin.focus()
