@@ -26,6 +26,7 @@ declare global {
       onTokenExpired: (cb: () => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
       openFullWindow: () => Promise<void>
+      focusWindow: () => Promise<void>
       getWindowMode: () => Promise<'popup' | 'full'>
       getApiConfig: () => Promise<{ apiBase: string; token: string }>
       onOnlineState: (cb: (state: { isOnline: boolean; queuedCount: number }) => void) => () => void
@@ -37,6 +38,14 @@ declare global {
       updatePlanItem: (itemId: string, status?: string, outcome?: string) => Promise<PlanItemData>
       deletePlanItem: (itemId: string) => Promise<void>
       submitReportWithPlan: (content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>) => Promise<void>
+      // Floating call window
+      openCallFloat: (state: Record<string, unknown>) => Promise<void>
+      getCallFloatState: () => Promise<Record<string, unknown> | null>
+      closeCallFloat: () => Promise<void>
+      updateCallFloat: (state: Record<string, unknown>) => Promise<void>
+      sendCallFloatAction: (action: Record<string, unknown>) => Promise<void>
+      onCallFloatState: (cb: (state: Record<string, unknown>) => void) => () => void
+      onCallFloatAction: (cb: (action: Record<string, unknown>) => void) => () => void
     }
   }
 }

@@ -4,6 +4,22 @@ interface Props {
   onLogin: (auth: { userId: string; username: string; role: string }) => void
 }
 
+// Inject keyframes once
+const ANIM_ID = 'login-gradient-anim'
+if (typeof document !== 'undefined' && !document.getElementById(ANIM_ID)) {
+  const style = document.createElement('style')
+  style.id = ANIM_ID
+  style.textContent = `
+    @keyframes loginGradientShift {
+      0%   { background-position: 50% 10%, 50% 5%, 20% 90%; }
+      33%  { background-position: 60% 15%, 40% 10%, 30% 85%; }
+      66%  { background-position: 40% 8%, 55% 3%, 15% 95%; }
+      100% { background-position: 50% 10%, 50% 5%, 20% 90%; }
+    }
+  `
+  document.head.appendChild(style)
+}
+
 export default function Login({ onLogin }: Props): JSX.Element {
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
@@ -31,18 +47,50 @@ export default function Login({ onLogin }: Props): JSX.Element {
   return (
     <div
       style={{
+        position: 'relative',
         display: 'flex',
-        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         height: '100%',
-        padding: '24px',
-        gap: '20px'
-      }}
+        background: `
+          radial-gradient(ellipse 80% 50%, rgba(0, 30, 120, 0.25) 0%, transparent 60%),
+          radial-gradient(ellipse 60% 40%, rgba(100, 160, 255, 0.10) 0%, transparent 50%),
+          radial-gradient(ellipse 50% 50%, rgba(0, 30, 120, 0.1) 0%, transparent 60%),
+          #0e0e0e
+        `,
+        backgroundSize: '200% 200%, 200% 200%, 200% 200%, 100% 100%',
+        animation: 'loginGradientShift 12s ease-in-out infinite',
+        WebkitAppRegion: 'drag',
+      } as React.CSSProperties}
     >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          width: 380,
+          padding: '36px 32px',
+          gap: '20px',
+          background: 'rgba(22, 22, 22, 0.5)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          borderRadius: 14,
+          WebkitAppRegion: 'no-drag',
+        } as React.CSSProperties}
+      >
       {/* Logo / Title */}
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '32px', marginBottom: '4px' }}>🕐</div>
+        <img
+          src="workspace-logo.svg"
+          alt="Bundy"
+          style={{
+            width: 56,
+            height: 56,
+            margin: '0 auto 8px',
+            display: 'block',
+          }}
+        />
         <div
           style={{
             fontSize: '20px',
@@ -51,17 +99,17 @@ export default function Login({ onLogin }: Props): JSX.Element {
             color: 'var(--text)'
           }}
         >
-          Bundy
+          40 HOUR STUDIO
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-          Desktop Clock-In
+        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+          Internal Desktop App
         </div>
       </div>
 
       {/* Form */}
       <form onSubmit={handleSubmit} style={{ width: '100%' }}>
-        <div className="neu-inset" style={{ padding: '12px 16px', marginBottom: '12px' }}>
-          <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '6px' }}>
+        <div className="input-field" style={{ padding: '12px 16px', marginBottom: '12px', border: '1px solid rgba(255, 255, 255, 0.1)', background: 'transparent' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginBottom: '6px', letterSpacing: '0.5px', textAlign: 'center' }}>
             DESKTOP TOKEN
           </div>
           <input
@@ -99,16 +147,16 @@ export default function Login({ onLogin }: Props): JSX.Element {
         <button
           type="submit"
           disabled={loading || token.trim().length !== 6}
-          className="neu-raised"
+          className="btn-primary"
           style={{
             width: '100%',
             padding: '10px',
             fontWeight: 600,
-            fontSize: '13px',
-            color: loading ? 'var(--text-muted)' : 'var(--accent)',
-            border: 'none',
+            fontSize: '14px',
+            color: loading ? 'var(--text-tertiary)' : '#fff',
             cursor: loading ? 'wait' : 'pointer',
-            transition: 'box-shadow 0.15s ease'
+            border: 'none',
+            borderRadius: '4px',
           }}
         >
           {loading ? 'Connecting…' : 'Connect'}
@@ -133,6 +181,13 @@ export default function Login({ onLogin }: Props): JSX.Element {
       <p style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center' }}>
         Ask Bundy Bot on Discord for your token, then paste it above.
       </p>
+      </div>
+      <div style={{
+        position: 'absolute', bottom: 16, left: 0, right: 0,
+        textAlign: 'center', fontSize: 10, color: 'rgba(255, 255, 255, 0.2)',
+      }}>
+        v1.2.56
+      </div>
     </div>
   )
 }

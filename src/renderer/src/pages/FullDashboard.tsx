@@ -15,7 +15,8 @@ import {
   Copy, Link, CornerDownRight, Image,
   Smile, Pin, MessageCircle, ChevronUp,
   Monitor, MonitorOff, UserPlus2, Wifi, WifiLow, WifiZero,
-  LogIn, LogOut as LogOutIcon, FolderOpen, ChevronDown
+  LogIn, LogOut as LogOutIcon, FolderOpen, ChevronDown,
+  Headphones, Bell
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -61,6 +62,15 @@ interface ChatMessage {
   isPinned?: boolean
   pinnedAt?: string | null
   pinnedBy?: string | null
+}
+interface ThreadActivity {
+  id: string
+  channelName: string
+  channelType: 'channel' | 'group' | 'dm'
+  parentMessage: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null } }
+  lastReply: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null }; createdAt: string }
+  replyCount: number
+  unread: boolean
 }
 interface Task {
   id: string; title: string; description: string | null
@@ -113,45 +123,116 @@ interface PlanItem {
   outcome: string | null
 }
 
-// ─── Design tokens ────────────────────────────────────────────────────────────
+// ─── Demo mode — set to true to populate all tabs with dummy data ────────────
+const DEMO_MODE = true
+
+// ─── Design tokens (VS Code × Discord dark) ─────────────────────────────────
 
 const C = {
-  sidebarBg: '#0f172a',
-  sidebarHover: '#1e293b',
-  sidebarActive: '#1e293b',
-  sidebarBorder: '#1e3a5f',
-  sidebarText: '#94a3b8',
-  sidebarTextActive: '#f1f5f9',
-  contentBg: '#e0e5ec',
-  cardBg: '#e8edf5',
+  // Backgrounds
+  bgTertiary: '#0e0e0e',
+  bgSecondary: '#161616',
+  bgPrimary: '#1c1c1c',
+  bgFloating: '#080808',
+  bgInput: '#282828',
+  bgHover: 'rgba(255, 255, 255, 0.05)',
+  bgActive: 'rgba(255, 255, 255, 0.08)',
+
+  // Sidebar
+  sidebarBg: '#161616',
+  sidebarBgFallback: '#161616',
+  sidebarHover: 'rgba(255, 255, 255, 0.05)',
+  sidebarActive: 'rgba(0, 0, 255, 0.12)',
+  sidebarText: '#6b6b6b',
+  sidebarTextActive: '#cccccc',
+
+  // Content area
+  contentBg: '#1c1c1c',
+  materialBg: '#161616',
+  materialBgSecondary: '#0e0e0e',
+  materialBorder: 'rgba(255, 255, 255, 0.06)',
+
+  // Text
   white: '#fff',
-  text: '#1e293b',
-  textMuted: '#64748b',
-  border: '#cbd5e1',
-  accent: '#6366f1',
-  accentLight: 'rgba(99,102,241,0.12)',
-  success: '#22c55e',
-  warning: '#f59e0b',
-  danger: '#ef4444',
-  shadowLight: '#ffffff',
-  shadowDark: '#a3b1c6',
+  text: '#cccccc',
+  textSecondary: '#9d9d9d',
+  textMuted: '#6b6b6b',
+  textTertiary: '#6b6b6b',
+
+  // Fills
+  fillTertiary: '#282828',
+  fillSecondary: '#333333',
+  fillPrimary: '#3e3e3e',
+  separator: 'rgba(255, 255, 255, 0.06)',
+
+  // Accent & status
+  accent: '#007acc',
+  accentHover: '#1a8ad4',
+  accentLight: 'rgba(0, 122, 204, 0.18)',
+  success: '#43B581',
+  warning: '#cca700',
+  danger: '#f04747',
+
+  // Shadows
+  shadowLow: '0 1px 3px rgba(0, 0, 0, 0.5)',
+  shadowMed: '0 4px 12px rgba(0, 0, 0, 0.5)',
+  shadowHigh: '0 8px 16px rgba(0, 0, 0, 0.6)',
+  shadowModal: '0 0 0 1px rgba(255, 255, 255, 0.04), 0 16px 64px rgba(0, 0, 0, 0.7)',
+
+  // Legacy aliases
+  lgBg: '#161616',
+  lgBorderSide: 'rgba(255, 255, 255, 0.06)',
+  lgBlur: 'none',
+  lgShadow: '0 1px 3px rgba(0, 0, 0, 0.5)',
+  lgShadowLg: '0 8px 16px rgba(0, 0, 0, 0.6)',
 }
 
-function neu(inset = false) {
-  return inset
-    ? { boxShadow: 'inset 3px 3px 6px #a3b1c6, inset -3px -3px 6px #ffffff', borderRadius: 10, background: C.contentBg }
-    : { boxShadow: '4px 4px 10px #a3b1c6, -4px -4px 10px #ffffff', borderRadius: 12, background: C.contentBg }
+/** Panel surface — for modals, sheets, floating panels */
+function panel() {
+  return {
+    background: C.bgPrimary,
+    borderRadius: 8,
+    boxShadow: C.shadowMed,
+  } as React.CSSProperties
 }
 
+/** Backward-compat: liquidGlass → panel */
+function liquidGlass() {
+  return panel()
+}
+
+/** Recessed input field */
+function insetField() {
+  return {
+    background: C.bgInput,
+    border: 'none',
+    borderRadius: 4,
+  } as React.CSSProperties
+}
+
+/** Card — content surface */
 function card() {
-  return { ...neu(), padding: 16 }
+  return {
+    background: 'rgba(22, 22, 22, 0.45)',
+    backdropFilter: 'blur(12px)',
+    WebkitBackdropFilter: 'blur(12px)',
+    borderRadius: 8,
+    padding: 16,
+    border: '1px solid rgba(255, 255, 255, 0.06)',
+  } as React.CSSProperties
+}
+
+/** Backward-compat alias */
+function neu(inset = false) {
+  return inset ? insetField() : panel()
 }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
 
 function useApiConfig() {
-  const [config, setConfig] = useState<ApiConfig | null>(null)
+  const [config, setConfig] = useState<ApiConfig | null>(DEMO_MODE ? { apiBase: 'http://localhost:0', token: 'demo' } : null)
   useEffect(() => {
+    if (DEMO_MODE) return
     window.electronAPI.getApiConfig().then(c => {
       _apiBase = c.apiBase
       setConfig(c)
@@ -242,134 +323,308 @@ function simpleMarkdown(md: string): string {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'settings'
-interface NavItem { id: Tab; icon: React.ReactNode; label: string }
+interface NavItem { id: Tab; icon: (active: boolean) => React.ReactNode; label: string }
+
+const SIDEBAR_W = 72
 
 const NAV: NavItem[] = [
-  { id: 'home', icon: <Home size={18} />, label: 'Home' },
-  { id: 'messages', icon: <MessageSquare size={18} />, label: 'Messages' },
-  { id: 'tasks', icon: <CheckSquare size={18} />, label: 'Tasks' },
-  { id: 'activity', icon: <Activity size={18} />, label: 'Activity' },
+  { id: 'home', icon: (a) => <Home size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Home' },
+  { id: 'messages', icon: (a) => <Headphones size={20} strokeWidth={a ? 2 : 1.5} />, label: 'DMs' },
+  { id: 'tasks', icon: (a) => <CheckSquare size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Tasks' },
+  { id: 'activity', icon: (a) => <Bell size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Activity' },
 ]
 
 function Sidebar({ tab, setTab, auth, onLogout, isOnline, messageBadge, messageMention, updateBadge }: {
   tab: Tab; setTab: (t: Tab) => void
   auth: Auth; onLogout: () => void; isOnline: boolean; messageBadge?: number; messageMention?: boolean; updateBadge?: boolean
 }) {
+  const [hoveredTab, setHoveredTab] = useState<string | null>(null)
+
   return (
     <nav style={{
-      width: 200, minHeight: '100vh', background: C.sidebarBg,
-      display: 'flex', flexDirection: 'column', flexShrink: 0,
+      width: SIDEBAR_W, minHeight: '100vh',
+      background: 'transparent',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0,
       WebkitAppRegion: 'drag',
-    }}>
-      {/* Titlebar area for traffic lights */}
-      <div style={{ height: 52, flexShrink: 0 }} />
+    } as React.CSSProperties}>
+      {/* Titlebar drag area — traffic lights live here */}
+      <div style={{ height: 38, flexShrink: 0 }} />
 
-      {/* Logo / App name */}
-      <div style={{ padding: '0 20px 20px', WebkitAppRegion: 'no-drag' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 8,
-            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 16
-          }}>🕐</div>
-          <div>
-            <div style={{ color: '#f1f5f9', fontWeight: 700, fontSize: 15 }}>Bundy</div>
-            <div style={{ fontSize: 11, color: isOnline ? C.success : '#475569' }}>
-              {isOnline ? '● Online' : '○ Offline'}
-            </div>
-          </div>
+      {/* Main nav column — logo + items in one flow */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, WebkitAppRegion: 'no-drag' }}>
+        {/* Workspace icon */}
+        <div style={{
+          width: 36, height: 36, borderRadius: 8,
+          overflow: 'hidden', flexShrink: 0, marginBottom: 4, marginTop: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <img src="workspace-logo.svg" alt="Bundy" style={{ width: 36, height: 36 }} />
         </div>
-      </div>
 
-      {/* Nav items */}
-      <div style={{ flex: 1, padding: '0 8px', WebkitAppRegion: 'no-drag' }}>
+        {/* Nav items */}
         {NAV.map(item => {
           const active = tab === item.id
+          const hovered = hoveredTab === item.id
+          const hasBadge = item.id === 'messages' && (messageBadge ?? 0) > 0
           return (
             <button
               key={item.id}
               onClick={() => setTab(item.id)}
+              onMouseEnter={() => setHoveredTab(item.id)}
+              onMouseLeave={() => setHoveredTab(null)}
               style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                padding: '9px 12px', borderRadius: 8, border: 'none',
-                background: active ? C.sidebarActive : 'transparent',
-                color: active ? C.sidebarTextActive : C.sidebarText,
-                fontSize: 13, fontWeight: active ? 600 : 400, cursor: 'pointer',
-                marginBottom: 2, transition: 'all 0.15s',
-                borderLeft: active ? `3px solid ${C.accent}` : '3px solid transparent',
+                width: 52, display: 'flex', flexDirection: 'column', alignItems: 'center',
+                gap: 8, padding: '6px 0 5px', borderRadius: 8, border: 'none',
+                background: active
+                  ? 'linear-gradient(90deg, rgba(0, 0, 255, 0.24) 0%, rgba(0, 0, 255, 0.14) 50%, rgba(0, 0, 255, 0.10) 100%)'
+                  : hovered ? C.sidebarHover : 'transparent',
+                boxShadow: active ? 'inset 0 0 0 1px rgba(0, 0, 255, 0.18), 0 0 12px rgba(0, 0, 255, 0.08)' : 'none',
+                backdropFilter: active ? 'blur(12px)' : 'none',
+                WebkitBackdropFilter: active ? 'blur(12px)' : 'none',
+                color: active ? C.sidebarTextActive : hovered ? C.text : C.sidebarText,
+                cursor: 'pointer', position: 'relative',
+                transition: 'all 0.15s ease',
               }}
             >
-              {item.icon}
-              <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
-              {item.id === 'messages' && (messageBadge ?? 0) > 0 && (
-                <span style={{
-                  minWidth: 18, height: 18, borderRadius: 9,
-                  background: messageMention ? '#f59e0b' : C.danger,
-                  color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', padding: '0 5px',
-                  title: messageMention ? 'You were mentioned' : undefined,
-                }}>
-                  {messageMention ? '@' : (messageBadge! > 99 ? '99+' : messageBadge)}
-                </span>
-              )}
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {item.icon(active)}
+                {/* Badge overlay */}
+                {hasBadge && (
+                  <span style={{
+                    position: 'absolute', top: -6, right: -10,
+                    minWidth: 16, height: 16, borderRadius: 8,
+                    background: messageMention ? C.warning : C.danger,
+                    color: '#fff', fontSize: 9, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: '0 4px', lineHeight: 1,
+                    border: `2px solid ${C.bgTertiary}`,
+                  }}>
+                    {messageMention ? '@' : (messageBadge! > 99 ? '99+' : messageBadge)}
+                  </span>
+                )}
+              </div>
+              <span style={{ fontSize: 10, fontWeight: active ? 600 : 400, lineHeight: 1, letterSpacing: 0.1 }}>{item.label}</span>
             </button>
           )
         })}
       </div>
 
-      {/* Bottom section */}
-      <div style={{ padding: '8px', borderTop: `1px solid #1e293b`, WebkitAppRegion: 'no-drag' }}>
+      {/* Bottom section — settings + user avatar */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, paddingBottom: 14, WebkitAppRegion: 'no-drag' }}>
+        {/* Settings */}
         <button
           onClick={() => setTab('settings')}
+          onMouseEnter={() => setHoveredTab('settings')}
+          onMouseLeave={() => setHoveredTab(null)}
           style={{
-            width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-            padding: '9px 12px', borderRadius: 8, border: 'none',
-            background: tab === 'settings' ? C.sidebarActive : 'transparent',
-            color: tab === 'settings' ? C.sidebarTextActive : C.sidebarText,
-            fontSize: 13, cursor: 'pointer', marginBottom: 4,
+            width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 8, border: 'none',
+            background: tab === 'settings' ? C.sidebarActive : hoveredTab === 'settings' ? C.sidebarHover : 'transparent',
+            color: tab === 'settings' ? C.sidebarTextActive : hoveredTab === 'settings' ? C.text : C.sidebarText,
+            cursor: 'pointer', position: 'relative',
+            transition: 'background 0.15s ease, color 0.15s ease',
           }}
         >
-          <Settings size={18} /> Settings
-          {updateBadge && (
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.accent, marginLeft: 'auto', flexShrink: 0 }} />
-          )}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Settings size={22} strokeWidth={tab === 'settings' ? 2.2 : 1.7} />
+            {updateBadge && (
+              <span style={{
+                position: 'absolute', top: -3, right: -3,
+                width: 8, height: 8, borderRadius: '50%',
+                background: C.accent,
+                border: `2px solid ${C.bgTertiary}`,
+              }} />
+            )}
+          </div>
         </button>
 
-        {/* User info */}
-        <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: '50%',
-            background: `linear-gradient(135deg, ${C.accent}, #8b5cf6)`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: 11, fontWeight: 700, flexShrink: 0
-          }}>
-            {(auth.username[0] ?? '?').toUpperCase()}
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: '#f1f5f9', fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {auth.username}
-            </div>
-            <div style={{ color: '#475569', fontSize: 10 }}>{auth.role}</div>
-          </div>
-          <button
-            onClick={onLogout}
-            title="Logout"
-            style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: 4 }}
-          >
-            <LogOut size={14} />
-          </button>
-        </div>
+        {/* User profile button */}
+        <ProfileButton auth={auth} isOnline={isOnline} onLogout={onLogout} setTab={setTab} />
       </div>
     </nav>
+  )
+}
+
+/* ─── Profile Button (Slack-style idle / hover / click) ───────────────────── */
+
+function ProfileButton({ auth, isOnline, onLogout, setTab }: {
+  auth: Auth; isOnline: boolean; onLogout: () => void; setTab: (t: Tab) => void
+}) {
+  const [hovered, setHovered] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [menuOpen])
+
+  const statusText = isOnline ? 'Active' : 'Away'
+
+  // Status indicator — small square with rounded corners like Slack
+  const StatusIcon = ({ size = 10, border = C.bgTertiary }: { size?: number; border?: string }) => (
+    <span style={{
+      width: size, height: size, borderRadius: 2,
+      background: isOnline ? C.success : 'transparent',
+      border: isOnline ? `2px solid ${border}` : `2px solid ${C.sidebarText}`,
+      display: 'block', boxSizing: 'border-box',
+    }} />
+  )
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      {/* Avatar button */}
+      <button
+        onClick={() => setMenuOpen(!menuOpen)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          width: 36, height: 36, borderRadius: 8, border: 'none',
+          background: hovered || menuOpen ? C.fillPrimary : C.fillSecondary,
+          color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          position: 'relative',
+          transition: 'background 0.15s ease',
+        }}
+      >
+        {(auth.username[0] ?? '?').toUpperCase()}
+        {/* Status indicator on avatar */}
+        <span style={{
+          position: 'absolute', bottom: -2, right: -2,
+        }}>
+          <StatusIcon size={10} border={C.bgTertiary} />
+        </span>
+      </button>
+
+      {/* Hover tooltip — name pill */}
+      {hovered && !menuOpen && (
+        <div style={{
+          position: 'absolute', left: 44, bottom: 4,
+          background: C.bgFloating,
+          border: `1px solid ${C.separator}`,
+          borderRadius: 8, padding: '6px 12px',
+          display: 'flex', alignItems: 'center', gap: 6,
+          whiteSpace: 'nowrap', zIndex: 9999,
+          boxShadow: C.shadowMed,
+          pointerEvents: 'none',
+        }}>
+          <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>{auth.username}</span>
+          <StatusIcon size={8} border={C.bgFloating} />
+        </div>
+      )}
+
+      {/* Profile popup menu */}
+      {menuOpen && (
+        <div style={{
+          position: 'absolute', left: 44, bottom: -8,
+          width: 280, background: C.bgFloating,
+          border: `1px solid ${C.separator}`,
+          borderRadius: 10, overflow: 'hidden', zIndex: 9999,
+          boxShadow: C.shadowModal,
+        }}>
+          {/* User header */}
+          <div style={{ padding: '16px 16px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{
+              width: 40, height: 40, borderRadius: 8, flexShrink: 0,
+              background: C.fillSecondary,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontSize: 16, fontWeight: 700,
+            }}>
+              {(auth.username[0] ?? '?').toUpperCase()}
+            </div>
+            <div>
+              <div style={{ color: C.text, fontSize: 15, fontWeight: 700, lineHeight: 1.3 }}>{auth.username}</div>
+              <div style={{ color: C.textMuted, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <StatusIcon size={8} border={C.bgFloating} />
+                {statusText}
+              </div>
+            </div>
+          </div>
+
+          {/* Update status row */}
+          <div style={{ padding: '0 12px 12px' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 12px', borderRadius: 8,
+              background: C.bgInput, cursor: 'pointer',
+              color: C.textMuted, fontSize: 13,
+            }}
+              onClick={() => { setMenuOpen(false) }}
+            >
+              <Smile size={16} />
+              <span>Update your status</span>
+            </div>
+          </div>
+
+          <div style={{ height: 1, background: C.separator }} />
+
+          {/* Menu items */}
+          <div style={{ padding: '6px 0' }}>
+            <ProfileMenuItem label={`Set yourself as ${isOnline ? 'away' : 'active'}`} bold={isOnline ? 'away' : 'active'} onClick={() => setMenuOpen(false)} />
+            <ProfileMenuItem label="Pause notifications" trailing={<ChevronRight size={14} color={C.textMuted} />} onClick={() => setMenuOpen(false)} />
+          </div>
+
+          <div style={{ height: 1, background: C.separator }} />
+
+          <div style={{ padding: '6px 0' }}>
+            <ProfileMenuItem label="Profile" onClick={() => { setMenuOpen(false); setTab('settings') }} />
+            <ProfileMenuItem label="Preferences" shortcut="⌘," onClick={() => { setMenuOpen(false); setTab('settings') }} />
+          </div>
+
+          <div style={{ height: 1, background: C.separator }} />
+
+          <div style={{ padding: '6px 0' }}>
+            <ProfileMenuItem label={`Sign out of Bundy`} onClick={() => { setMenuOpen(false); onLogout() }} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProfileMenuItem({ label, shortcut, trailing, bold, onClick }: {
+  label: string; shortcut?: string; trailing?: React.ReactNode; bold?: string; onClick?: () => void
+}) {
+  const [hovered, setHovered] = useState(false)
+
+  // If bold word is specified, wrap it in <b>
+  const renderLabel = () => {
+    if (!bold) return label
+    const idx = label.indexOf(bold)
+    if (idx === -1) return label
+    return <>{label.slice(0, idx)}<b style={{ fontWeight: 700 }}>{bold}</b>{label.slice(idx + bold.length)}</>
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+        padding: '7px 20px', border: 'none',
+        background: hovered ? C.bgHover : 'transparent',
+        color: C.text, fontSize: 13, fontWeight: 400, cursor: 'pointer',
+        textAlign: 'left',
+      }}
+    >
+      <span style={{ flex: 1 }}>{renderLabel()}</span>
+      {shortcut && <span style={{ color: C.textMuted, fontSize: 12 }}>{shortcut}</span>}
+      {trailing}
+    </button>
   )
 }
 
 // ─── Home Panel ───────────────────────────────────────────────────────────────
 
 const ACTION_COLORS: Record<string, string> = {
-  'clock-in': '#22c55e', 'clock-out': '#ef4444',
-  'break-start': '#f59e0b', 'break-end': '#6366f1',
+  'clock-in': '#43B581', 'clock-out': '#f04747',
+  'break-start': '#007acc', 'break-end': '#007acc',
 }
 
 function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: ApiConfig | null; onOpenTask?: (taskId: string) => void }) {
@@ -385,7 +640,6 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
   const [clockOutStep, setClockOutStep] = useState<'tasks' | 'plan' | 'report'>('report')
   const [showReportModal, setShowReportModal] = useState(false)
   const [reportContent, setReportContent] = useState('')
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const [taskStatusUpdates, setTaskStatusUpdates] = useState<Record<string, string>>({})
   const [reportSubmitting, setReportSubmitting] = useState(false)
   const [reportError, setReportError] = useState('')
@@ -429,6 +683,21 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
   }, [config])
 
   useEffect(() => {
+    if (DEMO_MODE) {
+      setStatus({ isClockedIn: true, onBreak: false, isTracking: true, elapsedMs: 14_520_000, username: 'john.doe', role: 'developer' })
+      setTodayTasks([
+        { id: 'd1', title: 'Fix login page responsiveness', description: 'The login page breaks on small screens', status: 'in-progress', priority: 'high', dueDate: new Date().toISOString(), estimatedHours: 3, createdBy: 'u1', projectId: 'p1', assigneeId: 'u2', project: { id: 'p1', name: 'Bundy Web', color: '#007acc' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 2, subtasks: 1 } },
+        { id: 'd2', title: 'Write unit tests for auth module', description: null, status: 'todo', priority: 'medium', dueDate: new Date().toISOString(), estimatedHours: 2, createdBy: 'u1', projectId: 'p2', assigneeId: 'u2', project: { id: 'p2', name: 'Backend API', color: '#43B581' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 0, subtasks: 3 } },
+        { id: 'd3', title: 'Update README documentation', description: 'Add new API endpoints to the docs', status: 'todo', priority: 'low', dueDate: new Date().toISOString(), estimatedHours: 1, createdBy: 'u3', projectId: 'p1', assigneeId: 'u2', project: { id: 'p1', name: 'Bundy Web', color: '#007acc' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 5, subtasks: 0 } },
+        { id: 'd4', title: 'Review PR #142 — Dashboard redesign', description: null, status: 'in-progress', priority: 'urgent', dueDate: new Date().toISOString(), estimatedHours: 1, createdBy: 'u4', projectId: 'p3', assigneeId: 'u2', project: { id: 'p3', name: 'Desktop App', color: '#cca700' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 8, subtasks: 0 } },
+      ])
+      setPlanItems([
+        { id: 'pl1', project: { id: 'p1', name: 'Bundy Web' }, details: 'Fix responsive issues on login + dashboard', status: 'in-progress', outcome: null },
+        { id: 'pl2', project: { id: 'p2', name: 'Backend API' }, details: 'Write auth module unit tests (target 80% coverage)', status: 'pending', outcome: null },
+        { id: 'pl3', project: { id: 'p3', name: 'Desktop App' }, details: 'Review and merge dashboard redesign PR', status: 'pending', outcome: null },
+      ])
+      return
+    }
     load()
     loadTasks()
     loadPlan()
@@ -505,24 +774,27 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
     todo: C.textMuted, 'in-progress': C.accent, done: C.success, cancelled: C.danger,
   }
   const PRIORITY_COLORS: Record<string, string> = {
-    urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e',
+    urgent: '#f04747', high: '#007acc', medium: '#007acc', low: '#43B581',
   }
 
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
 
       {/* Timer Card */}
-      <div style={{ ...card(), textAlign: 'center', padding: '28px 24px' }}>
-        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 1, color: C.textMuted, textTransform: 'uppercase', marginBottom: 6 }}>
+      <div style={{ ...card(), textAlign: 'center', padding: '42px 36px' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: 1.5, color: 'rgba(255, 255, 255, 0.45)', textTransform: 'uppercase', marginBottom: 10 }}>
           Today's Work Time
         </div>
-        <div style={{ fontSize: 52, fontWeight: 700, letterSpacing: -2, color: C.text, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+        <div style={{
+          fontSize: 78, fontWeight: 700, letterSpacing: -2, fontVariantNumeric: 'tabular-nums', lineHeight: 1,
+          color: '#ffffff',
+        }}>
           {formatMs(displayMs)}
         </div>
-        <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: C.accentLight, borderRadius: 20, padding: '4px 12px',
-          color: statusColor, fontSize: 12, fontWeight: 600 }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, display: 'inline-block' }} />
+        <div style={{ marginTop: 14, display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: C.accentLight, borderRadius: 20, padding: '5px 14px',
+          color: statusColor, fontSize: 13, fontWeight: 600 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, display: 'inline-block' }} />
           {statusLabel}
         </div>
       </div>
@@ -536,7 +808,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
               onClick={() => doAction(a.id)}
               disabled={actioning}
               style={{
-                flex: 1, padding: '12px 0', borderRadius: 10, border: 'none',
+                flex: 1, padding: '16px 0', borderRadius: 3, border: 'none',
                 background: ACTION_COLORS[a.id] ?? C.accent,
                 color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer',
                 opacity: actioning ? 0.6 : 1,
@@ -551,14 +823,14 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
 
       {/* Today's Tasks */}
       <div style={{ ...card() }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Today's Tasks</div>
           <div style={{ fontSize: 11, color: C.textMuted }}>
             {todayTasks.length} {todayTasks.length === 1 ? 'task' : 'tasks'}
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 280, overflowY: 'auto' }}>
           {loadingTasks ? (
             <div style={{ color: C.textMuted, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
               <Loader size={16} />
@@ -568,99 +840,56 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
               No tasks due today. Manage tasks in the Tasks tab.
             </div>
           ) : (
-            todayTasks.map(task => {
-              const isExpanded = expandedTaskId === task.id
-              return (
-                <div key={task.id}>
-                  <div onClick={() => setExpandedTaskId(prev => prev === task.id ? null : task.id)} style={{
-                    ...neu(), padding: '10px 12px',
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    cursor: 'pointer',
-                    borderBottomLeftRadius: isExpanded ? 0 : undefined,
-                    borderBottomRightRadius: isExpanded ? 0 : undefined,
-                  }}>
-                    {/* Status icon */}
-                    <div style={{
-                      color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0,
-                    }}>
-                      {TASK_STATUS_ICONS[task.status] ?? <Circle size={13} />}
-                    </div>
-
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 13, color: C.text,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        display: 'flex', alignItems: 'center', gap: 4,
-                      }}>
-                        {task.parentTaskId && <CornerDownRight size={10} color={C.textMuted} style={{ flexShrink: 0 }} />}
-                        {task.title}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                        {task.project && (
-                          <span style={{
-                            fontSize: 10, color: task.project.color || C.textMuted,
-                            background: (task.project.color || C.accent) + '18',
-                            padding: '1px 6px', borderRadius: 4,
-                          }}>
-                            {task.project.name}
-                          </span>
-                        )}
-                        <span style={{
-                          fontSize: 10,
-                          color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
-                          fontWeight: 600, textTransform: 'uppercase',
-                        }}>
-                          {task.priority}
-                        </span>
-                      </div>
-                    </div>
-
-                    <ChevronDown size={14} color={C.textMuted} style={{ flexShrink: 0, transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }} />
-                  </div>
-
-                  {/* Expanded panel */}
-                  {isExpanded && (
-                    <div style={{
-                      ...neu(true), borderTopLeftRadius: 0, borderTopRightRadius: 0,
-                      padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8,
-                    }}>
-                      {task.description && (
-                        <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                          {task.description.slice(0, 200)}{task.description.length > 200 ? '…' : ''}
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                        {(['todo', 'in-progress', 'done', 'cancelled'] as const).map(s => (
-                          <button key={s} onClick={async (e) => {
-                            e.stopPropagation()
-                            if (!config) return
-                            await fetch(`${config.apiBase}/api/tasks/${task.id}`, {
-                              method: 'PATCH',
-                              headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ status: s }),
-                            }).catch(() => {})
-                            setTodayTasks(prev => s === 'done' || s === 'cancelled'
-                              ? prev.filter(t => t.id !== task.id)
-                              : prev.map(t => t.id === task.id ? { ...t, status: s } : t))
-                            if (s === 'done' || s === 'cancelled') setExpandedTaskId(null)
-                          }} style={{
-                            fontSize: 11, padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-                            border: 'none',
-                            ...(task.status === s ? neu() : { background: 'transparent' }),
-                            color: task.status === s ? (TASK_STATUS_COLORS[s] ?? C.textMuted) : C.textMuted,
-                            fontWeight: task.status === s ? 600 : 400,
-                          }}>{s}</button>
-                        ))}
-                        <button onClick={(e) => { e.stopPropagation(); onOpenTask?.(task.id) }} style={{
-                          marginLeft: 'auto', fontSize: 11, padding: '3px 8px', borderRadius: 6,
-                          border: 'none', background: 'transparent', color: C.accent, cursor: 'pointer',
-                        }}>Open →</button>
-                      </div>
-                    </div>
-                  )}
+            todayTasks.map((task, i) => (
+              <div
+                key={task.id}
+                onClick={() => onOpenTask?.(task.id)}
+                style={{
+                  padding: '10px 4px',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  cursor: 'pointer',
+                  borderTop: i > 0 ? `1px solid ${C.separator}` : 'none',
+                  transition: 'background 0.12s',
+                  borderRadius: 4,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                onMouseLeave={e => { e.currentTarget.style.background = '' }}
+              >
+                {/* Status icon */}
+                <div style={{ color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0 }}>
+                  {TASK_STATUS_ICONS[task.status] ?? <Circle size={14} />}
                 </div>
-              )
-            })
+
+                {/* Task info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13, fontWeight: 500, color: C.text,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {task.title}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                    {task.project && (
+                      <span style={{
+                        fontSize: 11, color: task.project.color || C.textMuted,
+                        fontWeight: 500,
+                      }}>
+                        {task.project.name}
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
+                    }}>
+                      {task.priority}
+                    </span>
+                  </div>
+                </div>
+
+                {/* View chevron */}
+                <ChevronRight size={14} color={C.textMuted} style={{ flexShrink: 0, opacity: 0.5 }} />
+              </div>
+            ))
           )}
         </div>
       </div>
@@ -668,7 +897,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
       {/* Clock-out Report Modal */}
       {showReportModal && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           WebkitAppRegion: 'no-drag',
         } as React.CSSProperties} onClick={() => { setShowReportModal(false); setShowPreview(false) }}>
@@ -695,7 +924,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto' }}>
                   {todayTasks.map(task => (
-                    <div key={task.id} style={{ ...neu(true), padding: 12, borderRadius: 10 }}>
+                    <div key={task.id} style={{ ...neu(true), padding: 12, borderRadius: 4 }}>
                       <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 8 }}>
                         {task.title}
                         {task.project && <span style={{ fontSize: 10, color: task.project.color || C.textMuted, background: (task.project.color || C.accent) + '18', padding: '1px 6px', borderRadius: 4, marginLeft: 8 }}>{task.project.name}</span>}
@@ -757,7 +986,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
                     const ci = confirmItems[idx]
                     if (!ci) return null
                     return (
-                      <div key={item.id} style={{ ...neu(true), padding: 12, borderRadius: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div key={item.id} style={{ ...neu(true), padding: 12, borderRadius: 4, display: 'flex', flexDirection: 'column', gap: 8 }}>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>{item.project.name}</span>
                           <span style={{ fontSize: 11, color: C.textMuted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -818,7 +1047,7 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
             {clockOutStep === 'report' && (
               <>
                 {/* Write / Preview tabs */}
-                <div style={{ ...neu(true), display: 'flex', borderRadius: 10, padding: 3, gap: 3 }}>
+                <div style={{ ...neu(true), display: 'flex', borderRadius: 4, padding: 3, gap: 3 }}>
                   {(['Write', 'Preview'] as const).map(t => (
                     <button key={t} onClick={() => setShowPreview(t === 'Preview')}
                       style={{
@@ -869,14 +1098,14 @@ function HomePanel({ auth: _auth, config, onOpenTask }: { auth: Auth; config: Ap
                     placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
                     rows={8}
                     style={{
-                      width: '100%', borderRadius: 10, padding: 12, fontSize: 13, fontFamily: 'SF Mono, Menlo, monospace',
+                      width: '100%', borderRadius: 4, padding: 12, fontSize: 13, fontFamily: 'SF Mono, Menlo, monospace',
                       ...neu(true), border: 'none', outline: 'none', color: C.text,
                       resize: 'none', boxSizing: 'border-box', lineHeight: 1.6,
                     }}
                   />
                 ) : (
                   <div style={{
-                    width: '100%', minHeight: 160, borderRadius: 10, padding: 12, fontSize: 13,
+                    width: '100%', minHeight: 160, borderRadius: 4, padding: 12, fontSize: 13,
                     ...neu(true), color: C.text, boxSizing: 'border-box', lineHeight: 1.6, overflowY: 'auto',
                   }}
                     dangerouslySetInnerHTML={{
@@ -972,11 +1201,12 @@ function Avatar({ url, name, size = 30, radius = '50%' }: { url?: string | null;
 // ─── Messages Panel ───────────────────────────────────────────────────────────
 
 // Sub-modal: New DM / Group / Channel
-function NewConvModal({ config, auth, onClose, onCreated }: {
+function NewConvModal({ config, auth, onClose, onCreated, initialMode = 'dm' }: {
   config: ApiConfig; auth: Auth
   onClose: () => void; onCreated: (id: string) => void
+  initialMode?: 'dm' | 'group' | 'channel'
 }) {
-  const [mode, setMode] = useState<'dm' | 'group' | 'channel'>('dm')
+  const [mode, setMode] = useState<'dm' | 'group' | 'channel'>(initialMode)
   const [users, setUsers] = useState<UserInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -1033,12 +1263,12 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: C.contentBg, borderRadius: 14, padding: 20, width: 360,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.4)', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        ...neu(), borderRadius: 8, padding: 20, width: 360,
+        maxHeight: '80vh', display: 'flex', flexDirection: 'column',
       }} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -1052,9 +1282,9 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
             <button key={m} onClick={() => { setMode(m); setSelected([]); setName(''); setError('') }}
               style={{
                 flex: 1, padding: '6px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                background: mode === m ? C.accent : C.contentBg,
+                background: mode === m ? C.accent : C.lgBg,
                 color: mode === m ? '#fff' : C.textMuted,
-                boxShadow: mode === m ? `0 2px 6px ${C.accent}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #fff',
+                boxShadow: mode === m ? `0 2px 6px ${C.accent}44` : C.lgShadow,
               }}>
               {modeLabels[m]}
             </button>
@@ -1108,7 +1338,7 @@ function NewConvModal({ config, auth, onClose, onCreated }: {
         {/* Create button */}
         <button onClick={create} disabled={busy || (mode === 'dm' && selected.length === 0)}
           style={{
-            marginTop: 12, padding: '10px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
+            marginTop: 12, padding: '10px 0', borderRadius: 4, border: 'none', cursor: 'pointer',
             background: C.accent, color: '#fff', fontWeight: 700, fontSize: 13,
             opacity: busy ? 0.7 : 1,
           }}>
@@ -1169,27 +1399,43 @@ function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
     <div
       onClick={() => window.electronAPI.openExternal(url)}
       style={{
-        marginTop: 6, borderRadius: 8, border: `1px solid ${C.border}`,
-        overflow: 'hidden', background: '#f8faff', cursor: 'pointer',
-        transition: 'opacity 0.15s',
+        marginTop: 6,
+        borderLeft: '4px solid rgba(255, 255, 255, 0.15)',
+        cursor: 'pointer',
+        paddingLeft: 12,
+        paddingTop: 4,
+        paddingBottom: 4,
       }}
     >
+      {og.siteName && (
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.textMuted, marginBottom: 2 }}>
+          {og.siteName}
+        </div>
+      )}
+      {og.title && (
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.accent, lineHeight: 1.3, marginBottom: 2 }}>
+          {og.title}
+        </div>
+      )}
+      {og.description && (
+        <div style={{
+          fontSize: 13, color: C.textSecondary, lineHeight: 1.4, marginBottom: 4,
+          overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+        }}>
+          {og.description}
+        </div>
+      )}
       {og.image && (
         <img
           src={og.image} alt={og.title ?? ''}
-          style={{ width: '100%', maxHeight: expanded ? 'none' : 140, objectFit: 'cover', display: 'block' }}
+          style={{
+            maxWidth: 360, maxHeight: expanded ? 400 : 200, objectFit: 'cover',
+            borderRadius: 6, display: 'block', marginTop: 4,
+          }}
           onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
           onClick={e => { e.stopPropagation(); setExpanded(!expanded) }}
         />
       )}
-      <div style={{ padding: '7px 10px' }}>
-        {og.siteName && <div style={{ fontSize: 10, color: C.accent, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>{og.siteName}</div>}
-        {og.title && <div style={{ fontSize: 12, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>{og.title}</div>}
-        {og.description && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, lineHeight: 1.4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{og.description}</div>}
-        <div style={{ fontSize: 10, color: C.accent, marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <ExternalLink size={9} />{new URL(url).hostname}
-        </div>
-      </div>
     </div>
   )
 }
@@ -1299,13 +1545,13 @@ function AuthImage({ src, config, alt, style, onClick }: { src: string; config: 
       .catch(() => { if (!cancelled) setError(true) })
     return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [src, config.token])
-  if (error) return <div style={{ ...style, background: '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><FileText size={14} /></div>
-  if (!blobUrl) return <div style={{ ...style, background: '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><Loader size={14} /></div>
+  if (error) return <div style={{ ...style, background: 'rgba(255, 255, 255, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><FileText size={14} /></div>
+  if (!blobUrl) return <div style={{ ...style, background: 'rgba(255, 255, 255, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 }}><Loader size={14} /></div>
   return <img src={blobUrl} alt={alt} style={style} onClick={onClick} />
 }
 
 // Inline image attachment (when message content matches attachment pattern)
-function InlineAttachment({ content, isMe, config }: { content: string; isMe: boolean; config?: ApiConfig }) {
+function InlineAttachment({ content, config }: { content: string; isMe?: boolean; config?: ApiConfig }) {
   // Match [📎 filename](url) — allow any characters in filename including _ and spaces
   const match = content.match(/^\[📎\s([^\]]+?)\]\((https?:\/\/\S+?)\)\s*$/)
   if (!match) return null
@@ -1315,56 +1561,85 @@ function InlineAttachment({ content, isMe, config }: { content: string; isMe: bo
   const [imgError, setImgError] = useState(false)
   const [imgLoaded, setImgLoaded] = useState(false)
 
+  // File type info for colored icon
+  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
+  const extUpper = ext.toUpperCase() || 'FILE'
+  const typeColor = (() => {
+    switch (ext) {
+      case 'zip': case 'rar': case '7z': case 'tar': case 'gz': return '#7B68EE'
+      case 'csv': case 'xls': case 'xlsx': return '#2E7D32'
+      case 'pdf': return '#C62828'
+      case 'doc': case 'docx': return '#1565C0'
+      case 'ppt': case 'pptx': return '#D84315'
+      default: return '#5C6BC0'
+    }
+  })()
+
+  // Slack-style filename header for media
+  const fileHeader = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{filename}</span>
+      <ChevronDown size={12} color={C.textMuted} />
+    </div>
+  )
+
   if (isImageUrl(cleanUrl)) {
     if (config) {
-      // Use auth-aware image loading for protected uploads
       return (
         <div style={{ marginTop: 4 }}>
+          {fileHeader}
           <AuthImage
             src={cleanUrl}
             config={config}
             alt={filename}
             style={{
-              maxWidth: '100%', maxHeight: expanded ? 400 : 180,
+              maxWidth: 360, maxHeight: expanded ? 500 : 260,
               objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', display: 'block',
+              border: `1px solid ${C.separator}`,
             }}
             onClick={() => setExpanded(!expanded)}
           />
-          {expanded && (
-            <button
-              onClick={() => window.electronAPI.openExternal(cleanUrl)}
-              style={{ marginTop: 4, fontSize: 10, color: isMe ? 'rgba(255,255,255,0.8)' : C.accent, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
-            >
-              <ExternalLink size={10} /> Open full size
-            </button>
-          )}
         </div>
       )
     }
     if (imgError) {
-      // Fallback to download card when image fails
+      // Fallback to Slack-style file card on error
       return (
-        <div
-          onClick={() => window.electronAPI.openExternal(cleanUrl)}
-          style={{
-            marginTop: 4, display: 'flex', alignItems: 'center', gap: 10,
-            padding: '8px 12px', borderRadius: 8,
-            background: isMe ? 'rgba(255,255,255,0.15)' : '#f0f4ff',
-            border: `1px solid ${isMe ? 'rgba(255,255,255,0.3)' : C.border}`,
-            cursor: 'pointer',
-          }}
-        >
-          <FileText size={18} color={isMe ? 'rgba(255,255,255,0.9)' : C.accent} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: isMe ? '#fff' : C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>
-          <ExternalLink size={12} color={isMe ? 'rgba(255,255,255,0.7)' : C.textMuted} />
+        <div style={{ marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+            <span style={{ fontSize: 12, color: C.textMuted }}>{extUpper}</span>
+            <ChevronDown size={12} color={C.textMuted} />
+          </div>
+          <div
+            onClick={() => window.electronAPI.openExternal(cleanUrl)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '12px 16px', borderRadius: 8,
+              border: `1px solid ${C.separator}`,
+              background: 'transparent',
+              cursor: 'pointer', maxWidth: 400,
+            }}
+          >
+            <div style={{
+              width: 36, height: 36, borderRadius: 6, background: typeColor,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <FileText size={18} color="#fff" />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</div>
+              <div style={{ fontSize: 12, color: C.textMuted }}>{extUpper}</div>
+            </div>
+          </div>
         </div>
       )
     }
     return (
       <div style={{ marginTop: 4 }}>
+        {fileHeader}
         {!imgLoaded && !imgError && (
-          <div style={{ width: '100%', height: 100, borderRadius: 8, background: isMe ? 'rgba(255,255,255,0.1)' : '#e8edf5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Loader size={18} color={isMe ? 'rgba(255,255,255,0.5)' : C.textMuted} />
+          <div style={{ width: 360, height: 200, borderRadius: 8, background: C.bgInput, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Loader size={18} color={C.textMuted} />
           </div>
         )}
         <img
@@ -1375,42 +1650,51 @@ function InlineAttachment({ content, isMe, config }: { content: string; isMe: bo
           onLoad={() => setImgLoaded(true)}
           onError={() => setImgError(true)}
           style={{
-            maxWidth: '100%', maxHeight: expanded ? 400 : 180,
+            maxWidth: 360, maxHeight: expanded ? 500 : 260,
             objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in',
             display: imgLoaded ? 'block' : 'none',
+            border: `1px solid ${C.separator}`,
           }}
         />
-        {expanded && imgLoaded && (
-          <button
-            onClick={() => window.electronAPI.openExternal(cleanUrl)}
-            style={{ marginTop: 4, fontSize: 10, color: isMe ? 'rgba(255,255,255,0.8)' : C.accent, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
-          >
-            <ExternalLink size={10} /> Open full size
-          </button>
-        )}
       </div>
     )
   }
   if (isVideoUrl(cleanUrl)) {
     return (
-      <video controls src={cleanUrl} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginTop: 4, display: 'block' }} />
+      <div style={{ marginTop: 4 }}>
+        {fileHeader}
+        <video controls src={cleanUrl} style={{ maxWidth: 360, maxHeight: 260, borderRadius: 8, display: 'block' }} />
+      </div>
     )
   }
-  // Generic file card
+  // Slack-style file card with colored type icon
   return (
-    <div
-      onClick={() => window.electronAPI.openExternal(cleanUrl)}
-      style={{
-        marginTop: 4, display: 'flex', alignItems: 'center', gap: 10,
-        padding: '8px 12px', borderRadius: 8,
-        background: isMe ? 'rgba(255,255,255,0.15)' : '#f0f4ff',
-        border: `1px solid ${isMe ? 'rgba(255,255,255,0.3)' : C.border}`,
-        cursor: 'pointer',
-      }}
-    >
-      <FileText size={18} color={isMe ? 'rgba(255,255,255,0.9)' : C.accent} />
-      <span style={{ fontSize: 12, fontWeight: 600, color: isMe ? '#fff' : C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>
-      <ExternalLink size={12} color={isMe ? 'rgba(255,255,255,0.7)' : C.textMuted} />
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+        <span style={{ fontSize: 12, color: C.textMuted }}>{extUpper}</span>
+        <ChevronDown size={12} color={C.textMuted} />
+      </div>
+      <div
+        onClick={() => window.electronAPI.openExternal(cleanUrl)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '12px 16px', borderRadius: 8,
+          border: `1px solid ${C.separator}`,
+          background: 'transparent',
+          cursor: 'pointer', maxWidth: 400,
+        }}
+      >
+        <div style={{
+          width: 36, height: 36, borderRadius: 6, background: typeColor,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <FileText size={18} color="#fff" />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</div>
+          <div style={{ fontSize: 12, color: C.textMuted }}>{extUpper}</div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1445,10 +1729,8 @@ function IncomingCallOverlay({ payload, onAccept, onReject }: {
   return (
     <div style={{
       position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
-      background: C.contentBg, borderRadius: 16, padding: '16px 20px',
-      boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
+      ...neu(), padding: '16px 20px',
       display: 'flex', alignItems: 'center', gap: 14, minWidth: 280,
-      border: `1px solid ${C.border}`,
       animation: 'slideIn 0.2s ease-out',
     }}>
       <div style={{
@@ -1553,12 +1835,12 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: C.contentBg, borderRadius: 14, padding: 20, width: 340,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.4)', maxHeight: '80vh', overflow: 'auto',
+        ...neu(), borderRadius: 8, padding: 20, width: 340,
+        maxHeight: '80vh', overflow: 'auto',
       }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{conv.name} — Members</span>
@@ -1589,7 +1871,7 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
                 <button key={u.id} onClick={() => addMember(u.id)} disabled={busy}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px',
-                    background: 'transparent', border: `1px solid ${C.border}`, cursor: 'pointer',
+                    background: 'transparent', border: `1px solid ${C.separator}`, cursor: 'pointer',
                     borderRadius: 8, textAlign: 'left',
                   }}>
                   <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={26} />
@@ -1603,11 +1885,11 @@ function ChannelSettingsModal({ config, auth, conv, onClose }: {
 
         {/* Leave / Delete actions */}
         {conv.type !== 'dm' && (
-          <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.separator}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {!isCreator && (
               <button onClick={leaveChannel} disabled={busy}
                 style={{
-                  padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.border}`,
+                  padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.separator}`,
                   background: 'transparent', color: C.warning, cursor: 'pointer', fontSize: 13, fontWeight: 600,
                   display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center',
                 }}>
@@ -1647,7 +1929,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
-  const [showNewConv, setShowNewConv] = useState(false)
+  const [showNewConv, setShowNewConv] = useState<false | 'dm' | 'group' | 'channel'>(false)
   const [showSettings, setShowSettings] = useState(false)
   // Per-channel typing: Map<channelId, string[]>
   const [typingMap, setTypingMap] = useState<Record<string, string[]>>({})
@@ -1678,6 +1960,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   // Pinned messages panel
   const [showPinned, setShowPinned] = useState(false)
   const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
+  // Collapsed sidebar sections
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
+  const [hoveredSection, setHoveredSection] = useState<string | null>(null)
+  const toggleSection = (key: string) => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }))
+  // Threads view
+  const [showThreadsView, setShowThreadsView] = useState(false)
+  const [threadActivities, setThreadActivities] = useState<ThreadActivity[]>([])
+  const selectConv = (c: Conversation | null) => { if (c) setShowThreadsView(false); setSelected(c) }
   // Shared media directory panel
   const [showSharedMedia, setShowSharedMedia] = useState(false)
   const [sharedMediaTab, setSharedMediaTab] = useState<'links' | 'media' | 'files'>('media')
@@ -1855,6 +2145,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   useEffect(() => {
+    if (DEMO_MODE) return
     let dead = false
     let ctrl = new AbortController()
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -2104,7 +2395,84 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     }
   }, [])
 
-  useEffect(() => { loadChannels() }, [loadChannels])
+  useEffect(() => {
+    if (DEMO_MODE) {
+      const demoChannels: Conversation[] = [
+        { id: 'ch1', type: 'channel', name: '#general', members: [], unread: 3, lastTime: new Date(Date.now() - 300_000).toISOString() },
+        { id: 'ch2', type: 'channel', name: '#engineering', members: [], unread: 0, lastTime: new Date(Date.now() - 900_000).toISOString() },
+        { id: 'ch3', type: 'channel', name: '#design', members: [], unread: 1, lastTime: new Date(Date.now() - 1800_000).toISOString() },
+        { id: 'ch6', type: 'channel', name: '#random', members: [], unread: 0, lastTime: new Date(Date.now() - 120_000).toISOString() },
+        { id: 'ch4', type: 'dm', name: 'Sarah Chen', avatar: null, partnerId: 'u3', members: [{ userId: 'u3', user: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null, userStatus: 'online' } }], unread: 0, lastTime: new Date(Date.now() - 600_000).toISOString() },
+        { id: 'ch7', type: 'dm', name: 'Mike Torres', avatar: null, partnerId: 'u4', members: [{ userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null, userStatus: 'online' } }], unread: 0, lastTime: new Date(Date.now() - 1200_000).toISOString() },
+        { id: 'ch8', type: 'dm', name: 'Alex Kim', avatar: null, partnerId: 'u5', members: [{ userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null, userStatus: 'break' } }], unread: 0, lastTime: new Date(Date.now() - 7200_000).toISOString() },
+        { id: 'ch5', type: 'group', name: 'Marc, Robert Siemens', members: [{ userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Marc', avatarUrl: null } }, { userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Robert Siemens', avatarUrl: null } }], unread: 2, lastTime: new Date(Date.now() - 3600_000).toISOString() },
+        { id: 'ch9', type: 'dm', name: 'Lisa Martinez', avatar: null, partnerId: 'u6', members: [{ userId: 'u6', user: { id: 'u6', username: 'lisa.m', alias: 'Lisa Martinez', avatarUrl: null, userStatus: 'out' } }], unread: 0, lastTime: new Date(Date.now() - 10800_000).toISOString() },
+      ]
+      setChannels(demoChannels)
+      setSelected(demoChannels[0])
+      setThreadActivities([
+        {
+          id: 'th1', channelName: '#general', channelType: 'channel',
+          parentMessage: { content: 'Hey team 👋 Quick update on the Q4 roadmap. I\'ve broken down the remaining work into three priorities...', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null } },
+          lastReply: { content: 'I can take the dashboard redesign. Already started the Figma mockups.', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null }, createdAt: new Date(Date.now() - 1200_000).toISOString() },
+          replyCount: 5, unread: true,
+        },
+        {
+          id: 'th2', channelName: '#engineering', channelType: 'channel',
+          parentMessage: { content: 'Just pushed the hotfix for the login timeout issue. Can someone review? PR #156', sender: { alias: 'Alex Kim', username: 'alex.k', avatarUrl: null } },
+          lastReply: { content: 'LGTM! Approved and merged. Nice catch on the token refresh.', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null }, createdAt: new Date(Date.now() - 3600_000).toISOString() },
+          replyCount: 3, unread: true,
+        },
+        {
+          id: 'th3', channelName: '#design', channelType: 'channel',
+          parentMessage: { content: 'New dashboard mockups are ready for review. Check the Figma link in the channel description.', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null } },
+          lastReply: { content: 'Love the new color scheme! Just left some comments on the spacing.', sender: { alias: 'Lisa Martinez', username: 'lisa.m', avatarUrl: null }, createdAt: new Date(Date.now() - 7200_000).toISOString() },
+          replyCount: 8, unread: false,
+        },
+        {
+          id: 'th4', channelName: 'Sarah Chen', channelType: 'dm',
+          parentMessage: { content: 'Can you share the API docs for the new endpoints?', sender: { alias: 'Sarah Chen', username: 'sarah.chen', avatarUrl: null } },
+          lastReply: { content: 'Sure, just sent them over. Let me know if you need the auth tokens too.', sender: { alias: null, username: 'you', avatarUrl: null }, createdAt: new Date(Date.now() - 14400_000).toISOString() },
+          replyCount: 4, unread: false,
+        },
+        {
+          id: 'th5', channelName: '#general', channelType: 'channel',
+          parentMessage: { content: 'Sprint review starts at 10 AM. @mike.t are you ready with the dashboard demo?', sender: { alias: 'Lisa Martinez', username: 'lisa.m', avatarUrl: null } },
+          lastReply: { content: 'All set! Screen recording backup is ready too 😅', sender: { alias: 'Mike Torres', username: 'mike.t', avatarUrl: null }, createdAt: new Date(Date.now() - 9000_000).toISOString() },
+          replyCount: 4, unread: false,
+        },
+      ])
+      const _yesterday = Date.now() - 86400_000
+      const _today = Date.now()
+      setMessages([
+        // — Yesterday —
+        { id: 'm1', content: 'Hey team 👋 Quick update on the Q4 roadmap. I\'ve broken down the remaining work into three priorities:\n\n1. Finish the dashboard redesign (ETA Friday)\n2. Auth service migration to OAuth 2.0\n3. Performance audit on the search API\n\nLet me know if anyone has concerns or wants to swap assignments.', createdAt: new Date(_yesterday + 3600_000 * 9).toISOString(), editedAt: null, sender: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null }, reactions: [{ emoji: '👍', userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Mike Torres' } }, { emoji: '👍', userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Alex Kim' } }], replyCount: 3 },
+        { id: 'm2', content: 'I can take the OAuth migration. Already started looking into the PKCE flow for our mobile clients.', createdAt: new Date(_yesterday + 3600_000 * 9.25).toISOString(), editedAt: null, sender: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null } },
+        { id: 'm3', content: '@alex.k Nice, that would be great. Make sure to coordinate with @lisa.m — she has the client secrets and the current token rotation schedule.', createdAt: new Date(_yesterday + 3600_000 * 9.5).toISOString(), editedAt: null, sender: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null } },
+        { id: 'm4', content: 'Just pushed the hotfix for the login timeout issue. Can someone review?\n\nPR #156 — fixes the session expiry bug where users were getting logged out after 5 minutes instead of 30.\n\nChanges:\n• Updated token refresh logic in auth-middleware.ts\n• Added retry with exponential backoff\n• New integration tests for session lifecycle', createdAt: new Date(_yesterday + 3600_000 * 14).toISOString(), editedAt: null, sender: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null }, isPinned: true, pinnedAt: new Date(_yesterday + 3600_000 * 14.5).toISOString(), pinnedBy: 'u3', reactions: [{ emoji: '👀', userId: 'u2', user: { id: 'u2', username: 'john.doe', alias: 'John' } }] },
+        { id: 'm5', content: 'Looking at it now. The session handling looks solid 👍 Just left a few minor comments on the error messages.', createdAt: new Date(_yesterday + 3600_000 * 15).toISOString(), editedAt: null, sender: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, reactions: [{ emoji: '✅', userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Alex Kim' } }] },
+        // — Today —
+        { id: 'm6', content: 'Good morning everyone! 🌅 Sprint review starts at 10 AM. @mike.t are you ready with the dashboard demo?', createdAt: new Date(_today - 3600_000 * 3).toISOString(), editedAt: null, sender: { id: 'u6', username: 'lisa.m', alias: 'Lisa Martinez', avatarUrl: null }, reactions: [{ emoji: '☕', userId: 'u3', user: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen' } }, { emoji: '☕', userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Alex Kim' } }] },
+        { id: 'm7', content: 'Yep! All set. I\'ve prepared the demo for the new dashboard features including:\n\n• Real-time activity tracking\n• Redesigned message panel\n• New task board with drag & drop\n\nScreen recording is ready as backup in case the live demo gods are not on our side 😅', createdAt: new Date(_today - 3600_000 * 2.5).toISOString(), editedAt: null, sender: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null }, replyCount: 4 },
+        { id: 'm8', content: 'Here\'s the updated API documentation for the v2 endpoints:\n\n```\nGET  /api/v2/users\nPOST /api/v2/tasks\nPATCH /api/v2/tasks/:id\nDEL  /api/v2/tasks/:id\n```\n\nFull docs are on Confluence. Let me know if anything is missing.', createdAt: new Date(_today - 3600_000 * 2).toISOString(), editedAt: new Date(_today - 3600_000 * 1.8).toISOString(), sender: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null } },
+        { id: 'm8b', content: '[📎 dashboard-mockup.png](https://picsum.photos/seed/bundy-dash/800/450.jpg)', createdAt: new Date(_today - 3600_000 * 1.9).toISOString(), editedAt: null, sender: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null } },
+        { id: 'm8c', content: '[📎 project-assets-v2.zip](https://example.com/files/project-assets-v2.zip)', createdAt: new Date(_today - 3600_000 * 1.85).toISOString(), editedAt: null, sender: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null } },
+        { id: 'm8d', content: 'Found this great article on the architecture pattern we discussed: https://github.com/electron/electron', createdAt: new Date(_today - 3600_000 * 1.7).toISOString(), editedAt: null, sender: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null } },
+        { id: 'm9', content: 'Deployed v2.3.1 to production. All health checks passing ✅\n\nZero downtime this time — the blue-green deployment strategy is working perfectly.', createdAt: new Date(_today - 3600_000).toISOString(), editedAt: null, sender: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null }, reactions: [{ emoji: '🚀', userId: 'u2', user: { id: 'u2', username: 'john.doe', alias: 'John' } }, { emoji: '🎉', userId: 'u3', user: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen' } }, { emoji: '🚀', userId: 'u6', user: { id: 'u6', username: 'lisa.m', alias: 'Lisa Martinez' } }] },
+        { id: 'm10', content: 'Amazing work team! 🙌 The client demo went perfectly. They loved the new dashboard and especially the real-time features.', createdAt: new Date(_today - 1800_000).toISOString(), editedAt: null, sender: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null } },
+        { id: 'm11', content: 'Great to hear! Drinks are on me tonight 🍕🎉', createdAt: new Date(_today - 900_000).toISOString(), editedAt: null, sender: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null }, reactions: [{ emoji: '🍕', userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Mike Torres' } }, { emoji: '🎉', userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Alex Kim' } }, { emoji: '❤️', userId: 'u6', user: { id: 'u6', username: 'lisa.m', alias: 'Lisa Martinez' } }] },
+      ])
+      // Pre-populate OG cache for demo links
+      ogClientCache.set('https://github.com/electron/electron', {
+        title: 'electron/electron: Build cross-platform desktop apps with JavaScript, HTML, and CSS',
+        description: 'Build cross-platform desktop apps with JavaScript, HTML, and CSS. Electron uses Chromium and Node.js so you can develop with web technologies.',
+        image: 'https://opengraph.githubassets.com/1/electron/electron',
+        siteName: 'GitHub',
+      })
+      return
+    }
+    loadChannels()
+  }, [loadChannels])
 
   // Handle self-leave from ChannelSettingsModal
   useEffect(() => {
@@ -2119,7 +2487,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 
   useEffect(() => {
     if (!selected) return
-    loadMessages(selected)
+    if (!DEMO_MODE) loadMessages(selected)
     // Close thread/pinned panel when switching channels
     setThreadParent(null)
     setThreadMessages([])
@@ -2357,9 +2725,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     return Array.from(map.values())
   }
 
-  const channelList = channels.filter(c => c.type === 'channel')
-  const groupList = channels.filter(c => c.type === 'group')
-  const dmList = channels.filter(c => c.type === 'dm')
+  const sortUnreadFirst = (a: Conversation, b: Conversation) => (b.unread ?? 0) - (a.unread ?? 0)
+  const channelList = channels.filter(c => c.type === 'channel').sort(sortUnreadFirst)
+  const groupList = channels.filter(c => c.type === 'group').sort(sortUnreadFirst)
+  const dmList = channels.filter(c => c.type === 'dm').sort(sortUnreadFirst)
 
   // Render markdown-like content with selectable text
   // renderContent is replaced by module-level renderMessageContent + OG previews per bubble
@@ -2368,7 +2737,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-      {showNewConv && <NewConvModal config={config} auth={auth} onClose={() => setShowNewConv(false)} onCreated={handleCreated} />}
+      {showNewConv && <NewConvModal config={config} auth={auth} initialMode={showNewConv || 'dm'} onClose={() => setShowNewConv(false)} onCreated={handleCreated} />}
       {showSettings && selected && <ChannelSettingsModal config={config} auth={auth} conv={selected} onClose={() => setShowSettings(false)} />}
       {activeCall && (
         <CallWidget
@@ -2394,24 +2763,27 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 
       {/* Conversations sidebar */}
       <div style={{
-        width: 240, borderRight: `1px solid ${C.border}`,
-        background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
+        width: 240, borderRight: `1px solid ${C.separator}`,
+        background: 'rgba(22, 22, 22, 0.5)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
       }}>
-        <div style={{ padding: '14px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Messages</span>
-          <div style={{ display: 'flex', gap: 2 }}>
+        <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, borderBottom: `1px solid ${C.separator}` }}>
+          <span style={{ fontWeight: 700, fontSize: 16, color: C.sidebarTextActive }}>Messages</span>
+          <div style={{ display: 'flex', gap: 4 }}>
             <button onClick={() => { setShowSearch(!showSearch); if (showSearch) { setSearchQuery(''); setSearchResults([]) } }} title="Search messages"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSearch ? C.accent : C.textMuted, padding: 4 }}>
-              <Search size={15} />
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSearch ? C.accent : C.sidebarText, padding: 4, borderRadius: 4 }}>
+              <Search size={16} />
             </button>
-            <button onClick={() => setShowNewConv(true)} title="New Conversation"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4 }}>
-              <Edit2 size={15} />
+            <button onClick={() => setShowNewConv('dm')} title="New Conversation"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 4, borderRadius: 4 }}>
+              <Edit2 size={16} />
             </button>
           </div>
         </div>
         {showSearch && (
-          <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+          <div style={{ padding: '8px 12px 8px', flexShrink: 0 }}>
             <input
               value={searchQuery}
               onChange={e => handleSearchInput(e.target.value)}
@@ -2419,8 +2791,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
               autoFocus
               style={{
                 width: '100%', padding: '6px 10px', fontSize: 12,
-                border: `1px solid ${C.border}`, borderRadius: 8,
-                outline: 'none', background: '#fff', color: C.text,
+                border: `1px solid ${C.separator}`, borderRadius: 8,
+                outline: 'none', background: C.bgInput, color: C.text,
               }}
             />
           </div>
@@ -2442,7 +2814,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     width: '100%', display: 'flex', flexDirection: 'column', gap: 2,
                     padding: '8px 16px', border: 'none', textAlign: 'left',
                     background: 'transparent', cursor: 'pointer',
-                    borderBottom: `1px solid ${C.border}`,
+                    borderBottom: `1px solid ${C.separator}`,
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 600, color: C.accent }}>
@@ -2460,28 +2832,89 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
             </div>
           ) : (
             <>
+          {/* Threads button */}
+          <button
+            onClick={() => { setShowThreadsView(!showThreadsView); if (!showThreadsView) setSelected(null) }}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 16px', border: 'none', textAlign: 'left', cursor: 'pointer',
+              background: showThreadsView
+                ? 'linear-gradient(90deg, rgba(0, 0, 255, 0.22) 0%, rgba(0, 0, 255, 0.12) 50%, rgba(0, 0, 255, 0.08) 100%)'
+                : 'transparent',
+              boxShadow: showThreadsView ? 'inset 0 0 0 1px rgba(0, 0, 255, 0.16)' : 'none',
+              backdropFilter: showThreadsView ? 'blur(12px)' : 'none',
+              WebkitBackdropFilter: showThreadsView ? 'blur(12px)' : 'none',
+              color: showThreadsView ? C.sidebarTextActive : C.sidebarText,
+              fontSize: 14, fontWeight: showThreadsView ? 600 : 500,
+              borderRadius: 0,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <MessageCircle size={16} />
+            <span style={{ flex: 1 }}>Threads</span>
+            {threadActivities.filter(t => t.unread).length > 0 && (
+              <span style={{
+                minWidth: 18, height: 18, borderRadius: 9, padding: '0 5px',
+                background: C.danger, color: '#fff', fontSize: 10, fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {threadActivities.filter(t => t.unread).length}
+              </span>
+            )}
+          </button>
+
           {channelList.length > 0 && (
             <>
-              <div style={{ padding: '6px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Channels</div>
-              {channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
+              <div
+                onMouseEnter={() => setHoveredSection('channels')}
+                onMouseLeave={() => setHoveredSection(null)}
+                style={{ padding: '12px 16px 4px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+              >
+                <ChevronDown size={12} color={C.sidebarText} style={{ transition: 'transform 0.15s ease', transform: collapsedSections.channels ? 'rotate(-90deg)' : 'rotate(0deg)' }} onClick={() => toggleSection('channels')} />
+                <span onClick={() => toggleSection('channels')} style={{ fontSize: 14, fontWeight: 600, color: C.sidebarText, flex: 1 }}>Channels</span>
+                <button onClick={(e) => { e.stopPropagation(); setShowNewConv('channel') }} title="Create channel" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: hoveredSection === 'channels' ? 1 : 0, transition: 'opacity 0.15s ease' }}>
+                  <Plus size={14} />
+                </button>
+              </div>
+              {!collapsedSections.channels && channelList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />)}
             </>
           )}
           {groupList.length > 0 && (
             <>
-              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Groups</div>
-              {groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
+              <div
+                onMouseEnter={() => setHoveredSection('groups')}
+                onMouseLeave={() => setHoveredSection(null)}
+                style={{ padding: '12px 16px 4px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+              >
+                <ChevronDown size={12} color={C.sidebarText} style={{ transition: 'transform 0.15s ease', transform: collapsedSections.groups ? 'rotate(-90deg)' : 'rotate(0deg)' }} onClick={() => toggleSection('groups')} />
+                <span onClick={() => toggleSection('groups')} style={{ fontSize: 14, fontWeight: 600, color: C.sidebarText, flex: 1 }}>Groups</span>
+                <button onClick={(e) => { e.stopPropagation(); setShowNewConv('group') }} title="Create group" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: hoveredSection === 'groups' ? 1 : 0, transition: 'opacity 0.15s ease' }}>
+                  <Plus size={14} />
+                </button>
+              </div>
+              {!collapsedSections.groups && groupList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />)}
             </>
           )}
           {dmList.length > 0 && (
             <>
-              <div style={{ padding: '10px 16px 4px', fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Direct Messages</div>
-              {dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => setSelected(c)} />)}
+              <div
+                onMouseEnter={() => setHoveredSection('dms')}
+                onMouseLeave={() => setHoveredSection(null)}
+                style={{ padding: '12px 16px 4px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+              >
+                <ChevronDown size={12} color={C.sidebarText} style={{ transition: 'transform 0.15s ease', transform: collapsedSections.dms ? 'rotate(-90deg)' : 'rotate(0deg)' }} onClick={() => toggleSection('dms')} />
+                <span onClick={() => toggleSection('dms')} style={{ fontSize: 14, fontWeight: 600, color: C.sidebarText, flex: 1 }}>Direct messages</span>
+                <button onClick={(e) => { e.stopPropagation(); setShowNewConv('dm') }} title="New message" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: hoveredSection === 'dms' ? 1 : 0, transition: 'opacity 0.15s ease' }}>
+                  <Plus size={14} />
+                </button>
+              </div>
+              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />)}
             </>
           )}
           {channels.length === 0 && (
             <div style={{ padding: '20px 16px', color: C.textMuted, fontSize: 12, textAlign: 'center' }}>
               No conversations yet.<br />
-              <button onClick={() => setShowNewConv(true)} style={{ marginTop: 8, background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>+ Start one</button>
+              <button onClick={() => setShowNewConv('dm')} style={{ marginTop: 8, background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>+ Start one</button>
             </div>
           )}
             </>
@@ -2489,93 +2922,260 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
         </div>
       </div>
 
-      {/* Message thread */}
-      {selected ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
-          {/* Header */}
+      {/* Threads Activity View */}
+      {showThreadsView ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden', background: C.contentBg }}>
           <div style={{
-            padding: '10px 16px', borderBottom: `1px solid ${C.border}`,
-            background: C.contentBg, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+            borderBottom: `1px solid ${C.separator}`, background: C.lgBg, flexShrink: 0,
+            padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10,
           }}>
-            {selected.type === 'channel' && <Hash size={16} color={C.textMuted} />}
-            {selected.type === 'group' && <Users size={16} color={C.textMuted} />}
-            {selected.type === 'dm' && <Avatar url={selected.avatar} name={selected.name} size={28} />}
-            <span style={{ fontWeight: 700, fontSize: 14, color: C.text, flex: 1 }}>{selected.name}</span>
-            {/* Call buttons for DMs */}
-            {selected.type === 'dm' && selected.partnerId && (() => {
-              const partner = selected.members.find(m => m.userId === selected.partnerId)
-              const targetUser = {
-                id: selected.partnerId,
-                name: partner?.user.alias ?? partner?.user.username ?? selected.name,
-                avatar: selected.avatar ?? null,
-              }
+            <MessageCircle size={18} color={C.text} />
+            <span style={{ fontWeight: 700, fontSize: 15, color: C.text, flex: 1 }}>Threads</span>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+            {threadActivities.map((thread, i) => {
+              const senderName = thread.parentMessage.sender.alias ?? thread.parentMessage.sender.username
+              const replierName = thread.lastReply.sender.alias ?? thread.lastReply.sender.username
               return (
-                <>
-                  <button onClick={() => setActiveCall({ targetUser, callType: 'audio' })} title="Audio call"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
-                    <Phone size={16} />
+                <div key={thread.id}>
+                  <button
+                    onClick={() => { setShowThreadsView(false); const ch = channels.find(c => c.name === thread.channelName || `#${c.name?.replace('#', '')}` === thread.channelName); if (ch) setSelected(ch) }}
+                    style={{
+                      width: '100%', display: 'flex', flexDirection: 'column', gap: 8,
+                      padding: '14px 20px', border: 'none', textAlign: 'left',
+                      background: 'transparent', cursor: 'pointer',
+                      transition: 'background 0.1s ease',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = C.sidebarHover)}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    {/* Channel label */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {thread.channelType === 'channel' ? <Hash size={12} color={C.textMuted} /> : thread.channelType === 'group' ? <Users size={12} color={C.textMuted} /> : null}
+                      <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted }}>{thread.channelName}</span>
+                    </div>
+
+                    {/* Parent message */}
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <Avatar url={thread.parentMessage.sender.avatarUrl} name={senderName} size={28} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{senderName}</span>
+                        </div>
+                        <div style={{
+                          fontSize: 13, color: C.text, marginTop: 2,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {thread.parentMessage.content}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Reply info */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 38 }}>
+                      <Avatar url={thread.lastReply.sender.avatarUrl} name={replierName} size={18} />
+                      <span style={{ fontSize: 12, color: C.accent, fontWeight: 600 }}>
+                        {thread.replyCount} {thread.replyCount === 1 ? 'reply' : 'replies'}
+                      </span>
+                      <span style={{ fontSize: 11, color: C.textMuted }}>{timeAgo(thread.lastReply.createdAt)}</span>
+                      {thread.unread && (
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, flexShrink: 0 }} />
+                      )}
+                    </div>
+
+                    {/* Last reply preview */}
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', paddingLeft: 38, marginTop: -2 }}>
+                      <span style={{ fontSize: 12, color: C.textMuted }}>
+                        <span style={{ fontWeight: 600, color: C.sidebarText }}>{replierName}:</span>{' '}
+                        {thread.lastReply.content}
+                      </span>
+                    </div>
                   </button>
-                  <button onClick={() => setActiveCall({ targetUser, callType: 'video' })} title="Video call"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
-                    <Video size={16} />
-                  </button>
-                </>
+                  {i < threadActivities.length - 1 && (
+                    <div style={{ height: 1, background: C.separator, margin: '0 20px' }} />
+                  )}
+                </div>
               )
-            })()}
-            {/* Conference call button for channels/groups */}
-            {selected.type !== 'dm' && (() => {
-              const conf = activeConferences[selected.id]
-              const inThisConf = myConference?.channelId === selected.id
-              if (inThisConf) return null // already in this conference, no button needed
-              if (conf && conf.length > 0) {
+            })}
+            {threadActivities.length === 0 && (
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: C.textMuted, fontSize: 13 }}>
+                <MessageCircle size={32} strokeWidth={1} style={{ marginBottom: 8, opacity: 0.5 }} /><br />
+                No threads yet. Reply to a message to start a thread.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : selected ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden', background: C.contentBg }}>
+          {/* Slack-style header */}
+          <div style={{
+            borderBottom: `1px solid ${C.separator}`,
+            background: C.lgBg,
+            flexShrink: 0,
+          }}>
+            {/* Top row: avatar, name, actions */}
+            <div style={{
+              padding: '10px 16px',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              {/* Channel/DM icon + name */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                {selected.type === 'dm' ? (
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    <Avatar url={selected.avatar} name={selected.name} size={28} />
+                    <div style={{
+                      position: 'absolute', bottom: -1, right: -1,
+                      width: 10, height: 10, borderRadius: '50%',
+                      background: C.success, border: `2px solid ${C.lgBg}`,
+                    }} />
+                  </div>
+                ) : selected.type === 'channel' ? (
+                  <Hash size={18} color={C.textMuted} />
+                ) : (
+                  <Users size={18} color={C.textMuted} />
+                )}
+                <span style={{ fontWeight: 700, fontSize: 15, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {selected.name}
+                </span>
+                {selected.type !== 'dm' && selected.members.length > 0 && (
+                  <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>
+                    {selected.members.length} members
+                  </span>
+                )}
+              </div>
+
+              {/* Right action icons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                {/* Phone / Call buttons */}
+                {selected.type === 'dm' && selected.partnerId && (() => {
+                  const partner = selected.members.find(m => m.userId === selected.partnerId)
+                  const targetUser = {
+                    id: selected.partnerId,
+                    name: partner?.user.alias ?? partner?.user.username ?? selected.name,
+                    avatar: selected.avatar ?? null,
+                  }
+                  return (
+                    <>
+                      <button onClick={() => setActiveCall({ targetUser, callType: 'audio' })} title="Audio call"
+                        style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
+                        <Phone size={15} />
+                      </button>
+                      <button onClick={() => setActiveCall({ targetUser, callType: 'video' })} title="Video call"
+                        style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
+                        <Video size={15} />
+                      </button>
+                    </>
+                  )
+                })()}
+
+                {/* Conference call for channels/groups */}
+                {selected.type !== 'dm' && (() => {
+                  const conf = activeConferences[selected.id]
+                  const inThisConf = myConference?.channelId === selected.id
+                  if (inThisConf) return null
+                  if (conf && conf.length > 0) {
+                    return (
+                      <button onClick={async () => {
+                        try {
+                          const res = await fetch(`${config.apiBase}/api/calls`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
+                            body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
+                          })
+                          const data = await res.json()
+                          if (!data.ok) return
+                          setMyConference({ channelId: selected.id, channelName: selected.name, participants: data.participants ?? [] })
+                        } catch {}
+                      }} title={`Join call (${conf.length})`}
+                        style={{ background: C.success, border: 'none', cursor: 'pointer', color: '#fff', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Phone size={13} /> Join ({conf.length})
+                      </button>
+                    )
+                  }
+                  return (
+                    <button onClick={async () => {
+                      try {
+                        const res = await fetch(`${config.apiBase}/api/calls`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
+                          body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
+                        })
+                        const data = await res.json()
+                        if (!data.ok) return
+                        setMyConference({ channelId: selected.id, channelName: selected.name, participants: data.participants ?? [] })
+                      } catch {}
+                    }} title="Start call"
+                      style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
+                      <Phone size={15} />
+                    </button>
+                  )
+                })()}
+
+                {/* Notification / Pin */}
+                <button onClick={() => { setShowPinned(!showPinned); if (!showPinned) loadPinnedMessages() }} title="Pinned messages"
+                  style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: showPinned ? C.accent : C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  onMouseEnter={e => { if (!showPinned) { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text } }}
+                  onMouseLeave={e => { if (!showPinned) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted } }}>
+                  <Pin size={15} />
+                </button>
+
+                {/* Search */}
+                <button onClick={() => { setShowSearch(!showSearch); if (showSearch) { setSearchQuery(''); setSearchResults([]) } }} title="Search messages"
+                  style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: showSearch ? C.accent : C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  onMouseEnter={e => { if (!showSearch) { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text } }}
+                  onMouseLeave={e => { if (!showSearch) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted } }}>
+                  <Search size={15} />
+                </button>
+
+                {/* Settings / more */}
+                {selected.type !== 'dm' && (
+                  <button onClick={() => setShowSettings(true)} title="Channel settings"
+                    style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
+                    <Settings2 size={15} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Tab bar (Slack-style) */}
+            <div style={{ display: 'flex', gap: 0, padding: '0 16px' }}>
+              {[
+                { id: 'messages' as const, label: 'Messages', icon: <MessageSquare size={14} /> },
+                { id: 'pinned' as const, label: 'Pins', icon: <Pin size={14} /> },
+                { id: 'files' as const, label: 'Files', icon: <FolderOpen size={14} /> },
+              ].map(t => {
+                const isActive = t.id === 'messages' ? (!showPinned && !showSharedMedia) : t.id === 'pinned' ? showPinned : showSharedMedia
                 return (
-                  <button onClick={async () => {
-                    try {
-                      const res = await fetch(`${config.apiBase}/api/calls`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
-                        body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
-                      })
-                      const data = await res.json()
-                      if (!data.ok) return
-                      setMyConference({ channelId: selected.id, channelName: selected.name, participants: data.participants ?? [] })
-                    } catch {}
-                  }} title={`Join call (${conf.length})`}
-                    style={{ background: '#22c55e', border: 'none', cursor: 'pointer', color: '#fff', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Phone size={13} /> Join ({conf.length})
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      if (t.id === 'messages') { setShowPinned(false); setShowSharedMedia(false) }
+                      else if (t.id === 'pinned') { setShowPinned(!showPinned); setShowSharedMedia(false); if (!showPinned) loadPinnedMessages() }
+                      else { setShowSharedMedia(!showSharedMedia); setShowPinned(false); if (!showSharedMedia) loadSharedMedia() }
+                    }}
+                    style={{
+                      padding: '8px 14px', background: 'none', border: 'none', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      fontSize: 13, fontWeight: isActive ? 600 : 400,
+                      color: isActive ? C.text : C.textMuted,
+                      borderBottom: `2px solid ${isActive ? C.accent : 'transparent'}`,
+                      marginBottom: -1,
+                      transition: 'color 0.1s, border-color 0.1s',
+                    }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = C.text }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = C.textMuted }}>
+                    {t.icon}
+                    {t.label}
                   </button>
                 )
-              }
-              return (
-                <button onClick={async () => {
-                  try {
-                    const res = await fetch(`${config.apiBase}/api/calls`, {
-                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
-                      body: JSON.stringify({ action: 'conference-join', channelId: selected.id }),
-                    })
-                    const data = await res.json()
-                    if (!data.ok) return
-                    setMyConference({ channelId: selected.id, channelName: selected.name, participants: data.participants ?? [] })
-                  } catch {}
-                }} title="Start call"
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
-                  <Phone size={16} />
-                </button>
-              )
-            })()}
-            {selected.type !== 'dm' && (
-              <button onClick={() => setShowSettings(true)} title="Manage members"
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}>
-                <Settings2 size={16} />
-              </button>
-            )}
-            <button onClick={() => { setShowPinned(!showPinned); if (!showPinned) loadPinnedMessages() }} title="Pinned messages"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showPinned ? C.accent : C.textMuted, padding: 4 }}>
-              <Pin size={16} />
-            </button>
-            <button onClick={() => { setShowSharedMedia(!showSharedMedia); if (!showSharedMedia) loadSharedMedia() }} title="Shared files & links"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSharedMedia ? C.accent : C.textMuted, padding: 4 }}>
-              <FolderOpen size={16} />
-            </button>
+              })}
+            </div>
           </div>
 
           {/* Call in progress banner */}
@@ -2583,12 +3183,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
             const conf = activeConferences[selected.id]
             return (
               <div style={{
-                padding: '8px 16px', background: 'linear-gradient(90deg, #22c55e22, #22c55e11)',
-                borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+                padding: '8px 16px', background: 'linear-gradient(90deg, #43B58122, #43B58111)',
+                borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
               }}>
-                <Phone size={14} color="#22c55e" />
+                <Phone size={14} color="#43B581" />
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#22c55e' }}>Call in progress</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#43B581' }}>Call in progress</span>
                   <span style={{ fontSize: 12, color: C.textMuted }}>·</span>
                   <div style={{ display: 'flex', gap: -4 }}>
                     {conf.slice(0, 5).map(p => (
@@ -2608,7 +3208,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     setMyConference({ channelId: selected.id, channelName: selected.name, participants: data.participants ?? [] })
                   } catch {}
                 }} style={{
-                  background: '#22c55e', border: 'none', cursor: 'pointer', color: '#fff',
+                  background: '#43B581', border: 'none', cursor: 'pointer', color: '#fff',
                   padding: '4px 14px', borderRadius: 12, fontSize: 12, fontWeight: 600,
                 }}>
                   Join
@@ -2624,8 +3224,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
             {hasMore && (
               <button onClick={loadOlderMessages} disabled={loadingMore}
                 style={{
-                  alignSelf: 'center', padding: '6px 16px', borderRadius: 20, border: `1px solid ${C.border}`,
-                  background: C.contentBg, color: C.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  alignSelf: 'center', padding: '6px 16px', borderRadius: 20, border: `1px solid ${C.separator}`,
+                  background: C.lgBg, color: C.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer',
                   marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6,
                 }}>
                 {loadingMore ? <Loader size={12} /> : <ChevronUp size={12} />}
@@ -2639,75 +3239,81 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
             )}
             {messages.map((msg, i) => {
               const isMe = msg.sender.id === auth.userId
-              const showHeader = messages[i - 1]?.sender.id !== msg.sender.id
+              const prevMsg = messages[i - 1]
+              const timeDiff = prevMsg ? new Date(msg.createdAt).getTime() - new Date(prevMsg.createdAt).getTime() : Infinity
+              const showHeader = !prevMsg || prevMsg.sender.id !== msg.sender.id || timeDiff > 5 * 60 * 1000
               const senderName = msg.sender.alias ?? msg.sender.username
-              const isRead = msg.reads?.some(r => r.userId !== auth.userId)
               const isAttachment = /^\[📎\s[^\]]+?\]\(https?:\/\/\S+?\)\s*$/.test(msg.content)
               const plainUrls = isAttachment ? [] : extractUrls(msg.content).filter(u => !isImageUrl(u))
               const isEditing = editingMsgId === msg.id
               const isHovered = hoveredMsgId === msg.id
               const grouped = groupReactions(msg.reactions ?? [])
+              // Date separator
+              const msgDate = new Date(msg.createdAt)
+              const prevDate = prevMsg ? new Date(prevMsg.createdAt) : null
+              const showDateSep = !prevDate || msgDate.toDateString() !== prevDate.toDateString()
+              const todayDate = new Date()
+              const yesterdayDate = new Date(todayDate); yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+              let dateLabel = msgDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+              if (msgDate.toDateString() === todayDate.toDateString()) dateLabel = 'Today'
+              else if (msgDate.toDateString() === yesterdayDate.toDateString()) dateLabel = 'Yesterday'
               return (
-                <div key={msg.id} style={{ marginTop: showHeader ? 10 : 0 }}
-                  onMouseEnter={() => setHoveredMsgId(msg.id)}
-                  onMouseLeave={() => { setHoveredMsgId(null); if (emojiPickerMsgId === msg.id) setEmojiPickerMsgId(null) }}
-                >
+                <div key={msg.id}>
+                  {/* Date separator */}
+                  {showDateSep && (
+                    <div style={{ display: 'flex', alignItems: 'center', padding: '16px 16px 8px', gap: 12 }}>
+                      <div style={{ flex: 1, height: 1, background: C.separator }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.textSecondary, whiteSpace: 'nowrap', padding: '2px 12px', border: `1px solid ${C.separator}`, borderRadius: 12, background: C.lgBg }}>{dateLabel}</span>
+                      <div style={{ flex: 1, height: 1, background: C.separator }} />
+                    </div>
+                  )}
                   {/* Pinned indicator */}
                   {msg.isPinned && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingLeft: isMe ? 0 : 32, marginBottom: 2, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingLeft: 56, marginBottom: 2 }}>
                       <Pin size={10} color={C.accent} />
                       <span style={{ fontSize: 10, color: C.accent, fontWeight: 600 }}>Pinned</span>
                     </div>
                   )}
-                  {showHeader && !isMe && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <Avatar url={msg.sender.avatarUrl} name={senderName} size={24} />
-                      <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{senderName}</span>
-                      <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(msg.createdAt)}</span>
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start', paddingLeft: isMe ? 0 : 32, position: 'relative', alignItems: 'flex-start', gap: 8 }}>
-                    {/* Hover action buttons — left side for own messages */}
-                    {isMe && isHovered && !isEditing && (
-                      <div style={{
-                        display: 'flex', gap: 2, background: C.contentBg,
-                        borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
-                        border: `1px solid ${C.border}`, padding: 2, flexShrink: 0, alignSelf: 'center',
-                      }}>
-                        {!isAttachment && (() => {
-                          const ageMs = Date.now() - new Date(msg.createdAt).getTime()
-                          const canEdit = ageMs < 12 * 60 * 60 * 1000
-                          return canEdit ? (
-                            <button onClick={() => { setEditingMsgId(msg.id); setEditingContent(msg.content) }}
-                              title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                              <Edit2 size={12} />
-                            </button>
-                          ) : null
-                        })()}
-                        <button onClick={() => handleDeleteMessage(msg.id)}
-                          title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.danger, borderRadius: 4 }}>
-                          <Trash2 size={12} />
-                        </button>
-                        <button onClick={() => togglePin(msg.id)}
-                          title={msg.isPinned ? 'Unpin' : 'Pin'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: msg.isPinned ? C.accent : C.textMuted, borderRadius: 4 }}>
-                          <Pin size={12} />
-                        </button>
-                        <button onClick={() => openThread(msg)}
-                          title="Reply in thread" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                          <MessageCircle size={12} />
-                        </button>
-                        <button onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
-                          title="React" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                          <Smile size={12} />
-                        </button>
+                  {/* Message row */}
+                  <div
+                    onMouseEnter={() => setHoveredMsgId(msg.id)}
+                    onMouseLeave={() => { setHoveredMsgId(null); if (emojiPickerMsgId === msg.id) setEmojiPickerMsgId(null) }}
+                    style={{
+                      display: 'flex', padding: showHeader ? '8px 20px 4px' : '1px 20px',
+                      position: 'relative', gap: 8,
+                      background: isHovered ? `${C.text}0a` : 'transparent',
+                      borderTop: isHovered ? `1px solid ${C.text}08` : '1px solid transparent',
+                      borderBottom: isHovered ? `1px solid ${C.text}08` : '1px solid transparent',
+                      marginTop: showHeader ? 0 : -1,
+                    }}
+                  >
+                    {/* Avatar or hover-timestamp spacer */}
+                    {showHeader ? (
+                      <div style={{ width: 36, flexShrink: 0 }}>
+                        <Avatar url={msg.sender.avatarUrl} name={senderName} size={36} />
+                      </div>
+                    ) : (
+                      <div style={{ width: 36, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
+                        {isHovered && (
+                          <span style={{ fontSize: 10, color: C.textMuted, lineHeight: '20px', whiteSpace: 'nowrap' }}>
+                            {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                          </span>
+                        )}
                       </div>
                     )}
-                    <div style={{ maxWidth: '72%' }}>
+                    {/* Content area */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {showHeader && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{senderName}</span>
+                          <span style={{ fontSize: 11, color: C.textMuted }}>
+                            {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                          </span>
+                          {msg.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
+                        </div>
+                      )}
                       {isEditing ? (
-                        <div style={{
-                          padding: '6px 10px', borderRadius: 12,
-                          background: '#fff', border: `2px solid ${C.accent}`,
-                        }}>
+                        <div style={{ padding: '6px 10px', borderRadius: 4, background: C.bgInput, border: `2px solid ${C.accent}` }}>
                           <textarea
                             value={editingContent}
                             onChange={e => setEditingContent(e.target.value)}
@@ -2717,7 +3323,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                             }}
                             autoFocus
                             style={{
-                              width: '100%', minHeight: 36, fontSize: 13, color: C.text,
+                              width: '100%', minHeight: 36, fontSize: 14, color: C.text,
                               background: 'transparent', border: 'none', outline: 'none',
                               resize: 'none', fontFamily: 'inherit',
                             }}
@@ -2732,32 +3338,26 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       ) : isAttachment ? (
                         <InlineAttachment content={msg.content} isMe={isMe} config={config} />
                       ) : (
-                        <div style={{
-                          padding: '8px 12px', borderRadius: 12,
-                          background: isMe ? C.accent : '#fff',
-                          boxShadow: isMe ? `0 2px 8px ${C.accent}44` : '2px 2px 6px #a3b1c6, -2px -2px 6px #ffffff',
-                          color: isMe ? '#fff' : C.text, fontSize: 13,
-                          borderBottomRightRadius: isMe ? 4 : 12,
-                          borderBottomLeftRadius: isMe ? 12 : 4,
-                          wordBreak: 'break-word', overflowWrap: 'break-word',
-                          userSelect: 'text', WebkitUserSelect: 'text',
-                        }}>
-                          {renderMessageContent(msg.content, isMe)}
+                        <div style={{ fontSize: 14, color: C.text, lineHeight: 1.46, wordBreak: 'break-word', overflowWrap: 'break-word', userSelect: 'text', WebkitUserSelect: 'text' }}>
+                          {renderMessageContent(msg.content, false)}
                         </div>
+                      )}
+                      {!isEditing && !showHeader && msg.editedAt && (
+                        <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>
                       )}
                       {plainUrls.map((url, ui) => (
                         <OgPreview key={ui} url={url} config={config} />
                       ))}
-                      {/* Reactions display */}
+                      {/* Reactions */}
                       {grouped.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                           {grouped.map(r => (
                             <button key={r.emoji} onClick={() => toggleReaction(msg.id, r.emoji)}
                               title={r.users.join(', ')}
                               style={{
                                 display: 'flex', alignItems: 'center', gap: 3,
-                                padding: '2px 6px', borderRadius: 10, border: `1px solid ${r.reacted ? C.accent : C.border}`,
-                                background: r.reacted ? C.accentLight : '#f8faff', cursor: 'pointer', fontSize: 12,
+                                padding: '2px 6px', borderRadius: 12, border: `1px solid ${r.reacted ? C.accent : C.separator}`,
+                                background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 12,
                               }}>
                               <span>{r.emoji}</span>
                               <span style={{ fontSize: 10, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
@@ -2765,54 +3365,84 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                           ))}
                         </div>
                       )}
-                      {/* Thread reply count */}
+                      {/* Thread reply count — Slack style */}
                       {(msg.replyCount ?? 0) > 0 && (
                         <button onClick={() => openThread(msg)}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: 4, marginTop: 4,
-                            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                            color: C.accent, fontSize: 11, fontWeight: 600,
-                          }}>
-                          <MessageCircle size={12} />
-                          {msg.replyCount} {msg.replyCount === 1 ? 'reply' : 'replies'}
+                            display: 'flex', alignItems: 'center', gap: 8, marginTop: 6,
+                            background: 'transparent', border: `1px solid transparent`,
+                            cursor: 'pointer', padding: '4px 8px', borderRadius: 6,
+                            width: '100%', transition: 'background 0.15s, border-color 0.15s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.background = C.bgInput; e.currentTarget.style.borderColor = C.separator }}
+                          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent' }}>
+                          <div style={{ width: 20, height: 20, borderRadius: 4, background: C.accent + '22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <MessageCircle size={11} color={C.accent} />
+                          </div>
+                          <span style={{ color: C.accent, fontSize: 12, fontWeight: 700 }}>
+                            {msg.replyCount} {msg.replyCount === 1 ? 'reply' : 'replies'}
+                          </span>
+                          <span style={{ color: C.textMuted, fontSize: 11 }}>View thread</span>
+                          <ChevronRight size={14} color={C.textMuted} style={{ marginLeft: 'auto' }} />
                         </button>
-                      )}
-                      {isMe && (
-                        <div style={{ textAlign: 'right', fontSize: 10, color: C.textMuted, marginTop: 2, userSelect: 'none' }}>
-                          {formatTime(msg.createdAt)}
-                          {isRead ? ' · Read' : ' · Sent'}
-                          {msg.editedAt && ' · Edited'}
-                        </div>
                       )}
                     </div>
-                    {/* Hover action buttons — right side for other people's messages */}
-                    {!isMe && isHovered && !isEditing && (
+                    {/* Hover toolbar — floating top-right, Slack style */}
+                    {isHovered && !isEditing && (
                       <div style={{
-                        display: 'flex', gap: 2, background: C.contentBg,
-                        borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
-                        border: `1px solid ${C.border}`, padding: 2, flexShrink: 0, alignSelf: 'center',
+                        position: 'absolute', top: -16, right: 24,
+                        display: 'flex', gap: 0, background: C.bgInput,
+                        borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+                        border: `1px solid ${C.separator}`, padding: '1px 2px', zIndex: 10,
                       }}>
-                        <button onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
-                          title="React" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                          <Smile size={12} />
-                        </button>
-                        <button onClick={() => openThread(msg)}
-                          title="Reply in thread" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: C.textMuted, borderRadius: 4 }}>
-                          <MessageCircle size={12} />
-                        </button>
-                        <button onClick={() => togglePin(msg.id)}
-                          title={msg.isPinned ? 'Unpin' : 'Pin'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '3px 5px', color: msg.isPinned ? C.accent : C.textMuted, borderRadius: 4 }}>
-                          <Pin size={12} />
-                        </button>
+                        {[{
+                          icon: <Smile size={16} />, title: 'React',
+                          onClick: () => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id),
+                          color: C.textSecondary,
+                        }, {
+                          icon: <MessageCircle size={16} />, title: 'Reply in thread',
+                          onClick: () => openThread(msg),
+                          color: C.textSecondary,
+                        }, {
+                          icon: <CornerDownRight size={16} />, title: 'Forward',
+                          onClick: () => {},
+                          color: C.textSecondary,
+                        }, {
+                          icon: <Pin size={16} />, title: msg.isPinned ? 'Unpin' : 'Pin',
+                          onClick: () => togglePin(msg.id),
+                          color: msg.isPinned ? C.accent : C.textSecondary,
+                        }, ...(isMe ? [{
+                          icon: <Edit2 size={16} />, title: 'Edit',
+                          onClick: () => { setEditingMsgId(msg.id); setEditingContent(msg.content) },
+                          color: C.textSecondary,
+                          show: (Date.now() - new Date(msg.createdAt).getTime()) < 12 * 60 * 60 * 1000,
+                        }, {
+                          icon: <Trash2 size={16} />, title: 'Delete',
+                          onClick: () => handleDeleteMessage(msg.id),
+                          color: C.danger,
+                          show: true,
+                        }] : [])].filter((b: any) => b.show !== false).map((btn: any, bi) => (
+                          <button key={bi} onClick={btn.onClick} title={btn.title}
+                            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${C.text}12` }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+                            style={{
+                              background: 'transparent', border: 'none', cursor: 'pointer',
+                              padding: '5px 7px', color: btn.color, borderRadius: 6,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              transition: 'background 0.1s',
+                            }}>
+                            {btn.icon}
+                          </button>
+                        ))}
                       </div>
                     )}
                     {/* Emoji picker popup */}
                     {emojiPickerMsgId === msg.id && (
                       <div style={{
-                        position: 'absolute', top: -30, ...(isMe ? { right: 8 } : { left: 40 }),
-                        display: 'flex', gap: 4, background: C.contentBg,
-                        borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                        border: `1px solid ${C.border}`, padding: '4px 8px', zIndex: 20,
+                        position: 'absolute', top: -44, right: 24,
+                        display: 'flex', gap: 2, background: C.bgInput,
+                        borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+                        border: `1px solid ${C.separator}`, padding: '4px 6px', zIndex: 20,
                       }}>
                         {QUICK_EMOJIS.map(e => (
                           <button key={e} onClick={() => toggleReaction(msg.id, e)}
@@ -2851,12 +3481,13 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           {/* Thread side panel */}
           {threadParent && (
             <div style={{
-              width: 320, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              width: 320, borderLeft: `1px solid ${C.separator}`, background: C.lgBg,
+              
               display: 'flex', flexDirection: 'column', flexShrink: 0,
             }}>
               {/* Thread header */}
               <div style={{
-                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                padding: '10px 14px', borderBottom: `1px solid ${C.separator}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Thread</span>
@@ -2866,7 +3497,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 </button>
               </div>
               {/* Parent message */}
-              <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, background: '#f8faff' }}>
+              <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.separator}`, background: C.bgInput }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                   <Avatar url={threadParent.sender.avatarUrl} name={threadParent.sender.alias ?? threadParent.sender.username} size={20} />
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{threadParent.sender.alias ?? threadParent.sender.username}</span>
@@ -2902,8 +3533,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                               title={r.users.join(', ')}
                               style={{
                                 display: 'flex', alignItems: 'center', gap: 2,
-                                padding: '1px 5px', borderRadius: 8, border: `1px solid ${r.reacted ? C.accent : C.border}`,
-                                background: r.reacted ? C.accentLight : '#f8faff', cursor: 'pointer', fontSize: 11,
+                                padding: '1px 5px', borderRadius: 8, border: `1px solid ${r.reacted ? C.accent : C.separator}`,
+                                background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 11,
                               }}>
                               <span>{r.emoji}</span>
                               <span style={{ fontSize: 9, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
@@ -2916,7 +3547,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 })}
               </div>
               {/* Thread input */}
-              <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.separator}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
                 <textarea
                   value={threadInput}
                   onChange={e => setThreadInput(e.target.value)}
@@ -2927,15 +3558,15 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                   rows={1}
                   style={{
                     flex: 1, resize: 'none', padding: '8px 10px', fontSize: 12,
-                    border: `1px solid ${C.border}`, borderRadius: 8, outline: 'none',
-                    color: C.text, background: '#fff', minHeight: 32, maxHeight: 80,
+                    border: `1px solid ${C.separator}`, borderRadius: 8, outline: 'none',
+                    color: C.text, background: C.bgInput, minHeight: 32, maxHeight: 80,
                     fontFamily: 'inherit',
                   }}
                 />
                 <button onClick={sendThreadReply} disabled={!threadInput.trim() || sendingThread}
                   style={{
                     padding: '8px 10px', borderRadius: 8, border: 'none',
-                    background: threadInput.trim() ? C.accent : C.contentBg,
+                    background: threadInput.trim() ? C.accent : C.lgBg,
                     color: threadInput.trim() ? '#fff' : C.textMuted,
                     cursor: threadInput.trim() ? 'pointer' : 'default', flexShrink: 0,
                   }}>
@@ -2948,11 +3579,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           {/* Pinned messages side panel */}
           {showPinned && (
             <div style={{
-              width: 300, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              width: 300, borderLeft: `1px solid ${C.separator}`, background: C.lgBg,
+              
               display: 'flex', flexDirection: 'column', flexShrink: 0,
             }}>
               <div style={{
-                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                padding: '10px 14px', borderBottom: `1px solid ${C.separator}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2969,8 +3601,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 )}
                 {pinnedMessages.map(pm => (
                   <div key={pm.id} style={{
-                    padding: '10px 12px', borderRadius: 8, background: '#f8faff',
-                    border: `1px solid ${C.border}`, marginBottom: 8,
+                    padding: '10px 12px', borderRadius: 8, background: C.bgInput,
+                    border: `1px solid ${C.separator}`, marginBottom: 8,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                       <Avatar url={pm.sender.avatarUrl} name={pm.sender.alias ?? pm.sender.username} size={18} />
@@ -2989,11 +3621,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
           {/* Shared media directory panel */}
           {showSharedMedia && (
             <div style={{
-              width: 300, borderLeft: `1px solid ${C.border}`, background: C.contentBg,
+              width: 300, borderLeft: `1px solid ${C.separator}`, background: C.lgBg,
+              
               display: 'flex', flexDirection: 'column', flexShrink: 0,
             }}>
               <div style={{
-                padding: '10px 14px', borderBottom: `1px solid ${C.border}`,
+                padding: '10px 14px', borderBottom: `1px solid ${C.separator}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -3005,7 +3638,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 </button>
               </div>
               {/* Tabs */}
-              <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+              <div style={{ display: 'flex', borderBottom: `1px solid ${C.separator}`, flexShrink: 0 }}>
                 {(['media', 'files', 'links'] as const).map(tab => (
                   <button key={tab} onClick={() => setSharedMediaTab(tab)}
                     style={{
@@ -3030,7 +3663,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                       {sharedMedia.media.map((m, i) => {
                         const fullUrl = `${config.apiBase}${m.url}`
                         return (
-                          <div key={i} onClick={() => window.electronAPI.openExternal(fullUrl)} style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: '#e8edf5', cursor: 'pointer' }}>
+                          <div key={i} onClick={() => window.electronAPI.openExternal(fullUrl)} style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: 'rgba(255, 255, 255, 0.3)', cursor: 'pointer' }}>
                             {m.url.match(/\.(mp4|webm|mov)$/i) ? (
                               <video src={fullUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                             ) : (
@@ -3050,7 +3683,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         <a key={i} href={`${config.apiBase}${f.url}`} target="_blank" rel="noopener noreferrer"
                           style={{
                             display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
-                            borderRadius: 8, border: `1px solid ${C.border}`, textDecoration: 'none',
+                            borderRadius: 8, border: `1px solid ${C.separator}`, textDecoration: 'none',
                           }}>
                           <Paperclip size={14} color={C.textMuted} />
                           <div style={{ flex: 1, overflow: 'hidden' }}>
@@ -3072,7 +3705,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                         <a key={i} href={l.url} target="_blank" rel="noopener noreferrer"
                           style={{
                             display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
-                            borderRadius: 8, border: `1px solid ${C.border}`, textDecoration: 'none',
+                            borderRadius: 8, border: `1px solid ${C.separator}`, textDecoration: 'none',
                           }}>
                           <ExternalLink size={14} color={C.accent} />
                           <div style={{ flex: 1, overflow: 'hidden' }}>
@@ -3107,7 +3740,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted, flexDirection: 'column', gap: 12 }}>
           <MessageSquare size={40} strokeWidth={1} />
           <div style={{ fontSize: 14 }}>Select a conversation</div>
-          <button onClick={() => setShowNewConv(true)}
+          <button onClick={() => setShowNewConv('dm') }
             style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
               ...neu(), border: 'none', cursor: 'pointer', color: C.accent, fontWeight: 600, fontSize: 13,
@@ -3120,73 +3753,107 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
   )
 }
 
-function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void }) {
-  const partnerStatus = conv.type === 'dm' && conv.partnerId
-    ? conv.members.find(m => m.userId === conv.partnerId)?.user?.userStatus ?? null
-    : null
+function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void }) {
+  const [hovered, setHovered] = useState(false)
+  const hasUnread = (conv.unread ?? 0) > 0
+  const isOnlineDm = conv.type === 'dm' && conv.members?.some(m => m.user?.userStatus === 'online')
+  const dmStatus = conv.type === 'dm' ? conv.members?.[0]?.user?.userStatus : null
+  const statusDotColor = dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted
 
   return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', margin: '1px 8px',
+        borderRadius: 6, overflow: 'hidden',
+      }}
+    >
     <button
       onClick={onClick}
+      onMouseEnter={e => { setHovered(true); if (!selected) (e.currentTarget as HTMLButtonElement).style.background = C.sidebarHover }}
+      onMouseLeave={e => { setHovered(false); if (!selected) (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
       style={{
-        width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-        padding: '7px 16px', border: 'none', textAlign: 'left',
-        background: selected ? C.accentLight : 'transparent',
-        cursor: 'pointer', borderLeft: selected ? `3px solid ${C.accent}` : '3px solid transparent',
+        flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+        padding: '5px 10px', border: 'none', textAlign: 'left',
+        background: selected
+          ? 'linear-gradient(90deg, rgba(0, 0, 255, 0.22) 0%, rgba(0, 0, 255, 0.12) 50%, rgba(0, 0, 255, 0.08) 100%)'
+          : 'transparent',
+        boxShadow: selected ? 'inset 0 0 0 1px rgba(0, 0, 255, 0.16)' : 'none',
+        backdropFilter: selected ? 'blur(12px)' : 'none',
+        WebkitBackdropFilter: selected ? 'blur(12px)' : 'none',
+        cursor: 'pointer', borderRadius: 0, minWidth: 0,
       }}
     >
       {conv.type === 'dm' ? (
         <div style={{ position: 'relative', flexShrink: 0 }}>
-          <Avatar url={conv.avatar} name={conv.name} size={28} />
-          {typingUsers.length > 0 && (
-            <span style={{
-              position: 'absolute', bottom: -2, right: -2, width: 10, height: 10,
-              borderRadius: '50%', background: C.accent, border: `2px solid ${C.contentBg}`,
-            }} />
-          )}
+          <Avatar url={conv.avatar} name={conv.name} size={22} />
+          {/* Online status dot */}
+          <div style={{
+            position: 'absolute', bottom: -1, right: -1,
+            width: 9, height: 9, borderRadius: '50%',
+            background: statusDotColor,
+            border: `2px solid ${selected ? '#1e2a3a' : C.lgBg}`,
+          }} />
         </div>
-      ) : (
-        <div style={{
-          width: 28, height: 28, borderRadius: conv.type === 'channel' ? 6 : '50%',
-          background: selected ? C.accent : '#dde3ea',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 12, fontWeight: 700, color: selected ? '#fff' : C.textMuted, flexShrink: 0,
+      ) : conv.type === 'group' ? (
+        <div style={{ position: 'relative', flexShrink: 0, width: 22, height: 22 }}>
+          {/* Stacked avatar for group */}
+          <div style={{ position: 'absolute', top: 0, left: 0, width: 16, height: 16, borderRadius: 4, background: C.bgInput, border: `1.5px solid ${C.lgBg}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 700, color: C.textMuted, zIndex: 1 }}>
+            {(conv.members?.[0]?.user?.alias?.[0] ?? conv.name[0] ?? '?').toUpperCase()}
+          </div>
+          <div style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, borderRadius: 4, background: C.fillSecondary, border: `1.5px solid ${C.lgBg}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 700, color: C.textMuted, zIndex: 2 }}>
+            {(conv.members?.[1]?.user?.alias?.[0] ?? '?').toUpperCase()}
+          </div>
+        </div>
+      ) : null}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+        {conv.type === 'channel' && (
+          <Hash size={14} color={hasUnread ? C.sidebarTextActive : C.sidebarText} style={{ marginRight: 4, flexShrink: 0 }} />
+        )}
+        <span style={{
+          fontSize: 14, fontWeight: hasUnread ? 700 : 400,
+          color: hasUnread || selected ? C.sidebarTextActive : C.sidebarText,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
-          {conv.type === 'channel' ? '#' : (conv.name[0] ?? '?').toUpperCase()}
-        </div>
-      )}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: selected || (conv.unread ?? 0) > 0 ? 600 : 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {conv.name}
-        </div>
-        {partnerStatus && !typingUsers.length ? (
-          <div style={{ fontSize: 10, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.85 }}>
-            {partnerStatus}
-          </div>
-        ) : typingUsers.length > 0 ? (
-          <div style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            typing…
-          </div>
-        ) : conv.lastMessage ? (
-          <div style={{ fontSize: 11, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {conv.lastMessage}
-          </div>
-        ) : null}
+          {conv.type === 'channel' ? conv.name.replace(/^#/, '') : conv.name}
+        </span>
+        {conv.type === 'dm' && dmStatus && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, marginLeft: 6, flexShrink: 0,
+            padding: '1px 6px', borderRadius: 10, letterSpacing: 0.5,
+            background: 'transparent',
+            color: dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted,
+            border: `1px solid ${dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted}`,
+          }}>
+            {dmStatus === 'online' ? 'In' : dmStatus === 'break' ? 'Break' : 'Out'}
+          </span>
+        )}
+        {typingUsers.length > 0 && (
+          <span style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', marginLeft: 6, flexShrink: 0 }}>typing…</span>
+        )}
       </div>
       {hasActiveCall && (
-        <Phone size={13} color="#22c55e" style={{ flexShrink: 0, animation: 'pulse 2s infinite' }} />
+        <Phone size={13} color={C.success} style={{ flexShrink: 0, animation: 'pulse 2s infinite' }} />
       )}
-      {(conv.unread ?? 0) > 0 && !selected && (
+      {hasUnread && !selected && (
         <div style={{
-          minWidth: 18, height: 18, borderRadius: 9, background: isMentioned ? '#f59e0b' : C.accent,
+          minWidth: 18, height: 18, borderRadius: 9,
+          background: isMentioned ? C.danger : C.textMuted,
           color: '#fff', fontSize: 10, fontWeight: 700,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px',
           flexShrink: 0,
         }}>
-          {isMentioned ? '@' : conv.unread}
+          {conv.unread}
         </div>
       )}
+      {/* X close button on hover/selected */}
+      {selected && hovered && onClose && (
+        <button onClick={e => { e.stopPropagation(); onClose() }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 2, flexShrink: 0, display: 'flex', alignItems: 'center', borderRadius: 4 }}>
+          <X size={14} />
+        </button>
+      )}
     </button>
+    </div>
   )
 }
 
@@ -3327,38 +3994,22 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
   }
 
   return (
-    <div
-      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-      style={{
-        padding: '10px 16px 14px', borderTop: `1px solid ${dragOver ? C.accent : C.border}`,
-        background: dragOver ? C.accentLight : C.contentBg, flexShrink: 0, position: 'relative',
-        transition: 'background 0.15s, border-color 0.15s',
-      }}>
-      {/* Drag & drop overlay */}
-      {dragOver && (
-        <div style={{
-          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'rgba(108, 92, 231, 0.08)', borderRadius: 8, zIndex: 30, pointerEvents: 'none',
-        }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: C.accent }}>Drop file to upload</span>
-        </div>
-      )}
-
+    <div style={{ padding: '8px 16px 12px', flexShrink: 0, position: 'relative' }}>
       {/* @mention dropdown */}
       {mentionResults.length > 0 && (
         <div style={{
           position: 'absolute', bottom: '100%', left: 16, right: 16,
-          background: C.white, borderRadius: 10, border: `1px solid ${C.border}`,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.15)', overflow: 'hidden', zIndex: 50,
+          background: C.bgFloating, borderRadius: 8, border: `1px solid ${C.separator}`,
+          boxShadow: C.shadowHigh, overflow: 'hidden', zIndex: 50,
         }}>
           {mentionResults.map(u => (
             <button key={u.id} onClick={() => insertMention(u)}
               style={{
                 width: '100%', display: 'flex', alignItems: 'center', gap: 10,
                 padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
-              }}>
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = C.bgHover)}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
               <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={24} />
               <span style={{ fontSize: 13, color: C.text, fontWeight: 500 }}>{u.alias ?? u.username}</span>
               <span style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</span>
@@ -3367,29 +4018,32 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
         </div>
       )}
 
-      {/* Formatting toolbar */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-        {[
-          { icon: <Bold size={13} />, action: () => wrapSelection('**', '**'), title: 'Bold' },
-          { icon: <Italic size={13} />, action: () => wrapSelection('*', '*'), title: 'Italic' },
-          { icon: <List size={13} />, action: () => insertPrefix('• '), title: 'Bullet list' },
-          { icon: <AtSign size={13} />, action: () => { setInput(input + '@'); setTimeout(() => textareaRef.current?.focus(), 0) }, title: 'Mention' },
-          { icon: <Paperclip size={13} />, action: () => fileRef.current?.click(), title: 'Attach file' },
-        ].map((btn, i) => (
-          <button key={i} onClick={btn.action} title={btn.title}
-            style={{
-              ...neu(),
-              padding: '4px 8px', borderRadius: 6, border: 'none',
-              background: 'transparent', color: C.textMuted, cursor: 'pointer',
-            }}>
-            {btn.icon}
-          </button>
-        ))}
-      </div>
-
       <input ref={fileRef} type="file" hidden onChange={handleFile} />
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+      {/* Slack-style unified composer container */}
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        style={{
+          border: `1px solid ${dragOver ? C.accent : C.fillTertiary}`,
+          borderRadius: 8,
+          background: C.bgSecondary,
+          transition: 'border-color 0.15s',
+          position: 'relative',
+          overflow: 'hidden',
+        }}>
+        {/* Drag & drop overlay */}
+        {dragOver && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(0, 122, 204, 0.08)', zIndex: 30, pointerEvents: 'none',
+          }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.accent }}>Drop file to upload</span>
+          </div>
+        )}
+
+        {/* Textarea area */}
         <textarea
           ref={textareaRef}
           value={input}
@@ -3398,25 +4052,98 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
           placeholder={placeholder}
           rows={1}
           style={{
-            flex: 1, resize: 'none', ...neu(true), padding: '10px 14px',
-            fontSize: 13, color: C.text, border: 'none', outline: 'none',
-            lineHeight: 1.5, minHeight: 38, maxHeight: 120, overflow: 'auto',
-            fontFamily: 'inherit',
+            width: '100%', resize: 'none', padding: '12px 14px 8px',
+            fontSize: 14, color: C.text, border: 'none', outline: 'none',
+            lineHeight: 1.5, minHeight: 40, maxHeight: 120, overflow: 'auto',
+            fontFamily: 'inherit', background: 'transparent', display: 'block',
           }}
         />
-        <button
-          onClick={sendFn}
-          disabled={!input.trim() || sending || uploading}
-          style={{
-            ...neu(), padding: '10px 14px', border: 'none', flexShrink: 0,
-            background: input.trim() ? C.accent : C.contentBg,
-            color: input.trim() ? '#fff' : C.textMuted,
-            cursor: input.trim() ? 'pointer' : 'default',
-            boxShadow: input.trim() ? `0 2px 8px ${C.accent}44` : undefined,
-          }}
-        >
-          {sending ? <Loader size={16} /> : <Send size={16} />}
-        </button>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: C.separator, margin: '0 10px' }} />
+
+        {/* Toolbar row */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '6px 8px', gap: 2 }}>
+          {/* Left toolbar icons */}
+          {[
+            { icon: <Plus size={18} />, action: () => fileRef.current?.click(), title: 'Attach file' },
+            { icon: <Bold size={16} />, action: () => wrapSelection('**', '**'), title: 'Bold' },
+            { icon: <Smile size={16} />, action: () => {}, title: 'Emoji' },
+            { icon: <AtSign size={16} />, action: () => { setInput(input + '@'); setTimeout(() => textareaRef.current?.focus(), 0) }, title: 'Mention' },
+          ].map((btn, i) => (
+            <button key={i} onClick={btn.action} title={btn.title}
+              style={{
+                width: 32, height: 32, borderRadius: 6, border: 'none',
+                background: 'transparent', color: C.textMuted, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background 0.1s, color 0.1s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
+              {btn.icon}
+            </button>
+          ))}
+
+          {/* Separator */}
+          <div style={{ width: 1, height: 20, background: C.separator, margin: '0 4px' }} />
+
+          {[
+            { icon: <Video size={16} />, action: () => {}, title: 'Video' },
+            { icon: <Mic size={16} />, action: () => {}, title: 'Voice' },
+          ].map((btn, i) => (
+            <button key={`extra-${i}`} onClick={btn.action} title={btn.title}
+              style={{
+                width: 32, height: 32, borderRadius: 6, border: 'none',
+                background: 'transparent', color: C.textMuted, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background 0.1s, color 0.1s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
+              {btn.icon}
+            </button>
+          ))}
+
+          {/* Separator */}
+          <div style={{ width: 1, height: 20, background: C.separator, margin: '0 4px' }} />
+
+          {[
+            { icon: <Italic size={16} />, action: () => wrapSelection('*', '*'), title: 'Italic' },
+            { icon: <List size={16} />, action: () => insertPrefix('• '), title: 'Bullet list' },
+          ].map((btn, i) => (
+            <button key={`fmt-${i}`} onClick={btn.action} title={btn.title}
+              style={{
+                width: 32, height: 32, borderRadius: 6, border: 'none',
+                background: 'transparent', color: C.textMuted, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background 0.1s, color 0.1s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
+              {btn.icon}
+            </button>
+          ))}
+
+          {/* Spacer pushes send to the right */}
+          <div style={{ flex: 1 }} />
+
+          {/* Send button */}
+          <button
+            onClick={sendFn}
+            disabled={!input.trim() || sending || uploading}
+            title="Send message"
+            style={{
+              width: 32, height: 32, borderRadius: 6, border: 'none',
+              background: input.trim() ? C.accent : 'transparent',
+              color: input.trim() ? '#fff' : C.textMuted,
+              cursor: input.trim() ? 'pointer' : 'default',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background 0.15s, color 0.15s',
+            }}
+          >
+            {sending ? <Loader size={16} /> : <Send size={16} />}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -3454,12 +4181,12 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: windowMode === 'mini' ? 8 : 14 }}>
       {callDuration !== undefined && (
-        <span style={{ color: '#94a3b8', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginRight: 4 }}>
+        <span style={{ color: '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginRight: 4 }}>
           {formatDuration(callDuration)}
         </span>
       )}
       {participantCount !== undefined && participantCount > 0 && (
-        <span style={{ color: '#94a3b8', fontSize: 11, marginRight: 4 }}>
+        <span style={{ color: '#6b6b6b', fontSize: 11, marginRight: 4 }}>
           <Users size={12} style={{ verticalAlign: 'middle', marginRight: 2 }} />{participantCount}
         </span>
       )}
@@ -3471,7 +4198,7 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
       </button>
       {onToggleScreenShare && windowMode !== 'mini' && (
         <button onClick={onToggleScreenShare} style={btnStyle(!!screenSharing)} title={screenSharing ? 'Stop sharing' : 'Share screen'}>
-          {screenSharing ? <MonitorOff size={iconSize} /> : <Monitor size={iconSize} />}
+          {screenSharing ? <Monitor size={iconSize} /> : <MonitorOff size={iconSize} />}
         </button>
       )}
       {onInvite && windowMode !== 'mini' && (
@@ -3481,9 +4208,9 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
       )}
       {connectionQuality && windowMode !== 'mini' && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: windowMode === 'mini' ? 36 : 48, height: windowMode === 'mini' ? 36 : 48 }} title={`Connection: ${connectionQuality}`}>
-          {connectionQuality === 'good' ? <Wifi size={iconSize} color="#22c55e" /> :
+          {connectionQuality === 'good' ? <Wifi size={iconSize} color="#43B581" /> :
            connectionQuality === 'fair' ? <WifiLow size={iconSize} color="#eab308" /> :
-           connectionQuality === 'poor' ? <WifiZero size={iconSize} color="#ef4444" /> :
+           connectionQuality === 'poor' ? <WifiZero size={iconSize} color="#F04747" /> :
            <WifiOff size={iconSize} color="#6b7280" />}
         </div>
       )}
@@ -3531,6 +4258,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   const [videoActive, setVideoActive] = useState(callType === 'video')
   const [videoOff, setVideoOff] = useState(false)
   const [windowMode, setWindowMode] = useState<'mini' | 'normal' | 'fullscreen'>('normal')
+  const [floatingOnDesktop, setFloatingOnDesktop] = useState(false)
   const [position, setPosition] = useState({ x: window.innerWidth - 320, y: window.innerHeight - 240 })
   const [isDragging, setIsDragging] = useState(false)
   const dragOffset = useRef({ x: 0, y: 0 })
@@ -3558,6 +4286,13 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   const callingAudioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
+    // Demo mode: skip WebRTC, just show the UI
+    if (DEMO_MODE) {
+      setStatus('connected')
+      statusRef.current = 'connected'
+      durationTimer.current = setInterval(() => setCallDuration(d => d + 1), 1000)
+      return () => { if (durationTimer.current) clearInterval(durationTimer.current) }
+    }
     const ctrl = new AbortController()
     listenForSignals(ctrl)
     if (isReceiver) {
@@ -3650,6 +4385,77 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     window.addEventListener('mousemove', onMouseMove)
     return () => { window.removeEventListener('mousemove', onMouseMove); if (hideTimer.current) clearTimeout(hideTimer.current) }
   }, [windowMode])
+
+  // ─── Floating desktop window management ──────────────────────────────
+  const handleSetWindowMode = (mode: 'mini' | 'normal' | 'fullscreen') => {
+    if (mode === 'mini') {
+      // Open a native floating window; keep WebRTC alive here (hidden)
+      const state = {
+        userName: targetUser.name,
+        userAvatar: targetUser.avatar,
+        status,
+        duration: callDuration,
+        muted,
+        videoActive,
+      }
+      if (window.electronAPI?.openCallFloat) {
+        setFloatingOnDesktop(true)
+        window.electronAPI.openCallFloat(state)
+      } else {
+        // Fallback: in-app mini when Electron IPC isn't available (e.g. browser)
+        setPosition({ x: window.innerWidth - 320, y: window.innerHeight - 120 })
+        setWindowMode('mini')
+      }
+    } else {
+      setWindowMode(mode)
+    }
+  }
+
+  // Sync call state to floating window
+  useEffect(() => {
+    if (!floatingOnDesktop) return
+    const state = {
+      userName: targetUser.name,
+      userAvatar: targetUser.avatar,
+      status,
+      duration: callDuration,
+      muted,
+      videoActive,
+    }
+    window.electronAPI?.updateCallFloat?.(state)
+  }, [floatingOnDesktop, status, callDuration, muted, videoActive])
+
+  // Listen for actions from floating window
+  const floatActionsRef = useRef({ toggleMute: () => {}, hangup: () => {} })
+  useEffect(() => {
+    floatActionsRef.current = { toggleMute, hangup }
+  })
+  useEffect(() => {
+    if (!floatingOnDesktop) return
+    if (!window.electronAPI?.onCallFloatAction) return
+    const unsub = window.electronAPI.onCallFloatAction((action) => {
+      const act = (action as { action: string }).action
+      if (act === 'expand') {
+        setFloatingOnDesktop(false)
+        setWindowMode('normal')
+      } else if (act === 'mute' || act === 'unmute') {
+        floatActionsRef.current.toggleMute()
+      } else if (act === 'hangup') {
+        setFloatingOnDesktop(false)
+        window.electronAPI?.closeCallFloat?.()
+        floatActionsRef.current.hangup()
+      }
+    })
+    return unsub
+  }, [floatingOnDesktop])
+
+  // Close floating window when call ends
+  useEffect(() => {
+    if (status === 'ended' && floatingOnDesktop) {
+      setFloatingOnDesktop(false)
+      window.electronAPI?.closeCallFloat?.()
+    }
+  }, [status, floatingOnDesktop])
 
   async function setupPeer(stream: MediaStream) {
     const peerConn = new RTCPeerConnection({
@@ -3857,6 +4663,25 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   }
 
   async function toggleVideo() {
+    if (DEMO_MODE) {
+      if (!videoActive) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+          localStream.current = stream
+          if (localVideo.current) { localVideo.current.srcObject = stream; localVideo.current.play().catch(() => {}) }
+          // Mirror local feed to remote area to simulate a peer with camera
+          if (remoteVideo.current) { remoteVideo.current.srcObject = stream; remoteVideo.current.play().catch(() => {}) }
+          setVideoActive(true); setVideoOff(false); setRemoteHasVideo(true)
+        } catch (err) { console.error('[Demo] camera failed:', err) }
+      } else if (!videoOff) {
+        localStream.current?.getVideoTracks().forEach(t => { t.enabled = false })
+        setVideoOff(true)
+      } else {
+        localStream.current?.getVideoTracks().forEach(t => { t.enabled = true })
+        setVideoOff(false)
+      }
+      return
+    }
     if (!pc.current) return
     if (!videoActive) {
       // Enable video mid-call (request camera, add track, renegotiate)
@@ -3892,6 +4717,33 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   function hangup() { cleanup(true); setStatus('ended'); onEnd() }
 
   async function toggleScreenShare() {
+    if (DEMO_MODE) {
+      if (screenSharing) {
+        // Stop screen share, restore camera stream if active
+        screenShareStream.current?.getTracks().forEach(t => t.stop())
+        screenShareStream.current = null
+        setScreenSharing(false)
+        if (videoActive && !videoOff && localStream.current) {
+          if (remoteVideo.current) { remoteVideo.current.srcObject = localStream.current; remoteVideo.current.play().catch(() => {}) }
+        } else {
+          setRemoteHasVideo(false); setVideoActive(false)
+        }
+      } else {
+        try {
+          const stream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true })
+          screenShareStream.current = stream
+          if (remoteVideo.current) { remoteVideo.current.srcObject = stream; remoteVideo.current.play().catch(() => {}) }
+          setRemoteHasVideo(true); setVideoActive(true); setVideoOff(false); setScreenSharing(true)
+          stream.getVideoTracks()[0].onended = () => {
+            setScreenSharing(false); screenShareStream.current = null
+            if (videoActive && !videoOff && localStream.current) {
+              if (remoteVideo.current) remoteVideo.current.srcObject = localStream.current
+            } else { setRemoteHasVideo(false); setVideoActive(false) }
+          }
+        } catch (err) { console.error('[Demo] screen share failed:', err) }
+      }
+      return
+    }
     if (!pc.current) return
     if (screenSharing) {
       // Stop screen sharing — restore camera or remove video
@@ -3989,23 +4841,23 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   if (screenSources !== null) {
     return (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ background: '#1a1a2e', borderRadius: 16, padding: 24, maxWidth: 560, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
+        <div style={{ background: '#080808', borderRadius: 8, padding: 24, maxWidth: 560, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <span style={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>Share Screen</span>
-            <button onClick={() => setScreenSources(null)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><X size={18} /></button>
+            <button onClick={() => setScreenSources(null)} style={{ background: 'none', border: 'none', color: '#6b6b6b', cursor: 'pointer' }}><X size={18} /></button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
             {screenSources.map(src => (
               <button key={src.id} onClick={() => startScreenShare(src.id)}
-                style={{ background: 'rgba(255,255,255,0.05)', border: '2px solid transparent', borderRadius: 10, padding: 8, cursor: 'pointer', textAlign: 'center', transition: 'border-color 0.1s' }}
-                onMouseEnter={e => (e.currentTarget.style.borderColor = '#6366f1')}
+                style={{ background: 'rgba(255,255,255,0.05)', border: '2px solid transparent', borderRadius: 4, padding: 8, cursor: 'pointer', textAlign: 'center', transition: 'border-color 0.1s' }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = '#007acc')}
                 onMouseLeave={e => (e.currentTarget.style.borderColor = 'transparent')}
               >
                 {src.thumbnail ? (
                   <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 6, display: 'block', marginBottom: 6 }} />
                 ) : (
-                  <div style={{ width: '100%', aspectRatio: '16/9', background: '#0f0f23', borderRadius: 6, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Monitor size={28} color="#6366f1" />
+                  <div style={{ width: '100%', aspectRatio: '16/9', background: C.bgFloating, borderRadius: 6, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Monitor size={28} color="#5865F2" />
                   </div>
                 )}
                 <span style={{ color: '#fff', fontSize: 11, fontWeight: 600, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{src.name}</span>
@@ -4017,13 +4869,23 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     )
   }
 
+  // ─── Floating on desktop — keep WebRTC alive but render nothing visible ──
+  if (floatingOnDesktop) {
+    return (
+      <div style={{ position: 'fixed', left: -9999, top: -9999, width: 0, height: 0, overflow: 'hidden' }}>
+        <video ref={localVideo} autoPlay playsInline muted />
+        <video ref={remoteVideo} autoPlay playsInline />
+      </div>
+    )
+  }
+
   // ─── Mini mode ──────────────────────────────────────────────────────
   if (windowMode === 'mini') {
     return (
       <div style={{
         position: 'fixed', left: position.x, top: position.y, zIndex: 9998,
         width: 300, height: showVideo ? 220 : 100,
-        background: '#1a1a2e', borderRadius: 12,
+        background: '#080808', borderRadius: 12,
         boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden',
         display: 'flex', flexDirection: 'column',
       }}>
@@ -4040,8 +4902,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
           <span style={{ color: '#fff', fontSize: 11, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {targetUser.name}
           </span>
-          <span style={{ color: '#94a3b8', fontSize: 10 }}>
-            {status === 'calling' ? 'Calling…' : status === 'connected' ? '' : 'Ended'}
+          <span style={{ color: '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+            {status === 'calling' ? 'Calling…' : status === 'connected' ? `${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Ended'}
           </span>
         </div>
         {showVideo ? (
@@ -4053,8 +4915,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
             {!remoteHasVideo && (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                 <Avatar url={targetUser.avatar} name={targetUser.name} size={24} />
-                <span style={{ color: '#94a3b8', fontSize: 10 }}>
-                  {status === 'calling' ? 'Calling…' : 'Connected'}
+                <span style={{ color: '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+                  {status === 'calling' ? 'Calling…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
                 </span>
               </div>
             )}
@@ -4068,14 +4930,14 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 0 }}>
             <Avatar url={targetUser.avatar} name={targetUser.name} size={32} />
-            <span style={{ color: '#94a3b8', fontSize: 12 }}>
-              {status === 'calling' ? 'Calling…' : 'Connected'}
+            <span style={{ color: '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+              {status === 'calling' ? 'Calling…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
             </span>
           </div>
         )}
         <div style={{ padding: '6px 10px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
-            videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
+            videoActive={videoActive} windowMode="mini" onSetWindowMode={handleSetWindowMode}
             onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined}
             screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
         </div>
@@ -4113,7 +4975,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
               <div style={{ textAlign: 'center' }}>
                 <Avatar url={targetUser.avatar} name={targetUser.name} size={64} />
                 <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginTop: 8 }}>{targetUser.name}</div>
-                <div style={{ color: '#94a3b8', fontSize: 13 }}>Calling…</div>
+                <div style={{ color: '#6b6b6b', fontSize: 13, marginTop: 8 }}>Calling…</div>
               </div>
             </div>
           )}
@@ -4122,8 +4984,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         <div style={{ textAlign: 'center' }}>
           <Avatar url={targetUser.avatar} name={targetUser.name} size={80} />
           <div style={{ color: '#fff', fontWeight: 700, fontSize: 18, marginTop: 12 }}>{targetUser.name}</div>
-          <div style={{ color: '#94a3b8', fontSize: 13 }}>
-            {status === 'calling' ? 'Calling…' : status === 'connected' ? 'Connected' : 'Call ended'}
+          <div style={{ color: '#6b6b6b', fontSize: 13, marginTop: 8 }}>
+            {status === 'calling' ? 'Calling…' : status === 'connected' ? `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Call ended'}
           </div>
           <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
         </div>
@@ -4131,11 +4993,11 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       {/* Controls */}
       <div style={{
         ...(isFs ? { position: 'absolute' as const, bottom: 30, left: '50%', transform: 'translateX(-50%)', opacity: showControls ? 1 : 0, transition: 'opacity 0.3s' } : {}),
-        padding: '10px 20px', borderRadius: 16, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent',
+        padding: '10px 20px', borderRadius: 8, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent',
       }}>
         <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
-          videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
-          onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined}
+          videoActive={videoActive} windowMode={windowMode} onSetWindowMode={handleSetWindowMode}
+          onHangup={hangup}
           screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
       </div>
     </div>
@@ -4655,9 +5517,9 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     const isSpeaking = speakingPeers.has(id)
     return (
       <div key={id} style={{
-        background: '#0f0f23', borderRadius: 10, overflow: 'hidden', position: 'relative',
+        background: C.bgFloating, borderRadius: 4, overflow: 'hidden', position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0,
-        outline: isSpeaking ? '2px solid #22c55e' : '2px solid transparent',
+        outline: isSpeaking ? '2px solid #43B581' : '2px solid transparent',
         transition: 'outline-color 0.15s',
       }}>
         {stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled ? (
@@ -4683,31 +5545,31 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       <>
         {screenSources && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 480, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div style={{ background: C.bgSecondary, borderRadius: 12, padding: 20, width: 480, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
               <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Choose what to share</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
                 {screenSources.map(src => (
                   <button key={src.id} onClick={() => startScreenShare(src.id)}
-                    style={{ background: '#0f1426', border: '2px solid #334155', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                    style={{ background: '#080808', border: '2px solid #333333', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
                     <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 4, aspectRatio: '16/9', objectFit: 'cover', background: '#000' }} />
-                    <span style={{ color: '#e2e8f0', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
+                    <span style={{ color: '#cccccc', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
                   </button>
                 ))}
               </div>
-              <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+              <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#282828', border: 'none', borderRadius: 8, color: '#cccccc', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
             </div>
           </div>
         )}
         {showInvite && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div style={{ background: C.bgSecondary, borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
               <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Invite to call</div>
               {inviteUsers.length === 0 ? (
-                <div style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
+                <div style={{ color: '#6b6b6b', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
               ) : inviteUsers.map(u => (
-                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #334155' }}>
+                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #333333' }}>
                   <Avatar url={u.avatarUrl ?? null} name={u.alias ?? u.username} size={32} />
-                  <span style={{ flex: 1, color: '#e2e8f0', fontSize: 13 }}>{u.alias ?? u.username}</span>
+                  <span style={{ flex: 1, color: '#cccccc', fontSize: 13 }}>{u.alias ?? u.username}</span>
                   <button onClick={async () => {
                     await fetch(`${config.apiBase}/api/calls`, {
                       method: 'POST',
@@ -4718,13 +5580,13 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
                   }} style={{ background: C.accent, border: 'none', borderRadius: 6, color: '#fff', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Invite</button>
                 </div>
               ))}
-              <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Close</button>
+              <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#282828', border: 'none', borderRadius: 8, color: '#cccccc', cursor: 'pointer', fontSize: 13 }}>Close</button>
             </div>
           </div>
         )}
         <div style={{
           position: 'fixed', left: position.x, top: position.y, zIndex: 9998,
-          width: 300, height: 200, background: '#1a1a2e', borderRadius: 12,
+          width: 300, height: 200, background: '#080808', borderRadius: 12,
           boxShadow: '0 10px 40px rgba(0,0,0,0.5)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
         }}>
           <div onMouseDown={handleDragStart} onDoubleClick={() => setWindowMode('normal')} style={{
@@ -4734,7 +5596,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
             <Move size={10} color="#94a3b8" />
             <Hash size={10} color="#94a3b8" />
             <span style={{ color: '#fff', fontSize: 10, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{channelName}</span>
-            <span style={{ color: '#94a3b8', fontSize: 10 }}><Users size={10} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
+            <span style={{ color: '#6b6b6b', fontSize: 10 }}><Users size={10} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
           </div>
           <div style={{ flex: 1, display: 'grid', gridTemplateColumns: `repeat(${Math.min(gridCols, 2)}, 1fr)`, gap: 2, padding: 2, minHeight: 0 }}>
             {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
@@ -4758,31 +5620,31 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     <>
       {screenSources && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 520, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+          <div style={{ background: C.bgSecondary, borderRadius: 12, padding: 20, width: 520, maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
             <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Choose what to share</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
               {screenSources.map(src => (
                 <button key={src.id} onClick={() => startScreenShare(src.id)}
-                  style={{ background: '#0f1426', border: '2px solid #334155', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                  style={{ background: '#080808', border: '2px solid #333333', borderRadius: 8, cursor: 'pointer', padding: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
                   <img src={src.thumbnail} alt={src.name} style={{ width: '100%', borderRadius: 4, aspectRatio: '16/9', objectFit: 'cover', background: '#000' }} />
-                  <span style={{ color: '#e2e8f0', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
+                  <span style={{ color: '#cccccc', fontSize: 11, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{src.name}</span>
                 </button>
               ))}
             </div>
-            <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
+            <button onClick={() => setScreenSources(null)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#282828', border: 'none', borderRadius: 8, color: '#cccccc', cursor: 'pointer', fontSize: 13 }}>Cancel</button>
           </div>
         </div>
       )}
       {showInvite && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#1e233a', borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+          <div style={{ background: C.bgSecondary, borderRadius: 12, padding: 20, width: 340, maxHeight: '60vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
             <div style={{ fontWeight: 700, color: '#fff', marginBottom: 14, fontSize: 15 }}>Invite to call</div>
             {inviteUsers.length === 0 ? (
-              <div style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
+              <div style={{ color: '#6b6b6b', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>All channel members are already in the call</div>
             ) : inviteUsers.map(u => (
-              <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #334155' }}>
+              <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #333333' }}>
                 <Avatar url={u.avatarUrl ?? null} name={u.alias ?? u.username} size={32} />
-                <span style={{ flex: 1, color: '#e2e8f0', fontSize: 13 }}>{u.alias ?? u.username}</span>
+                <span style={{ flex: 1, color: '#cccccc', fontSize: 13 }}>{u.alias ?? u.username}</span>
                 <button onClick={async () => {
                   await fetch(`${config.apiBase}/api/calls`, {
                     method: 'POST',
@@ -4793,7 +5655,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
                 }} style={{ background: C.accent, border: 'none', borderRadius: 6, color: '#fff', padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Invite</button>
               </div>
             ))}
-            <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#334155', border: 'none', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 13 }}>Close</button>
+            <button onClick={() => setShowInvite(false)} style={{ marginTop: 16, width: '100%', padding: '8px 0', background: '#282828', border: 'none', borderRadius: 8, color: '#cccccc', cursor: 'pointer', fontSize: 13 }}>Close</button>
           </div>
         </div>
       )}
@@ -4805,7 +5667,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <Hash size={16} color="#94a3b8" />
         <span style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>{channelName}</span>
-        <span style={{ color: '#94a3b8', fontSize: 12 }}><Users size={12} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
+        <span style={{ color: '#6b6b6b', fontSize: 12 }}><Users size={12} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
       </div>
       {/* Participant grid */}
       <div style={{
@@ -4820,7 +5682,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
         padding: '16px 0', display: 'flex', justifyContent: 'center', flexShrink: 0,
         ...(isFs ? { opacity: showControls ? 1 : 0, transition: 'opacity 0.3s' } : {}),
       }}>
-        <div style={{ padding: '10px 24px', borderRadius: 16, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent' }}>
+        <div style={{ padding: '10px 24px', borderRadius: 8, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent' }}>
           <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
             onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
@@ -4840,7 +5702,11 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   todo: 'To Do', 'in-progress': 'In Progress', review: 'Review', done: 'Done', blocked: 'Blocked'
 }
 const TASK_STATUS_COLORS: Record<string, string> = {
-  todo: C.textMuted, 'in-progress': C.accent, review: '#8b5cf6', done: C.success, blocked: C.danger
+  todo: C.textMuted, 'in-progress': C.accent, review: '#1a8ad4', done: C.success, blocked: C.danger
+}
+const TASK_STATUS_ICONS: Record<string, React.ReactNode> = {
+  todo: <Circle size={13} />, 'in-progress': <Play size={13} />,
+  done: <Check size={13} />, cancelled: <AlertCircle size={13} />, blocked: <AlertCircle size={13} />,
 }
 const TASK_BOARD_COLS = [
   { key: 'todo', label: 'To Do' },
@@ -4853,7 +5719,7 @@ const PRIORITY_LABELS: Record<string, string> = {
   urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'None'
 }
 const PRIORITY_COLORS: Record<string, string> = {
-  urgent: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#22c55e', none: '#9ca3af'
+  urgent: '#f04747', high: '#007acc', medium: '#007acc', low: '#43B581', none: '#9ca3af'
 }
 
 function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { config: ApiConfig; auth: Auth; pendingTaskId?: string | null; onPendingTaskHandled?: () => void }) {
@@ -4910,7 +5776,50 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
     }
   }, [apiFetch, filter, selectedProjectId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (DEMO_MODE) {
+      const demoProjects: TaskProject[] = [
+        { id: 'p1', name: 'Bundy Web', color: '#007acc', clientName: 'Internal', description: 'Main web application', _count: { tasks: 12 } },
+        { id: 'p2', name: 'Backend API', color: '#43B581', clientName: 'Internal', description: 'REST API services', _count: { tasks: 8 } },
+        { id: 'p3', name: 'Desktop App', color: '#cca700', clientName: 'Internal', description: 'Electron desktop client', _count: { tasks: 6 } },
+        { id: 'p4', name: 'Mobile App', color: '#f04747', clientName: 'Client XYZ', description: 'React Native mobile app', _count: { tasks: 4 } },
+      ]
+      const demoSections: TaskSection[] = [
+        { id: 's1', name: 'Sprint 12', order: 0, projectId: 'p1' },
+        { id: 's2', name: 'Backlog', order: 1, projectId: 'p1' },
+      ]
+      const mkTask = (id: string, title: string, status: string, priority: string, proj: TaskProject, section: TaskSection | null, assignee: string, dueOffset: number): Task => ({
+        id, title, description: null, status, priority,
+        dueDate: new Date(Date.now() + dueOffset * 86_400_000).toISOString(),
+        estimatedHours: Math.ceil(Math.random() * 8),
+        createdBy: 'u1', projectId: proj.id, assigneeId: 'u2',
+        sectionId: section?.id ?? null,
+        project: { id: proj.id, name: proj.name, color: proj.color },
+        section: section ? { id: section.id, name: section.name } : null,
+        assignee: { id: 'u2', username: assignee, alias: assignee.split('.').map(w => w[0].toUpperCase() + w.slice(1)).join(' '), avatarUrl: null },
+        _count: { comments: Math.floor(Math.random() * 6), subtasks: Math.floor(Math.random() * 4) },
+      })
+      setTasks([
+        mkTask('t1', 'Implement dark mode toggle', 'in-progress', 'high', demoProjects[0], demoSections[0], 'john.doe', 1),
+        mkTask('t2', 'Fix sidebar scroll on mobile', 'todo', 'medium', demoProjects[0], demoSections[0], 'sarah.chen', 2),
+        mkTask('t3', 'Add rate limiting to auth endpoints', 'in-progress', 'urgent', demoProjects[1], null, 'alex.k', 0),
+        mkTask('t4', 'Write integration tests for /api/tasks', 'todo', 'medium', demoProjects[1], null, 'john.doe', 3),
+        mkTask('t5', 'Update Electron to v33', 'done', 'low', demoProjects[2], null, 'mike.t', -1),
+        mkTask('t6', 'Screenshot capture optimization', 'in-progress', 'high', demoProjects[2], null, 'john.doe', 2),
+        mkTask('t7', 'Design new onboarding flow', 'todo', 'medium', demoProjects[0], demoSections[1], 'lisa.m', 5),
+        mkTask('t8', 'Migrate database to PostgreSQL 16', 'todo', 'high', demoProjects[1], null, 'alex.k', 7),
+        mkTask('t9', 'Push notification support', 'todo', 'low', demoProjects[3], null, 'sarah.chen', 10),
+        mkTask('t10', 'Fix crash on offline mode', 'done', 'urgent', demoProjects[2], null, 'john.doe', -2),
+        mkTask('t11', 'Add multi-language support', 'todo', 'low', demoProjects[0], demoSections[1], 'lisa.m', 14),
+        mkTask('t12', 'Optimize bundle size', 'in-progress', 'medium', demoProjects[0], demoSections[0], 'mike.t', 3),
+      ])
+      setProjects(demoProjects)
+      setSections(demoSections)
+      setLoading(false)
+      return
+    }
+    load()
+  }, [load])
 
   // Handle pending task from external navigation (e.g. Home panel, chat link)
   useEffect(() => {
@@ -4986,8 +5895,9 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
       {/* Toolbar */}
       <div style={{
-        padding: '10px 20px', borderBottom: `1px solid ${C.border}`,
-        background: C.contentBg, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap',
+        padding: '10px 20px', borderBottom: `1px solid ${C.separator}`,
+        background: C.lgBg, 
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap',
       }}>
         {/* Title + project filter */}
         <span style={{ fontWeight: 700, fontSize: 14, color: C.text, marginRight: 4 }}>Tasks</span>
@@ -5009,8 +5919,8 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
           {showProjectFilter && (
             <div style={{
               position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 50,
-              background: C.contentBg, borderRadius: 10, boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
-              border: `1px solid ${C.border}`, minWidth: 200, padding: 6, maxHeight: 300, overflow: 'auto',
+              background: C.lgBg, borderRadius: 4, boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
+              border: `1px solid ${C.separator}`, minWidth: 200, padding: 6, maxHeight: 300, overflow: 'auto',
             }}>
               <button
                 onClick={() => { setSelectedProjectId(''); setShowProjectFilter(false) }}
@@ -5055,7 +5965,7 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
                   )}
                 </div>
               ))}
-              <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>
+              <div style={{ borderTop: `1px solid ${C.separator}`, marginTop: 4, paddingTop: 4 }}>
                 <button
                   onClick={() => { setShowCreateProject(true); setShowProjectFilter(false) }}
                   style={{
@@ -5070,7 +5980,7 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
           )}
         </div>
 
-        <div style={{ width: 1, height: 20, background: C.border }} />
+        <div style={{ width: 1, height: 20, background: C.separator }} />
 
         {/* Status filters */}
         {(['all', 'mine', 'todo', 'in-progress', 'overdue'] as const).map(f => (
@@ -5078,7 +5988,7 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
             key={f}
             onClick={() => setFilter(f)}
             style={{
-              padding: '4px 10px', borderRadius: 16, border: 'none',
+              padding: '4px 10px', borderRadius: 8, border: 'none',
               background: filter === f ? C.accent : 'transparent',
               color: filter === f ? '#fff' : C.textMuted,
               fontSize: 11, fontWeight: filter === f ? 600 : 400, cursor: 'pointer',
@@ -5106,20 +6016,20 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
         )}
 
         {/* View toggle */}
-        <div style={{ display: 'flex', background: C.cardBg, borderRadius: 8, padding: 2 }}>
+        <div style={{ display: 'flex', background: C.lgBg, borderRadius: 8, padding: 2, border: `1px solid ${C.lgBorderSide}` }}>
           <button onClick={() => setViewMode('list')} style={{
             padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
-            background: viewMode === 'list' ? C.contentBg : 'transparent',
+            background: viewMode === 'list' ? C.lgBg : 'transparent',
             color: viewMode === 'list' ? C.accent : C.textMuted,
-            boxShadow: viewMode === 'list' ? '1px 1px 3px #a3b1c6, -1px -1px 3px #ffffff' : 'none',
+            boxShadow: viewMode === 'list' ? C.lgShadow : 'none',
           }}>
             <LayoutList size={14} />
           </button>
           <button onClick={() => setViewMode('board')} style={{
             padding: '4px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
-            background: viewMode === 'board' ? C.contentBg : 'transparent',
+            background: viewMode === 'board' ? C.lgBg : 'transparent',
             color: viewMode === 'board' ? C.accent : C.textMuted,
-            boxShadow: viewMode === 'board' ? '1px 1px 3px #a3b1c6, -1px -1px 3px #ffffff' : 'none',
+            boxShadow: viewMode === 'board' ? C.lgShadow : 'none',
           }}>
             <LayoutGrid size={14} />
           </button>
@@ -5169,7 +6079,7 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: TASK_STATUS_COLORS[col.key] }} />
                     <span style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{col.label}</span>
                     {colTasks.length > 0 && (
-                      <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, background: C.accentLight, borderRadius: 10, padding: '1px 6px' }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: C.accent, background: C.accentLight, borderRadius: 4, padding: '1px 6px' }}>
                         {colTasks.length}
                       </span>
                     )}
@@ -5181,7 +6091,7 @@ function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: { con
                     onDrop={e => { e.preventDefault(); handleDrop(col.key) }}
                     style={{
                       flex: 1, borderRadius: 12, padding: 6, display: 'flex', flexDirection: 'column', gap: 6,
-                      border: `2px ${isOver ? 'solid' : 'dashed'} ${isOver ? C.accent : C.border}`,
+                      border: `2px ${isOver ? 'solid' : 'dashed'} ${isOver ? C.accent : C.separator}`,
                       background: isOver ? C.accentLight : 'transparent',
                       transition: 'all 0.15s ease',
                       minHeight: 80, overflow: 'auto',
@@ -5371,7 +6281,7 @@ function TaskListGroup({ name, tasks, auth, onOpen, canDropSection, isDropOver, 
       onDragLeave={canDropSection ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave?.() } : undefined}
       onDrop={canDropSection ? (e) => { e.preventDefault(); onDrop?.() } : undefined}
       style={{
-        borderRadius: 10, padding: canDropSection ? 4 : 0,
+        borderRadius: 4, padding: canDropSection ? 4 : 0,
         border: canDropSection ? `2px ${isDropOver ? 'solid' : 'dashed'} ${isDropOver ? C.accent : 'transparent'}` : 'none',
         background: isDropOver ? C.accentLight : 'transparent',
         transition: 'all 0.15s',
@@ -5390,14 +6300,15 @@ function TaskListGroup({ name, tasks, auth, onOpen, canDropSection, isDropOver, 
         <span style={{ fontSize: 10, color: C.textMuted }}>({tasks.length})</span>
       </button>
       {!collapsed && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {tasks.map(task => (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {tasks.map((task, i) => (
             <TaskListRow
               key={task.id} task={task} auth={auth} onOpen={() => onOpen(task.id)}
               draggable={canDropSection}
               onDragStart={() => onDragStartTask?.(task.id)}
               onDragEnd={() => onDragEndTask?.()}
               isDragging={draggingId === task.id}
+              showDivider={i > 0}
             />
           ))}
           {tasks.length === 0 && isDropOver && (
@@ -5411,9 +6322,10 @@ function TaskListGroup({ name, tasks, auth, onOpen, canDropSection, isDropOver, 
 
 // ─── Task List Row ────────────────────────────────────────────────────────────
 
-function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStart, onDragEnd, isDragging }: {
+function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStart, onDragEnd, isDragging, showDivider }: {
   task: Task; auth: Auth; onOpen: () => void
   draggable?: boolean; onDragStart?: () => void; onDragEnd?: () => void; isDragging?: boolean
+  showDivider?: boolean
 }) {
   const isDone = task.status === 'done'
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
@@ -5425,27 +6337,48 @@ function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStar
       onDragStart={canDrag ? (e) => { onDragStart?.(); e.dataTransfer.effectAllowed = 'move' } : undefined}
       onDragEnd={canDrag ? () => onDragEnd?.() : undefined}
       style={{
-        ...neu(), padding: '10px 14px',
-        display: 'flex', alignItems: 'center', gap: 12, cursor: canDrag ? 'grab' : 'pointer',
-        opacity: isDragging ? 0.4 : isDone ? 0.6 : 1,
-        borderLeft: `3px solid ${PRIORITY_COLORS[task.priority] ?? C.border}`,
-        transition: 'opacity 0.15s',
+        padding: '10px 4px',
+        display: 'flex', alignItems: 'center', gap: 10, cursor: canDrag ? 'grab' : 'pointer',
+        opacity: isDragging ? 0.4 : 1,
+        borderTop: showDivider ? `1px solid ${C.separator}` : 'none',
+        transition: 'background 0.12s',
+        borderRadius: 4,
       }}
+      onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+      onMouseLeave={e => { e.currentTarget.style.background = '' }}
     >
-      {/* Status dot */}
-      <span style={{
-        width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-        background: TASK_STATUS_COLORS[task.status] ?? C.textMuted,
-      }} />
+      {/* Status icon */}
+      <div style={{ color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0 }}>
+        {TASK_STATUS_ICONS[task.status] ?? <Circle size={14} />}
+      </div>
 
-      {/* Title */}
-      <span style={{
-        flex: 1, fontSize: 13, fontWeight: 500, color: C.text, minWidth: 0,
-        textDecoration: isDone ? 'line-through' : 'none',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>
-        {task.title}
-      </span>
+      {/* Task info */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 13, fontWeight: 500, color: C.text,
+          textDecoration: isDone ? 'line-through' : 'none',
+          opacity: isDone ? 0.6 : 1,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {task.title}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+          {task.project && (
+            <span style={{
+              fontSize: 11, color: task.project.color || C.textMuted,
+              fontWeight: 500,
+            }}>
+              {task.project.name}
+            </span>
+          )}
+          <span style={{
+            fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+            color: PRIORITY_COLORS[task.priority] ?? C.textMuted,
+          }}>
+            {task.priority}
+          </span>
+        </div>
+      </div>
 
       {/* Due date */}
       {task.dueDate && (
@@ -5470,11 +6403,10 @@ function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStar
         </span>
       )}
 
-      {/* Status badge */}
+      {/* Status label */}
       <span style={{
         fontSize: 10, fontWeight: 600, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted,
-        background: (TASK_STATUS_COLORS[task.status] ?? C.textMuted) + '18',
-        borderRadius: 10, padding: '2px 8px', flexShrink: 0,
+        flexShrink: 0,
       }}>
         {TASK_STATUS_LABELS[task.status] ?? task.status}
       </span>
@@ -5742,8 +6674,9 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
     return (
       <div style={{
         position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
-        background: C.contentBg, borderLeft: `1px solid ${C.border}`,
-        boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
+        background: C.lgBg, 
+        borderLeft: `1px solid ${C.separator}`,
+        boxShadow: '-8px 0 30px rgba(0,0,0,0.08)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
       }}>
         <Loader size={24} color={C.accent} />
@@ -5754,8 +6687,9 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   if (!detail) return (
     <div style={{
       position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
-      background: C.contentBg, borderLeft: `1px solid ${C.border}`,
-      boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
+      background: C.lgBg, 
+      borderLeft: `1px solid ${C.separator}`,
+      boxShadow: '-8px 0 30px rgba(0,0,0,0.08)',
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 50, gap: 12,
     }}>
       <AlertCircle size={32} color={C.danger} strokeWidth={1.5} />
@@ -5770,12 +6704,13 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
   return (
     <div style={{
       position: 'absolute', top: 0, right: 0, bottom: 0, width: '50%', minWidth: 400,
-      background: C.contentBg, borderLeft: `1px solid ${C.border}`,
-      boxShadow: '-8px 0 30px rgba(0,0,0,0.12)',
+      background: C.lgBg, 
+      borderLeft: `1px solid ${C.separator}`,
+      boxShadow: '-8px 0 30px rgba(0,0,0,0.08)',
       display: 'flex', flexDirection: 'column', zIndex: 50,
     }}>
       {/* Header */}
-      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
+      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
         {parentStack.length > 0 ? (
           <button onClick={goBackToParent} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: 4, flexShrink: 0, marginTop: 1, display: 'flex', alignItems: 'center', gap: 2, fontSize: 11 }}
             title="Back to parent task"
@@ -5855,7 +6790,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
       {/* Delete confirmation */}
       {confirmDelete && (
         <div style={{
-          padding: '10px 16px', background: '#fef2f2', borderBottom: `1px solid ${C.danger}33`,
+          padding: '10px 16px', background: C.bgInput, borderBottom: `1px solid ${C.danger}33`,
           display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
         }}>
           <span style={{ fontSize: 12, color: C.danger, flex: 1 }}>Delete this task permanently?</span>
@@ -5863,13 +6798,13 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
             padding: '4px 12px', borderRadius: 6, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1
           }}>{deleting ? 'Deleting…' : 'Delete'}</button>
           <button onClick={() => setConfirmDelete(false)} style={{
-            padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer'
+            padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 12, cursor: 'pointer'
           }}>Cancel</button>
         </div>
       )}
 
       {/* Tabs */}
-      <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+      <div style={{ display: 'flex', borderBottom: `1px solid ${C.separator}`, flexShrink: 0 }}>
         {([
           { key: 'detail' as const, label: 'Details', icon: <AlignLeft size={12} /> },
           { key: 'comments' as const, label: `Comments (${comments.length + comments.reduce((n, c) => n + (c.replies?.length ?? 0), 0)})`, icon: <MessageSquare size={12} /> },
@@ -5904,9 +6839,9 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                   <button key={s} onClick={() => patchTask({ status: s }, 'status')} disabled={savingField === 'status'}
                     style={{
                       padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                      background: detail.status === s ? TASK_STATUS_COLORS[s] : C.contentBg,
+                      background: detail.status === s ? TASK_STATUS_COLORS[s] : C.lgBg,
                       color: detail.status === s ? '#fff' : C.textMuted,
-                      boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                      boxShadow: detail.status === s ? `0 2px 6px ${TASK_STATUS_COLORS[s]}44` : C.lgShadow,
                       transition: 'all 0.15s',
                     }}>
                     {l}
@@ -5924,9 +6859,9 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                     style={{
                       padding: '4px 10px', borderRadius: 12, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
                       display: 'flex', alignItems: 'center', gap: 4,
-                      background: detail.priority === p ? PRIORITY_COLORS[p] : C.contentBg,
+                      background: detail.priority === p ? PRIORITY_COLORS[p] : C.lgBg,
                       color: detail.priority === p ? '#fff' : C.textMuted,
-                      boxShadow: detail.priority === p ? `0 2px 6px ${PRIORITY_COLORS[p]}44` : '2px 2px 4px #a3b1c6, -2px -2px 4px #ffffff',
+                      boxShadow: detail.priority === p ? `0 2px 6px ${PRIORITY_COLORS[p]}44` : C.lgShadow,
                       transition: 'all 0.15s',
                     }}>
                     <Flag size={9} /> {l}
@@ -5957,7 +6892,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                       padding: '4px 12px', borderRadius: 6, border: 'none', background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer'
                     }}>Save</button>
                     <button onClick={() => { setEditDesc(detail.description ?? ''); setEditingDesc(false) }} style={{
-                      padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 11, cursor: 'pointer'
+                      padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 11, cursor: 'pointer'
                     }}>Cancel</button>
                   </div>
                 </div>
@@ -5972,12 +6907,12 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                     setEditingDesc(true)
                   }
                 }}
-                  style={{ fontSize: 13, color: C.text, lineHeight: 1.6, cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}
+                  style={{ fontSize: 13, color: C.text, lineHeight: 1.6, cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 4 }}
                   dangerouslySetInnerHTML={{ __html: linkifyText(detail.description) }}
                 />
               ) : (
                 <div onClick={() => setEditingDesc(true)}
-                  style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 10 }}>
+                  style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 4 }}>
                   Click to add description…
                 </div>
               )}
@@ -6144,7 +7079,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                 {(detail.multiAssignees ?? []).map(({ user: u }) => (
                   <div key={u.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 5, ...neu(), padding: '4px 8px', borderRadius: 16,
+                    display: 'flex', alignItems: 'center', gap: 5, ...neu(), padding: '4px 8px', borderRadius: 8,
                   }}>
                     <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={18} />
                     <span style={{ fontSize: 11, color: C.text }}>{u.alias ?? u.username}</span>
@@ -6188,7 +7123,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                         onClick={(e) => { e.stopPropagation(); toggleSubtask(sub.id, sub.status) }}
                         style={{
                           width: 16, height: 16, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
-                          border: `2px solid ${subDone ? C.success : C.border}`,
+                          border: `2px solid ${subDone ? C.success : C.separator}`,
                           background: subDone ? C.success : 'transparent',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}
@@ -6299,7 +7234,7 @@ function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, 
                     </div>
                     {/* Thread replies */}
                     {(c.replies ?? []).length > 0 && (
-                      <div style={{ marginLeft: 38, marginTop: 6, borderLeft: `2px solid ${C.border}`, paddingLeft: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ marginLeft: 38, marginTop: 6, borderLeft: `2px solid ${C.separator}`, paddingLeft: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                         {c.replies!.map(r => {
                           const rIsImage = r.attachmentName && r.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(r.attachmentName)
                           return (
@@ -6577,13 +7512,13 @@ function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, 
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
       WebkitAppRegion: 'no-drag',
     } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
         width: 480, maxHeight: '85vh', overflow: 'auto',
-        background: C.contentBg, borderRadius: 14,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+        ...neu(), padding: 24,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>New Task</span>
@@ -6669,7 +7604,7 @@ function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, 
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{
-            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
           }}>Cancel</button>
           <button onClick={handleCreate} disabled={saving || !title.trim()} style={{
             padding: '8px 20px', borderRadius: 8, border: 'none',
@@ -6726,12 +7661,12 @@ function CreateProjectModal({ config, onClose, onCreated }: {
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
       WebkitAppRegion: 'no-drag',
     } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
-        width: 400, background: C.contentBg, borderRadius: 14,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+        width: 400, ...neu(), padding: 24,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>New Project</span>
@@ -6772,7 +7707,7 @@ function CreateProjectModal({ config, onClose, onCreated }: {
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{
-            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+            padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
           }}>Cancel</button>
           <button onClick={handleCreate} disabled={saving || !name.trim()} style={{
             padding: '8px 20px', borderRadius: 8, border: 'none',
@@ -6845,12 +7780,12 @@ function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
       WebkitAppRegion: 'no-drag',
     } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
-        width: 400, background: C.contentBg, borderRadius: 14,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24,
+        width: 400, ...neu(), padding: 24,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontSize: 16, fontWeight: 700, color: C.text }}>Edit Project</span>
@@ -6860,7 +7795,7 @@ function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
         {error && <div style={{ color: C.danger, fontSize: 12, marginBottom: 12 }}>{error}</div>}
 
         {confirmDelete ? (
-          <div style={{ padding: 16, background: '#fef2f2', borderRadius: 10, textAlign: 'center' }}>
+          <div style={{ padding: 16, background: C.bgInput, borderRadius: 4, textAlign: 'center' }}>
             <div style={{ fontSize: 13, color: C.danger, fontWeight: 600, marginBottom: 8 }}>
               Delete "{project.name}" and detach all its tasks?
             </div>
@@ -6872,7 +7807,7 @@ function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
                 padding: '6px 14px', borderRadius: 8, border: 'none', background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: deleting ? 0.5 : 1,
               }}>{deleting ? 'Deleting…' : 'Delete Project'}</button>
               <button onClick={() => setConfirmDelete(false)} style={{
-                padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 12, cursor: 'pointer',
+                padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 12, cursor: 'pointer',
               }}>Cancel</button>
             </div>
           </div>
@@ -6910,12 +7845,12 @@ function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18 }}>
               <button onClick={() => setConfirmDelete(true)} style={{
-                padding: '8px 16px', borderRadius: 8, border: 'none', background: '#fef2f2', color: C.danger, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                padding: '8px 16px', borderRadius: 8, border: 'none', background: C.bgInput, color: C.danger, fontSize: 13, fontWeight: 600, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 5,
               }}><Trash2 size={13} /> Delete</button>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button onClick={onClose} style={{
-                  padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.contentBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
+                  padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.separator}`, background: C.lgBg, color: C.textMuted, fontSize: 13, cursor: 'pointer'
                 }}>Cancel</button>
                 <button onClick={handleSave} disabled={saving || !name.trim()} style={{
                   padding: '8px 20px', borderRadius: 8, border: 'none',
@@ -7007,12 +7942,12 @@ function ManageSectionsModal({ config, projectId, projectName, sections: initial
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
-      background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
       WebkitAppRegion: 'no-drag',
     } as React.CSSProperties} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{
-        width: 420, maxHeight: '80vh', background: C.contentBg, borderRadius: 14,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.2)', padding: 24, display: 'flex', flexDirection: 'column',
+        width: 420, maxHeight: '80vh', ...neu(), padding: 24, display: 'flex', flexDirection: 'column',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexShrink: 0 }}>
           <div>
@@ -7188,6 +8123,8 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
   const [loading, setLoading] = useState(true)
   const [manualReqForm, setManualReqForm] = useState<{ startTime: string; endTime: string; reason: string } | null>(null)
   const [manualSubmitting, setManualSubmitting] = useState(false)
+  const [appsExpanded, setAppsExpanded] = useState(false)
+  const [urlsExpanded, setUrlsExpanded] = useState(false)
   const timelineRef = useRef<HTMLDivElement>(null)
 
   const todayStr = (() => { const n = new Date(Date.now() + 7 * 3600_000); return n.toISOString().slice(0, 10) })()
@@ -7207,7 +8144,60 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
     finally { setLoading(false) }
   }, [config, selectedDate])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    if (DEMO_MODE) {
+      const base = new Date()
+      base.setHours(8, 0, 0, 0)
+      const t = (h: number, m: number) => { const d = new Date(base); d.setHours(h, m, 0, 0); return d.toISOString() }
+      const mkScreenshot = (idx: number, hour: number, min: number, app: string, actPct: number): ActivityScreenshot => ({
+        id: `ss${idx}`, url: '', capturedAt: t(hour, min), displayIndex: idx,
+        topApp: app, mouseActivePct: actPct + Math.floor(Math.random() * 10), keyActivePct: Math.max(0, actPct - 10), activityPct: actPct,
+      })
+      const mkWindow = (hour: number, min: number, mouse: number, key: number): ActivityWindow => ({
+        windowStart: t(hour, min), mouseEvents: mouse, keyEvents: key,
+        activeSeconds: 480, mouseActiveSeconds: Math.round(480 * mouse / 100), keyActiveSeconds: Math.round(480 * key / 100), totalSeconds: 600,
+      })
+      setData({
+        screenshots: [
+          mkScreenshot(0, 8, 10, 'VS Code', 85), mkScreenshot(1, 8, 20, 'VS Code', 78),
+          mkScreenshot(2, 8, 30, 'Chrome', 65), mkScreenshot(3, 8, 40, 'VS Code', 90),
+          mkScreenshot(4, 8, 50, 'Terminal', 72), mkScreenshot(5, 9, 0, 'VS Code', 88),
+          mkScreenshot(6, 9, 10, 'Figma', 55), mkScreenshot(7, 9, 20, 'VS Code', 82),
+          mkScreenshot(8, 9, 30, 'Chrome', 60), mkScreenshot(9, 9, 40, 'Slack', 45),
+          mkScreenshot(10, 10, 0, 'VS Code', 92), mkScreenshot(11, 10, 10, 'VS Code', 87),
+          mkScreenshot(12, 10, 40, 'VS Code', 80), mkScreenshot(13, 10, 50, 'Chrome', 58),
+          mkScreenshot(14, 11, 0, 'VS Code', 91), mkScreenshot(15, 11, 10, 'Terminal', 75),
+        ],
+        activity: [
+          mkWindow(8, 10, 80, 70), mkWindow(8, 20, 75, 65), mkWindow(8, 30, 60, 50),
+          mkWindow(8, 40, 88, 82), mkWindow(8, 50, 70, 60), mkWindow(9, 0, 85, 78),
+          mkWindow(9, 10, 50, 40), mkWindow(9, 20, 80, 72), mkWindow(9, 30, 55, 48),
+          mkWindow(9, 40, 42, 35), mkWindow(10, 0, 90, 85), mkWindow(10, 10, 85, 80),
+          mkWindow(10, 40, 78, 70), mkWindow(10, 50, 55, 45), mkWindow(11, 0, 88, 82),
+          mkWindow(11, 10, 72, 65),
+        ],
+        topApps: [
+          { name: 'VS Code', seconds: 12600 }, { name: 'Chrome', seconds: 3600 },
+          { name: 'Terminal', seconds: 2400 }, { name: 'Figma', seconds: 1800 },
+          { name: 'Slack', seconds: 1200 }, { name: 'Finder', seconds: 600 },
+        ],
+        topUrls: [
+          { name: 'github.com', seconds: 2400 }, { name: 'stackoverflow.com', seconds: 1200 },
+          { name: 'localhost:3000', seconds: 3600 }, { name: 'figma.com', seconds: 1800 },
+        ],
+        timeLogs: [
+          { action: 'CHECK_IN', timestamp: t(8, 0) },
+          { action: 'BREAK', timestamp: t(10, 20) },
+          { action: 'BACK', timestamp: t(10, 35) },
+        ],
+        manualRequests: [],
+        stats: { activityPercent: 74, mousePercent: 68, keyPercent: 62, mouseEvents: 14520, keyEvents: 8340, totalTrackedMinutes: 195 },
+      })
+      setLoading(false)
+      return
+    }
+    loadData()
+  }, [loadData])
 
   // Auto-scroll timeline to end
   useEffect(() => {
@@ -7278,7 +8268,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button onClick={() => changeDate(-1)} style={{
-            background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px',
+            background: 'none', border: `1px solid ${C.separator}`, borderRadius: 6, padding: '4px 8px',
             cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center',
           }}>
             <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} />
@@ -7287,13 +8277,13 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
             type="date" value={selectedDate} max={todayStr}
             onChange={e => setSelectedDate(e.target.value)}
             style={{
-              background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '6px 10px',
+              background: C.materialBg, border: `1px solid ${C.separator}`, borderRadius: 8, padding: '6px 10px',
               fontSize: 13, fontWeight: 600, color: C.text, outline: 'none',
             }}
           />
           <button onClick={() => changeDate(1)} disabled={isToday} style={{
-            background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 8px',
-            cursor: isToday ? 'default' : 'pointer', color: isToday ? C.border : C.text,
+            background: 'none', border: `1px solid ${C.separator}`, borderRadius: 6, padding: '4px 8px',
+            cursor: isToday ? 'default' : 'pointer', color: isToday ? C.separator : C.text,
             display: 'flex', alignItems: 'center', opacity: isToday ? 0.4 : 1,
           }}>
             <ChevronRight size={14} />
@@ -7335,13 +8325,13 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
 
           {/* Work/Break summary */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div style={{ ...card(), textAlign: 'center', padding: '12px 8px' }}>
-              <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Work Time</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>{formatMs(workMs)}</div>
+            <div style={{ ...card(), textAlign: 'center', padding: '24px 8px' }}>
+              <div style={{ fontSize: 12, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Work Time</div>
+              <div style={{ fontSize: 40, fontWeight: 700, color: C.success, fontVariantNumeric: 'tabular-nums' }}>{formatMs(workMs)}</div>
             </div>
-            <div style={{ ...card(), textAlign: 'center', padding: '12px 8px' }}>
-              <div style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Break Time</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>{formatMs(breakMs)}</div>
+            <div style={{ ...card(), textAlign: 'center', padding: '24px 8px' }}>
+              <div style={{ fontSize: 12, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Break Time</div>
+              <div style={{ fontSize: 40, fontWeight: 700, color: C.warning, fontVariantNumeric: 'tabular-nums' }}>{formatMs(breakMs)}</div>
             </div>
           </div>
 
@@ -7380,7 +8370,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
                       <div key={i} onClick={() => isToday ? openManualRequest(slot) : undefined}
                         style={{
                           flexShrink: 0, width: 48, height: 64, borderRadius: 6,
-                          background: '#f1f5f9', border: '1px dashed #cbd5e1',
+                          background: C.bgInput, border: `1px dashed ${C.fillSecondary}`,
                           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                           cursor: isToday ? 'pointer' : 'default', opacity: 0.6,
                         }}>
@@ -7394,7 +8384,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
                   return (
                     <div key={i} style={{
                       flexShrink: 0, width: 48, height: 64, borderRadius: 6,
-                      border: `1px solid ${C.border}`, background: C.cardBg,
+                      border: `1px solid ${C.separator}`, background: C.materialBg,
                       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
                       overflow: 'hidden', position: 'relative',
                     }}>
@@ -7420,49 +8410,62 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
             </div>
           )}
 
-          {/* Top Apps */}
-          {data.topApps.length > 0 && (
-            <div style={{ ...card() }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top Apps</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {data.topApps.map((app, i) => {
-                  const pct = Math.round((app.seconds / data.topApps[0].seconds) * 100)
-                  return (
-                    <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{app.name}</span>
-                        <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(app.seconds / 60)}m</span>
-                      </div>
-                      <div style={{ height: 4, borderRadius: 2, background: '#e2e8f0', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.accent }} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
+          {/* Top Apps + Top URLs side by side */}
+          {(data.topApps.length > 0 || data.topUrls.length > 0) && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {data.topApps.length > 0 && (
+                <div style={{ ...card() }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top Apps</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(appsExpanded ? data.topApps : data.topApps.slice(0, 5)).map((app, i) => {
+                      const pct = Math.round((app.seconds / data.topApps[0].seconds) * 100)
+                      return (
+                        <div key={i}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                            <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{app.name}</span>
+                            <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(app.seconds / 60)}m</span>
+                          </div>
+                          <div style={{ height: 4, borderRadius: 2, background: '#282828', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.accent }} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {data.topApps.length > 5 && (
+                    <button onClick={() => setAppsExpanded(v => !v)} style={{ marginTop: 10, background: 'none', border: 'none', color: C.accent, fontSize: 11, cursor: 'pointer', padding: 0 }}>
+                      {appsExpanded ? 'Show less' : `Show ${data.topApps.length - 5} more`}
+                    </button>
+                  )}
+                </div>
+              )}
 
-          {/* Top URLs */}
-          {data.topUrls.length > 0 && (
-            <div style={{ ...card() }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top URLs</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {data.topUrls.map((url, i) => {
-                  const pct = Math.round((url.seconds / data.topUrls[0].seconds) * 100)
-                  return (
-                    <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{url.name}</span>
-                        <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(url.seconds / 60)}m</span>
-                      </div>
-                      <div style={{ height: 4, borderRadius: 2, background: '#e2e8f0', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.success }} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+              {data.topUrls.length > 0 && (
+                <div style={{ ...card() }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 12 }}>Top URLs</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(urlsExpanded ? data.topUrls : data.topUrls.slice(0, 5)).map((url, i) => {
+                      const pct = Math.round((url.seconds / data.topUrls[0].seconds) * 100)
+                      return (
+                        <div key={i}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                            <span style={{ fontSize: 12, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{url.name}</span>
+                            <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>{Math.round(url.seconds / 60)}m</span>
+                          </div>
+                          <div style={{ height: 4, borderRadius: 2, background: '#282828', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: C.success }} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {data.topUrls.length > 5 && (
+                    <button onClick={() => setUrlsExpanded(v => !v)} style={{ marginTop: 10, background: 'none', border: 'none', color: C.accent, fontSize: 11, cursor: 'pointer', padding: 0 }}>
+                      {urlsExpanded ? 'Show less' : `Show ${data.topUrls.length - 5} more`}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -7500,7 +8503,7 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
       {/* Manual Time Request Modal */}
       {manualReqForm && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex',
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex',
           alignItems: 'center', justifyContent: 'center', zIndex: 100,
         }} onClick={() => setManualReqForm(null)}>
           <div style={{ ...card(), width: 340, maxWidth: '90%' }} onClick={e => e.stopPropagation()}>
@@ -7510,26 +8513,26 @@ function ActivityPanel({ config }: { config: ApiConfig }) {
                 <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>Start Time</label>
                 <input type="datetime-local" value={manualReqForm.startTime.slice(0, 16)}
                   onChange={e => setManualReqForm(f => f ? { ...f, startTime: new Date(e.target.value).toISOString() } : f)}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text }}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.separator}`, fontSize: 13, background: C.bgInput, color: C.text }}
                 />
               </div>
               <div>
                 <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>End Time</label>
                 <input type="datetime-local" value={manualReqForm.endTime.slice(0, 16)}
                   onChange={e => setManualReqForm(f => f ? { ...f, endTime: new Date(e.target.value).toISOString() } : f)}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text }}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.separator}`, fontSize: 13, background: C.bgInput, color: C.text }}
                 />
               </div>
               <div>
                 <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, display: 'block', marginBottom: 4 }}>Reason</label>
                 <textarea value={manualReqForm.reason} placeholder="Why do you need this time logged?"
                   onChange={e => setManualReqForm(f => f ? { ...f, reason: e.target.value } : f)}
-                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: C.white, color: C.text, minHeight: 60, resize: 'vertical' }}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.separator}`, fontSize: 13, background: C.bgInput, color: C.text, minHeight: 60, resize: 'vertical' }}
                 />
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => setManualReqForm(null)} style={{
-                  flex: 1, padding: '8px 0', borderRadius: 8, border: `1px solid ${C.border}`,
+                  flex: 1, padding: '8px 0', borderRadius: 8, border: `1px solid ${C.separator}`,
                   background: 'transparent', color: C.text, fontSize: 13, fontWeight: 600, cursor: 'pointer',
                 }}>Cancel</button>
                 <button onClick={submitManualRequest} disabled={manualSubmitting || !manualReqForm.reason.trim()} style={{
@@ -7564,6 +8567,17 @@ function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConf
   const avatarFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    if (DEMO_MODE) {
+      setPerms({ screen: 'granted', accessibility: true })
+      setVersion('2.3.1')
+      setUpdateState(null)
+      setProfile({ alias: 'John Doe', email: 'john.doe@company.com', phone: '+1 (555) 123-4567', userStatus: 'Working on dashboard redesign', avatarUrl: null })
+      setEditAlias('John Doe')
+      setEditEmail('john.doe@company.com')
+      setEditPhone('+1 (555) 123-4567')
+      setEditStatus('Working on dashboard redesign')
+      return
+    }
     window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
     window.electronAPI.getVersion().then(setVersion).catch(() => {})
     window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
@@ -7775,6 +8789,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const answerSdpRef = useRef<string | null>(null)
 
   useEffect(() => {
+    if (DEMO_MODE) return
     const unsub = window.electronAPI.onOnlineState((state) => setIsOnline(state.isOnline))
     // Listen for update availability to show Settings badge
     const unsubUpdate = window.electronAPI.onUpdateAvailable(() => setUpdateBadge(true))
@@ -7830,7 +8845,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   }, [])
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.contentBg }}>
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: `radial-gradient(ellipse 80% 50% at 50% 0%, rgba(0, 0, 255, 0.25) 0%, transparent 60%), radial-gradient(ellipse 100% 30% at 50% 0%, rgba(100, 160, 255, 0.10) 0%, transparent 50%), radial-gradient(ellipse 60% 40% at 0% 100%, rgba(0, 0, 255, 0.1) 0%, transparent 60%), ${C.bgTertiary}`, WebkitAppRegion: 'drag' } as React.CSSProperties}>
       <Sidebar tab={tab} setTab={(t) => { setTab(t); if (t === 'settings') setUpdateBadge(false) }} auth={auth} onLogout={onLogout} isOnline={isOnline} messageBadge={messageBadge} messageMention={messageMention} updateBadge={updateBadge} />
 
       {/* Incoming call overlay — visible on any tab */}
@@ -7858,15 +8873,32 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         />
       )}
 
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <div style={{
+        flex: 1, overflow: 'hidden', position: 'relative',
+        display: 'flex', flexDirection: 'column',
+        paddingRight: 5, paddingBottom: 5,
+        WebkitAppRegion: 'no-drag',
+      } as React.CSSProperties}>
+        {/* Titlebar drag strip above the content card */}
+        <div style={{ height: 38, flexShrink: 0, WebkitAppRegion: 'drag' } as React.CSSProperties} />
+
+        {/* Content card — rounded corners like Slack */}
+        <div style={{
+          flex: 1, overflow: 'hidden', position: 'relative',
+          background: 'rgba(22, 22, 22, 0.5)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          borderRadius: 10,
+          border: `1px solid rgba(255, 255, 255, 0.08)`,
+        }}>
         {!isOnline && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
-            background: '#fef3c7', borderBottom: `1px solid #fcd34d`,
+            background: C.bgInput, borderBottom: `1px solid ${C.warning}`,
             padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
           }}>
             <WifiOff size={14} color={C.warning} />
-            <span style={{ color: '#92400e', fontWeight: 500 }}>Server unreachable — changes will sync when reconnected</span>
+            <span style={{ color: C.warning, fontWeight: 500 }}>Server unreachable — changes will sync when reconnected</span>
           </div>
         )}
 
@@ -7909,6 +8941,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             <Loader size={24} />
           </div>
         )}
+        </div>
       </div>
     </div>
   )

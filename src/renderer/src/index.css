@@ -7,19 +7,57 @@
 }
 
 :root {
-  --bg: #e0e5ec;
-  --text: #2d3748;
-  --text-muted: #718096;
-  --shadow-light: #ffffff;
-  --shadow-dark: #a3b1c6;
-  --accent: #667eea;
-  --accent-hover: #5a6fd6;
-  --success: #48bb78;
-  --warning: #ed8936;
-  --danger: #fc8181;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  /* ─── Backgrounds (layered dark surfaces) ─── */
+  --bg-tertiary: #0e0e0e;
+  --bg-secondary: #161616;
+  --bg-primary: #1c1c1c;
+  --bg-floating: #080808;
+  --bg-input: #282828;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.08);
+
+  /* ─── Text ─── */
+  --text: #cccccc;
+  --text-secondary: #9d9d9d;
+  --text-tertiary: #6b6b6b;
+  --text-muted: #6b6b6b;
+  --text-on-accent: #ffffff;
+
+  /* ─── Accent & status ─── */
+  --accent: #007acc;
+  --accent-hover: #1a8ad4;
+  --accent-light: rgba(0, 122, 204, 0.18);
+  --success: #43B581;
+  --success-light: rgba(67, 181, 129, 0.18);
+  --warning: #cca700;
+  --warning-light: rgba(204, 167, 0, 0.18);
+  --danger: #f04747;
+  --danger-light: rgba(240, 71, 71, 0.18);
+
+  /* ─── Borders & separators ─── */
+  --separator: rgba(255, 255, 255, 0.06);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  /* ─── Fills (input/recessed areas) ─── */
+  --fill-tertiary: #282828;
+  --fill-secondary: #333333;
+  --fill-primary: #3e3e3e;
+
+  /* ─── Radii ─── */
+  --radius-lg: 12px;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --radius-full: 9999px;
+
+  /* ─── Shadows ─── */
+  --shadow-low: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-med: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-high: 0 8px 16px rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 16px 64px rgba(0, 0, 0, 0.7);
+
+  /* ─── Font ─── */
+  --font: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
 html,
@@ -31,11 +69,10 @@ body,
 
 body {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
-  background: var(--bg);
+  background: var(--bg-tertiary);
   -webkit-font-smoothing: antialiased;
-  /* Allow drag on transparent areas */
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -46,17 +83,112 @@ textarea, input {
   -webkit-app-region: no-drag;
 }
 
-/* Neumorphic base */
-.neu-raised {
-  background: var(--bg);
+/* ═══════════════════════════════════════════════════════════════════════════
+   Surfaces — flat solid panels
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.surface {
+  background: var(--bg-secondary);
   border-radius: var(--radius);
-  box-shadow: 4px 4px 10px var(--shadow-dark), -4px -4px 10px var(--shadow-light);
 }
 
+.surface-floating {
+  background: var(--bg-floating);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+}
+
+/* ─── Primary button ─── */
+.btn-primary,
+.liquid-glass-tinted {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.17s ease, box-shadow 0.17s ease;
+}
+
+.btn-primary:hover,
+.liquid-glass-tinted:hover {
+  background: #1a8ad4;
+  box-shadow: 0 0 12px rgba(0, 122, 204, 0.3);
+}
+
+.btn-primary:active,
+.liquid-glass-tinted:active {
+  background: #006bb3;
+}
+
+/* ─── Secondary button ─── */
+.btn-secondary,
+.liquid-glass-btn {
+  background: var(--bg-hover);
+  color: var(--text);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease;
+}
+
+.btn-secondary:hover,
+.liquid-glass-btn:hover {
+  background: var(--bg-active);
+}
+
+/* ─── Ghost / tertiary button ─── */
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease, color 0.17s ease;
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+/* ─── Input field ─── */
+.input-field,
+.glass-inset,
 .neu-inset {
-  background: var(--bg);
+  background: var(--bg-input);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.input-field:focus-within,
+.glass-inset:focus-within {
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.4);
+}
+
+/* ─── Legacy class aliases (map old glass classes to new flat surfaces) ─── */
+.liquid-glass,
+.liquid-glass-lg,
+.liquid-glass-clear,
+.glass,
+.glass-lg {
+  background: var(--bg-secondary);
   border-radius: var(--radius);
-  box-shadow: inset 4px 4px 8px var(--shadow-dark), inset -4px -4px 8px var(--shadow-light);
+}
+
+.glass-button,
+.neu-raised {
+  background: var(--bg-hover);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease;
+}
+
+.glass-button:hover,
+.neu-raised:hover {
+  background: var(--bg-active);
 }
 
 button,
@@ -68,13 +200,31 @@ a {
 button {
   cursor: pointer;
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 input {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 14px;
   outline: none;
   border: none;
   background: transparent;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
 }
