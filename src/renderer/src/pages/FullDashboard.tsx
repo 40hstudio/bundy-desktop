@@ -8,15 +8,15 @@ import {
   Layers, Settings2,
   UserPlus, AtSign, Paperclip, Video, Phone, VideoOff,
   MicOff, PhoneOff, Edit2, X,
-  Bold, Italic, List, ExternalLink, FileText, PhoneIncoming,
+  Bold, Italic, List, ExternalLink, FileText,
   Mic, Maximize2, Minimize2, Move, Search,
   Flag, GitBranch, Calendar, Clock, FolderPlus,
   LayoutList, LayoutGrid, Filter, ChevronRight, AlignLeft,
   Copy, Link, CornerDownRight, Image,
   Smile, Pin, MessageCircle, ChevronUp,
-  Monitor, MonitorOff, UserPlus2, Wifi, WifiLow, WifiZero,
+  Monitor, UserPlus2, Wifi, WifiLow, WifiZero,
   LogIn, LogOut as LogOutIcon, FolderOpen, ChevronDown,
-  Headphones, Bell, Download
+  Headphones, HeadphoneOff, Bell, Download
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -1728,17 +1728,12 @@ function IncomingCallOverlay({ payload, onAccept, onReject }: {
 
   return (
     <div style={{
-      position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+      position: 'fixed', bottom: 24, right: 24, zIndex: 10002,
       ...neu(), padding: '16px 20px',
       display: 'flex', alignItems: 'center', gap: 14, minWidth: 280,
       animation: 'slideIn 0.2s ease-out',
     }}>
-      <div style={{
-        width: 44, height: 44, borderRadius: '50%', background: C.accentLight,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-      }}>
-        <PhoneIncoming size={20} color={C.accent} />
-      </div>
+      <Avatar url={payload.fromAvatar} name={payload.fromName} size={44} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>{payload.callType === 'video' ? 'Video call' : 'Audio call'}</div>
         <div style={{ fontSize: 14, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{payload.fromName}</div>
@@ -2002,6 +1997,9 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
     participants: Array<{ id: string; name: string; avatar: string | null }>
   } | null>(null)
 
+  // Users currently in 1:1 calls (for DM call activity indicator)
+  const [usersInCall, setUsersInCall] = useState<Set<string>>(new Set())
+
   // When parent accepts an incoming call, open the CallWidget in answer mode
   const acceptedCallRef = useRef<IncomingCallPayload | null | undefined>(null)
   useEffect(() => {
@@ -2054,12 +2052,25 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
     window.addEventListener('bundy-conference-left', onConfLeft)
     window.addEventListener('bundy-conference-ended', onConfEnded)
     window.addEventListener('bundy-conference-invite', onConfInvite)
+
+    // Call activity tracking (users in 1:1 calls)
+    const onCallActivity = (e: Event) => {
+      const { userId, inCall } = (e as CustomEvent<{ userId: string; inCall: boolean }>).detail
+      setUsersInCall(prev => {
+        const next = new Set(prev)
+        if (inCall) next.add(userId); else next.delete(userId)
+        return next
+      })
+    }
+    window.addEventListener('bundy-call-activity', onCallActivity)
+
     return () => {
       window.removeEventListener('bundy-active-conferences', onActiveConfs)
       window.removeEventListener('bundy-conference-joined', onConfJoined)
       window.removeEventListener('bundy-conference-left', onConfLeft)
       window.removeEventListener('bundy-conference-ended', onConfEnded)
       window.removeEventListener('bundy-conference-invite', onConfInvite)
+      window.removeEventListener('bundy-call-activity', onCallActivity)
     }
   }, [])
 
@@ -2466,8 +2477,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                 window.dispatchEvent(new CustomEvent('bundy-conference-mute', { detail: payload }))
               } else if (ev === 'conference-invite') {
                 window.dispatchEvent(new CustomEvent('bundy-conference-invite', { detail: payload }))
+              } else if (ev === 'call-reaction') {
+                window.dispatchEvent(new CustomEvent('bundy-call-reaction', { detail: payload }))
+              } else if (ev === 'conference-reaction') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-reaction', { detail: payload }))
               } else if (ev === 'active-conferences') {
                 window.dispatchEvent(new CustomEvent('bundy-active-conferences', { detail: payload }))
+              } else if (ev === 'call-activity') {
+                window.dispatchEvent(new CustomEvent('bundy-call-activity', { detail: payload }))
               }
             } catch { /* ignore parse errors */ }
           }
@@ -2496,6 +2513,34 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
       Notification.requestPermission()
     }
   }, [])
+
+  // Listen for missed call events — insert system message into the relevant DM conversation
+  useEffect(() => {
+    function onMissedCall(e: Event) {
+      const { userId, userName, callType, reason } = (e as CustomEvent<{ userId: string; userName: string; callType: string; reason: string }>).detail
+      // Find the DM conversation with this user
+      const dmConv = channels.find(c => c.type === 'dm' && c.partnerId === userId)
+      if (!dmConv) return
+      const label = reason === 'declined' ? 'Declined Call' : 'Missed Call'
+      const icon = callType === 'video' ? '📹' : '📞'
+      const systemMsg: ChatMessage = {
+        id: `missed-${Date.now()}`,
+        content: `${icon} **${label}** — ${callType === 'video' ? 'Video' : 'Audio'} call with ${userName}`,
+        createdAt: new Date().toISOString(),
+        editedAt: null,
+        sender: { id: 'system', username: 'System', alias: 'System', avatarUrl: null },
+        reads: [], reactions: [],
+        parentMessageId: null, replyCount: 0,
+        isPinned: false, pinnedAt: null, pinnedBy: null,
+      }
+      // Only insert if this DM is currently selected
+      if (selected?.id === dmConv.id) {
+        setMessages(prev => [...prev, systemMsg])
+      }
+    }
+    window.addEventListener('bundy-missed-call', onMissedCall)
+    return () => window.removeEventListener('bundy-missed-call', onMissedCall)
+  }, [channels, selected])
 
   useEffect(() => {
     if (DEMO_MODE) {
@@ -3093,7 +3138,11 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   <Plus size={14} />
                 </button>
               </div>
-              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />)}
+              {!collapsedSections.dms && dmList.map(c => {
+                const partnerId = c.partnerId
+                const partnerInCall = !!(partnerId && (usersInCall.has(partnerId) || Object.values(activeConferences).some(ps => ps.some(p => p.id === partnerId))))
+                return <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
+              })}
             </>
           )}
           {channels.length === 0 && (
@@ -4432,10 +4481,54 @@ function MessageInput({ placeholder, config, channelId, onTyping, input, setInpu
 
 // ─── Call UI ─────────────────────────────────────────────────────────────────
 
+// ─── EmojiReactionPicker (quick emoji reactions during calls) ─────────────────
+
+const CALL_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👏']
+
+function EmojiReactionPicker({ onReaction, iconSize, btnStyle }: {
+  onReaction: (emoji: string) => void; iconSize: number
+  btnStyle: (active: boolean) => React.CSSProperties
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button onClick={() => setOpen(!open)} style={btnStyle(false)} title="Send reaction">
+        <Smile size={iconSize} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+          background: '#1e1f22', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
+          padding: 6, display: 'flex', gap: 2, marginBottom: 8, zIndex: 9999,
+        }}>
+          {CALL_EMOJIS.map(e => (
+            <button key={e} onClick={() => { onReaction(e); setOpen(false) }}
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, padding: '4px 6px', borderRadius: 4 }}
+              onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
+              onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'transparent' }}>
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── CallControls (shared between CallWidget + ConferenceWidget) ────────────
 
-function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActive, windowMode, onSetWindowMode, onHangup, participantCount, callDuration, screenSharing, onToggleScreenShare, onInvite, connectionQuality }: {
+function CallControls({ muted, onToggleMute, deafened, onToggleDeafen, videoOff, onToggleVideo, videoActive, windowMode, onSetWindowMode, onHangup, participantCount, callDuration, screenSharing, onToggleScreenShare, onInvite, connectionQuality, onSwitchAudioInput, onSwitchAudioOutput, onSwitchVideoInput, localSpeaking, noiseSuppression, onToggleNoiseSuppression, backgroundBlur, onToggleBackgroundBlur, onReaction, pushToTalk, onTogglePushToTalk }: {
   muted: boolean; onToggleMute: () => void
+  deafened?: boolean; onToggleDeafen?: () => void
   videoOff: boolean; onToggleVideo: () => void
   videoActive: boolean
   windowMode: 'mini' | 'normal' | 'fullscreen'
@@ -4446,61 +4539,275 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
   screenSharing?: boolean; onToggleScreenShare?: () => void
   onInvite?: () => void
   connectionQuality?: 'good' | 'fair' | 'poor' | 'disconnected'
+  onSwitchAudioInput?: (deviceId: string) => void
+  onSwitchAudioOutput?: (deviceId: string) => void
+  onSwitchVideoInput?: (deviceId: string) => void
+  localSpeaking?: boolean
+  noiseSuppression?: boolean; onToggleNoiseSuppression?: () => void
+  backgroundBlur?: boolean; onToggleBackgroundBlur?: () => void
+  onReaction?: (emoji: string) => void
+  pushToTalk?: boolean; onTogglePushToTalk?: () => void
 }) {
+  const [deviceMenu, setDeviceMenu] = useState<'mic' | 'camera' | null>(null)
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const deviceMenuRef = useRef<HTMLDivElement>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
+  const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
+  const [showSpeakerList, setShowSpeakerList] = useState(false)
+
+  useEffect(() => {
+    if (!deviceMenu) return
+    const h = (e: MouseEvent) => { if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) setDeviceMenu(null) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [deviceMenu])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    const h = (e: MouseEvent) => { if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) { setSettingsOpen(false); setShowSpeakerList(false) } }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [settingsOpen])
+
+  const openDeviceMenu = async (kind: 'mic' | 'camera') => {
+    setSettingsOpen(false)
+    if (deviceMenu === kind) { setDeviceMenu(null); return }
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices()
+      const kindMap = { mic: 'audioinput', camera: 'videoinput' } as const
+      setDevices(all.filter(d => d.kind === kindMap[kind] && d.deviceId))
+      setDeviceMenu(kind)
+    } catch { setDeviceMenu(null) }
+  }
+
+  const loadSpeakerDevices = async () => {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices()
+      setSpeakerDevices(all.filter(d => d.kind === 'audiooutput' && d.deviceId))
+      setShowSpeakerList(!showSpeakerList)
+    } catch {}
+  }
+
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60)
     const sec = s % 60
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
-  const btnStyle = (active: boolean): React.CSSProperties => ({
-    width: windowMode === 'mini' ? 36 : 48, height: windowMode === 'mini' ? 36 : 48,
+  const btnStyle = (active: boolean, activeColor?: string): React.CSSProperties => ({
+    width: isMini ? 32 : 40, height: isMini ? 32 : 40,
     borderRadius: '50%', border: 'none', cursor: 'pointer',
-    background: active ? C.danger : 'rgba(255,255,255,0.15)',
+    background: active ? (activeColor || '#ed4245') : 'rgba(255,255,255,0.1)',
     color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    transition: 'background 0.15s',
+  })
+  const chevronStyle: React.CSSProperties = {
+    width: 16, height: 20, border: 'none', cursor: 'pointer', padding: 0,
+    background: 'rgba(255,255,255,0.08)', color: '#aaa', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', borderRadius: 4, marginLeft: -4,
+  }
+  const settingsItemStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+    background: 'transparent', border: 'none', color: '#ddd', fontSize: 13,
+    cursor: 'pointer', width: '100%', textAlign: 'left',
+  }
+  const deviceMenuStyle: React.CSSProperties = {
+    position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+    background: '#1e1f22', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
+    padding: '4px 0', minWidth: 220, maxWidth: 300, marginBottom: 8, zIndex: 9999,
+  }
+  const deviceItemStyle = (isDefault?: boolean): React.CSSProperties => ({
+    padding: '8px 12px', cursor: 'pointer', fontSize: 12, color: isDefault ? '#43B581' : '#ddd',
+    display: 'flex', alignItems: 'center', gap: 8, background: 'transparent',
+    border: 'none', width: '100%', textAlign: 'left',
   })
   const iconSize = windowMode === 'mini' ? 16 : 20
+  const isMini = windowMode === 'mini'
+
+  const renderDeviceMenu = (kind: 'mic' | 'camera') => {
+    if (deviceMenu !== kind || isMini) return null
+    const onSelect = kind === 'mic' ? onSwitchAudioInput : onSwitchVideoInput
+    if (!onSelect) return null
+    return (
+      <div ref={deviceMenuRef} style={deviceMenuStyle}>
+        <div style={{ padding: '6px 12px', fontSize: 11, color: '#888', fontWeight: 600, textTransform: 'uppercase' }}>
+          {kind === 'mic' ? 'Input Device' : 'Camera'}
+        </div>
+        {devices.map(d => (
+          <button key={d.deviceId} style={deviceItemStyle(d.deviceId === 'default')}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+            onClick={() => { onSelect(d.deviceId); setDeviceMenu(null) }}>
+            {d.label || `${kind === 'mic' ? 'Microphone' : 'Camera'} ${d.deviceId.slice(0, 5)}`}
+          </button>
+        ))}
+        {devices.length === 0 && <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>No devices found</div>}
+      </div>
+    )
+  }
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: windowMode === 'mini' ? 8 : 14 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: isMini ? 6 : 8 }}>
       {callDuration !== undefined && (
-        <span style={{ color: '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginRight: 4 }}>
+        <span style={{ color: '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums', marginRight: 2 }}>
           {formatDuration(callDuration)}
         </span>
       )}
       {participantCount !== undefined && participantCount > 0 && (
-        <span style={{ color: '#6b6b6b', fontSize: 11, marginRight: 4 }}>
+        <span style={{ color: '#6b6b6b', fontSize: 11, marginRight: 2 }}>
           <Users size={12} style={{ verticalAlign: 'middle', marginRight: 2 }} />{participantCount}
         </span>
       )}
-      <button onClick={onToggleMute} style={btnStyle(muted)} title={muted ? 'Unmute' : 'Mute'}>
-        {muted ? <MicOff size={iconSize} /> : <Mic size={iconSize} />}
-      </button>
-      <button onClick={onToggleVideo} style={btnStyle(videoOff && videoActive)} title={videoActive ? (videoOff ? 'Turn on camera' : 'Turn off camera') : 'Start video'}>
-        {videoActive && !videoOff ? <Video size={iconSize} /> : <VideoOff size={iconSize} />}
-      </button>
-      {onToggleScreenShare && windowMode !== 'mini' && (
-        <button onClick={onToggleScreenShare} style={btnStyle(!!screenSharing)} title={screenSharing ? 'Stop sharing' : 'Share screen'}>
-          {screenSharing ? <Monitor size={iconSize} /> : <MonitorOff size={iconSize} />}
+      {/* Mic + device picker */}
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+        <button onClick={onToggleMute} style={{
+          ...btnStyle(muted),
+          boxShadow: localSpeaking && !muted ? '0 0 0 3px #43B581' : 'none',
+          transition: 'box-shadow 0.15s ease, background 0.15s',
+        }} title={muted ? 'Unmute' : 'Mute'}>
+          {muted ? <MicOff size={iconSize} /> : <Mic size={iconSize} />}
+        </button>
+        {!isMini && onSwitchAudioInput && (
+          <button onClick={() => openDeviceMenu('mic')} style={chevronStyle} title="Select microphone">
+            <ChevronUp size={10} />
+          </button>
+        )}
+        {renderDeviceMenu('mic')}
+      </div>
+      {/* Deafen */}
+      {onToggleDeafen && (
+        <button onClick={onToggleDeafen} style={btnStyle(!!deafened)} title={deafened ? 'Undeafen' : 'Deafen'}>
+          {deafened ? <HeadphoneOff size={iconSize} /> : <Headphones size={iconSize} />}
         </button>
       )}
-      {onInvite && windowMode !== 'mini' && (
+      {/* Video + device picker */}
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+        <button onClick={onToggleVideo} style={btnStyle(videoOff && videoActive)} title={videoActive ? (videoOff ? 'Turn on camera' : 'Turn off camera') : 'Start video'}>
+          {videoActive && !videoOff ? <Video size={iconSize} /> : <VideoOff size={iconSize} />}
+        </button>
+        {!isMini && onSwitchVideoInput && (
+          <button onClick={() => openDeviceMenu('camera')} style={chevronStyle} title="Select camera">
+            <ChevronUp size={10} />
+          </button>
+        )}
+        {renderDeviceMenu('camera')}
+      </div>
+      {/* Screen Share — always Monitor icon, color toggles */}
+      {onToggleScreenShare && !isMini && (
+        <button onClick={onToggleScreenShare} style={btnStyle(!!screenSharing, '#43B581')} title={screenSharing ? 'Stop sharing' : 'Share screen'}>
+          <Monitor size={iconSize} />
+        </button>
+      )}
+      {/* Settings gear (secondary controls popover) */}
+      {!isMini && (
+        <div ref={settingsRef} style={{ position: 'relative' }}>
+          <button onClick={() => { setSettingsOpen(!settingsOpen); setDeviceMenu(null); setShowSpeakerList(false) }}
+            style={btnStyle(false)} title="Call settings">
+            <Settings2 size={iconSize} />
+          </button>
+          {settingsOpen && (
+            <div style={{
+              position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+              background: '#1e1f22', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10,
+              padding: '8px 0', minWidth: 220, marginBottom: 8, zIndex: 9999,
+            }}>
+              {/* Emoji reactions */}
+              {onReaction && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: 2, padding: '4px 8px' }}>
+                    {CALL_EMOJIS.map(e => (
+                      <button key={e} onClick={() => onReaction(e)}
+                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 18, padding: '4px 5px', borderRadius: 4 }}
+                        onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
+                        onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+                </>
+              )}
+              {/* Noise Suppression */}
+              {onToggleNoiseSuppression && (
+                <button onClick={onToggleNoiseSuppression} style={settingsItemStyle}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                  <Activity size={16} color={noiseSuppression ? '#43B581' : '#aaa'} />
+                  <span style={{ flex: 1 }}>Noise Suppression</span>
+                  {noiseSuppression && <Check size={14} color="#43B581" />}
+                </button>
+              )}
+              {/* Background Blur */}
+              {onToggleBackgroundBlur && videoActive && (
+                <button onClick={onToggleBackgroundBlur} style={settingsItemStyle}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                  <Layers size={16} color={backgroundBlur ? '#5865F2' : '#aaa'} />
+                  <span style={{ flex: 1 }}>Background Blur</span>
+                  {backgroundBlur && <Check size={14} color="#5865F2" />}
+                </button>
+              )}
+              {/* Push to Talk */}
+              {onTogglePushToTalk && (
+                <button onClick={onTogglePushToTalk} style={settingsItemStyle}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                  <Mic size={16} color={pushToTalk ? '#5865F2' : '#aaa'} />
+                  <span style={{ flex: 1 }}>Push to Talk <span style={{ color: '#666', fontSize: 11 }}>(V)</span></span>
+                  {pushToTalk && <Check size={14} color="#5865F2" />}
+                </button>
+              )}
+              {/* Speaker / Output Device */}
+              {onSwitchAudioOutput && (
+                <>
+                  <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+                  <button onClick={loadSpeakerDevices} style={settingsItemStyle}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                    <Headphones size={16} color="#aaa" />
+                    <span style={{ flex: 1 }}>Output Device</span>
+                    <ChevronUp size={12} color="#666" style={{ transform: showSpeakerList ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.15s' }} />
+                  </button>
+                  {showSpeakerList && speakerDevices.map(d => (
+                    <button key={d.deviceId} onClick={() => { onSwitchAudioOutput(d.deviceId); setShowSpeakerList(false) }}
+                      style={{ ...settingsItemStyle, paddingLeft: 40, fontSize: 12 }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)' }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                      {d.label || `Speaker ${d.deviceId.slice(0, 5)}`}
+                    </button>
+                  ))}
+                </>
+              )}
+              {/* Connection quality */}
+              {connectionQuality && (
+                <>
+                  <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+                  <div style={{ ...settingsItemStyle, cursor: 'default' }}>
+                    {connectionQuality === 'good' ? <Wifi size={16} color="#43B581" /> :
+                     connectionQuality === 'fair' ? <WifiLow size={16} color="#eab308" /> :
+                     connectionQuality === 'poor' ? <WifiZero size={16} color="#F04747" /> :
+                     <WifiOff size={16} color="#6b7280" />}
+                    <span style={{ flex: 1 }}>Connection: <span style={{ textTransform: 'capitalize', color: connectionQuality === 'good' ? '#43B581' : connectionQuality === 'fair' ? '#eab308' : '#F04747' }}>{connectionQuality}</span></span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Invite (conference only) */}
+      {onInvite && !isMini && (
         <button onClick={onInvite} style={btnStyle(false)} title="Invite to call">
           <UserPlus2 size={iconSize} />
         </button>
       )}
-      {connectionQuality && windowMode !== 'mini' && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: windowMode === 'mini' ? 36 : 48, height: windowMode === 'mini' ? 36 : 48 }} title={`Connection: ${connectionQuality}`}>
-          {connectionQuality === 'good' ? <Wifi size={iconSize} color="#43B581" /> :
-           connectionQuality === 'fair' ? <WifiLow size={iconSize} color="#eab308" /> :
-           connectionQuality === 'poor' ? <WifiZero size={iconSize} color="#F04747" /> :
-           <WifiOff size={iconSize} color="#6b7280" />}
-        </div>
-      )}
-      {windowMode !== 'mini' && (
+      {/* Window mode controls */}
+      {!isMini && (
         <button onClick={() => onSetWindowMode('mini')} style={btnStyle(false)} title="Minimize to mini window">
           <Minimize2 size={iconSize} />
         </button>
       )}
-      {windowMode === 'mini' && (
+      {isMini && (
         <button onClick={() => onSetWindowMode('normal')} style={btnStyle(false)} title="Expand">
           <Maximize2 size={iconSize} />
         </button>
@@ -4515,7 +4822,14 @@ function CallControls({ muted, onToggleMute, videoOff, onToggleVideo, videoActiv
           <Minimize2 size={iconSize} />
         </button>
       )}
-      <button onClick={onHangup} style={{ ...btnStyle(true), background: C.danger }} title="Hang up">
+      {/* Hangup — pill shape like Discord */}
+      <button onClick={onHangup} style={{
+        width: isMini ? 56 : 72, height: isMini ? 32 : 40,
+        borderRadius: 24, border: 'none', cursor: 'pointer',
+        background: '#ed4245', color: '#fff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 0.15s',
+      }} title="Hang up">
         <PhoneOff size={iconSize + 2} />
       </button>
     </div>
@@ -4533,8 +4847,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   bufferedIce?: RTCIceCandidateInit[]
 }) {
   const isReceiver = !!offerSdp
-  const [status, setStatus] = useState<'calling' | 'connected' | 'ended'>('calling')
-  const statusRef = useRef<'calling' | 'connected' | 'ended'>('calling')
+  const [status, setStatus] = useState<'calling' | 'connecting' | 'connected' | 'ended'>('calling')
+  const statusRef = useRef<'calling' | 'connecting' | 'connected' | 'ended'>('calling')
   const [muted, setMuted] = useState(false)
   const [videoActive, setVideoActive] = useState(callType === 'video')
   const [videoOff, setVideoOff] = useState(false)
@@ -4565,6 +4879,20 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   const [remoteHasVideo, setRemoteHasVideo] = useState(false)
   const iceRestartTimer = useRef<NodeJS.Timeout | null>(null)
   const callingAudioRef = useRef<HTMLAudioElement | null>(null)
+  const [deafened, setDeafened] = useState(false)
+  const [remoteSpeaking, setRemoteSpeaking] = useState(false)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const speakingRafRef = useRef<number | null>(null)
+  const [localSpeaking, setLocalSpeaking] = useState(false)
+  const localAnalyserRef = useRef<AnalyserNode | null>(null)
+  const localAudioCtxRef = useRef<AudioContext | null>(null)
+  const localSpeakingRafRef = useRef<number | null>(null)
+  const [noiseSuppression, setNoiseSuppression] = useState(true)
+  const [backgroundBlur, setBackgroundBlur] = useState(false)
+  const [pushToTalk, setPushToTalk] = useState(false)
+  const [callReactions, setCallReactions] = useState<Array<{ id: number; emoji: string }>>([])
+  const reactionIdRef = useRef(0)
 
   useEffect(() => {
     // Demo mode: skip WebRTC, just show the UI
@@ -4595,6 +4923,11 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       timeout = setTimeout(() => {
         if (statusRef.current === 'calling') {
           console.log('[CallWidget] call timeout — no answer after 30s')
+          // Dispatch missed call event for chat system message
+          window.dispatchEvent(new CustomEvent('bundy-missed-call', { detail: { userId: targetUser.id, userName: targetUser.name, callType, reason: 'no-answer' } }))
+          const endAudio = new Audio('sounds/call-end.mp3')
+          endAudio.volume = 0.4
+          endAudio.play().catch(() => {})
           cleanup(true); setStatus('ended'); onEnd()
         }
       }, 30000)
@@ -4602,10 +4935,14 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     return () => { ctrl.abort(); cleanup(false); if (timeout) clearTimeout(timeout); if (durationTimer.current) clearInterval(durationTimer.current); if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current); if (callingAudio) { callingAudio.pause(); callingAudio.src = '' } }
   }, [])
 
-  // Call duration timer
+  // Call duration timer + call-connected sound
   useEffect(() => {
     if (status === 'connected' && !durationTimer.current) {
       durationTimer.current = setInterval(() => setCallDuration(d => d + 1), 1000)
+      // Play connected chime
+      const connAudio = new Audio('sounds/call-connected.mp3')
+      connAudio.volume = 0.4
+      connAudio.play().catch(() => {})
     }
     return () => { if (status === 'ended' && durationTimer.current) { clearInterval(durationTimer.current); durationTimer.current = null } }
   }, [status])
@@ -4780,6 +5117,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     peerConn.oniceconnectionstatechange = () => {
       const state = peerConn.iceConnectionState
       console.log('[CallWidget] iceConnectionState:', state)
+      if (state === 'checking' && statusRef.current === 'calling') { setStatus('connecting'); statusRef.current = 'connecting' }
       if (state === 'connected' || state === 'completed') { setStatus('connected'); statusRef.current = 'connected'; if (callingAudioRef.current) { callingAudioRef.current.pause(); callingAudioRef.current.src = ''; callingAudioRef.current = null } }
       else if (state === 'disconnected') {
         if (iceRestartTimer.current) clearTimeout(iceRestartTimer.current)
@@ -4895,7 +5233,12 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         iceBuffer.current.push(payload.candidate)
       }
     }
-    const onCallEnd = () => { cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000) }
+    const onCallEnd = () => {
+      const endAudio = new Audio('sounds/call-end.mp3')
+      endAudio.volume = 0.4
+      endAudio.play().catch(() => {})
+      cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000)
+    }
     // Mid-call renegotiation (video toggle from remote)
     const onReoffer = async (e: Event) => {
       const payload = (e as CustomEvent<{ sdp?: string; from?: string }>).detail
@@ -4939,6 +5282,10 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     pc.current?.close()
     localStream.current?.getTracks().forEach(t => t.stop())
     screenShareStream.current?.getTracks().forEach(t => t.stop())
+    if (speakingRafRef.current) cancelAnimationFrame(speakingRafRef.current)
+    audioContextRef.current?.close().catch(() => {})
+    if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+    localAudioCtxRef.current?.close().catch(() => {})
     if (sendEnd) {
       fetch(`${config.apiBase}/api/calls`, {
         method: 'POST',
@@ -4952,6 +5299,218 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
     setMuted(!muted)
   }
+
+  function toggleDeafen() {
+    const newDeafened = !deafened
+    setDeafened(newDeafened)
+    // Deafen: mute incoming audio
+    if (remoteAudioEl.current) remoteAudioEl.current.muted = newDeafened
+    // Auto-mute outgoing when deafening
+    if (newDeafened && !muted) {
+      localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+      setMuted(true)
+    }
+  }
+
+  // Device switching
+  async function switchAudioInput(deviceId: string) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId }, noiseSuppression } })
+      const newTrack = newStream.getAudioTracks()[0]
+      const oldTrack = localStream.current?.getAudioTracks()[0]
+      if (oldTrack && pc.current) {
+        const sender = pc.current.getSenders().find(s => s.track?.kind === 'audio')
+        if (sender) await sender.replaceTrack(newTrack)
+        localStream.current?.removeTrack(oldTrack)
+        oldTrack.stop()
+      }
+      localStream.current?.addTrack(newTrack)
+      if (muted) newTrack.enabled = false
+      setupLocalSpeakingDetection()
+    } catch (err) { console.error('[CallWidget] switchAudioInput failed:', err) }
+  }
+
+  async function switchAudioOutput(deviceId: string) {
+    try {
+      if (remoteAudioEl.current && 'setSinkId' in remoteAudioEl.current) {
+        await (remoteAudioEl.current as any).setSinkId(deviceId)
+      }
+    } catch (err) { console.error('[CallWidget] switchAudioOutput failed:', err) }
+  }
+
+  async function switchVideoInput(deviceId: string) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } })
+      const newTrack = newStream.getVideoTracks()[0]
+      const oldTrack = localStream.current?.getVideoTracks()[0]
+      if (oldTrack && pc.current) {
+        const sender = pc.current.getSenders().find(s => s.track?.kind === 'video')
+        if (sender) await sender.replaceTrack(newTrack)
+        localStream.current?.removeTrack(oldTrack)
+        oldTrack.stop()
+      }
+      localStream.current?.addTrack(newTrack)
+      if (localVideo.current) localVideo.current.srcObject = localStream.current
+      if (videoOff) newTrack.enabled = false
+    } catch (err) { console.error('[CallWidget] switchVideoInput failed:', err) }
+  }
+
+  // Noise suppression toggle
+  async function toggleNoiseSuppression() {
+    const newVal = !noiseSuppression
+    setNoiseSuppression(newVal)
+    const audioTrack = localStream.current?.getAudioTracks()[0]
+    if (audioTrack) {
+      try { await audioTrack.applyConstraints({ noiseSuppression: newVal }) } catch { /* not supported */ }
+    }
+  }
+
+  // Background blur toggle
+  async function toggleBackgroundBlur() {
+    const newVal = !backgroundBlur
+    setBackgroundBlur(newVal)
+    const videoTrack = localStream.current?.getVideoTracks()[0]
+    if (videoTrack) {
+      try { await videoTrack.applyConstraints({ backgroundBlur: newVal } as any) } catch { /* not supported in this browser */ }
+    }
+  }
+
+  // Push-to-Talk toggle
+  function togglePushToTalk() {
+    const newPtt = !pushToTalk
+    setPushToTalk(newPtt)
+    if (newPtt) {
+      // Start in muted state
+      localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+      setMuted(true)
+    }
+  }
+
+  // PTT keydown/keyup handler
+  useEffect(() => {
+    if (!pushToTalk || status !== 'connected') return
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === 'v' && !e.repeat && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        localStream.current?.getAudioTracks().forEach(t => { t.enabled = true })
+        setMuted(false)
+      }
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === 'v' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+        setMuted(true)
+      }
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [pushToTalk, status])
+
+  // Escape key to close modals
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setScreenSources(null) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Emoji reaction (send to peer via signaling)
+  function sendReaction(emoji: string) {
+    // Show locally
+    const id = ++reactionIdRef.current
+    setCallReactions(prev => [...prev, { id, emoji }])
+    setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
+    // Send to peer
+    fetch(`${config.apiBase}/api/calls`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'call-reaction', to: targetUser.id, emoji }),
+    }).catch(() => {})
+  }
+
+  // Receive reactions from peer
+  useEffect(() => {
+    const onReaction = (e: Event) => {
+      const { emoji } = (e as CustomEvent<{ emoji: string }>).detail
+      const id = ++reactionIdRef.current
+      setCallReactions(prev => [...prev, { id, emoji }])
+      setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
+    }
+    window.addEventListener('bundy-call-reaction', onReaction)
+    return () => window.removeEventListener('bundy-call-reaction', onReaction)
+  }, [])
+
+  // Local speaking detection (voice activity on mic button)
+  function setupLocalSpeakingDetection() {
+    if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+    localAudioCtxRef.current?.close().catch(() => {})
+    if (!localStream.current) return
+    const audioTracks = localStream.current.getAudioTracks()
+    if (audioTracks.length === 0) return
+    try {
+      const ctx = new AudioContext()
+      const source = ctx.createMediaStreamSource(localStream.current)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      localAudioCtxRef.current = ctx
+      localAnalyserRef.current = analyser
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const check = () => {
+        analyser.getByteFrequencyData(data)
+        const avg = data.reduce((a, b) => a + b, 0) / data.length
+        setLocalSpeaking(avg > 15)
+        localSpeakingRafRef.current = requestAnimationFrame(check)
+      }
+      check()
+    } catch { /* ignore */ }
+  }
+
+  // Start local speaking detection when connected
+  useEffect(() => {
+    if (status !== 'connected' || !localStream.current) return
+    setupLocalSpeakingDetection()
+    return () => {
+      if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+      localAudioCtxRef.current?.close().catch(() => {})
+    }
+  }, [status])
+
+  // Active speaker detection on remote stream
+  useEffect(() => {
+    if (status !== 'connected' || !remoteStreamRef.current) return
+    const audioTracks = remoteStreamRef.current.getAudioTracks()
+    if (audioTracks.length === 0) return
+    try {
+      const ctx = new AudioContext()
+      const source = ctx.createMediaStreamSource(remoteStreamRef.current)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.5
+      source.connect(analyser)
+      audioContextRef.current = ctx
+      analyserRef.current = analyser
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      let lastSpeaking = false
+      const detect = () => {
+        analyser.getByteFrequencyData(data)
+        let sum = 0
+        for (let i = 0; i < data.length; i++) sum += data[i]
+        const avg = sum / data.length
+        const speaking = avg > 15
+        if (speaking !== lastSpeaking) { lastSpeaking = speaking; setRemoteSpeaking(speaking) }
+        speakingRafRef.current = requestAnimationFrame(detect)
+      }
+      speakingRafRef.current = requestAnimationFrame(detect)
+    } catch { /* audio context not supported */ }
+    return () => {
+      if (speakingRafRef.current) cancelAnimationFrame(speakingRafRef.current)
+      audioContextRef.current?.close().catch(() => {})
+      audioContextRef.current = null
+      analyserRef.current = null
+    }
+  }, [status, remoteHasVideo /* re-run when remote tracks change */])
 
   async function toggleVideo() {
     if (DEMO_MODE) {
@@ -5005,7 +5564,12 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     }
   }
 
-  function hangup() { cleanup(true); setStatus('ended'); onEnd() }
+  function hangup() {
+    const endAudio = new Audio('sounds/call-end.mp3')
+    endAudio.volume = 0.4
+    endAudio.play().catch(() => {})
+    cleanup(true); setStatus('ended'); onEnd()
+  }
 
   async function toggleScreenShare() {
     if (DEMO_MODE) {
@@ -5067,9 +5631,12 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
     setScreenSources(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+      }).catch(() => navigator.mediaDevices.getUserMedia({
         audio: false,
         video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
-      })
+      }))
       screenShareStream.current = stream
       const screenTrack = stream.getVideoTracks()[0]
       screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
@@ -5087,6 +5654,11 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
           headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }),
         })
+      }
+      // Add screen audio track if available
+      const screenAudioTrack = stream.getAudioTracks()[0]
+      if (screenAudioTrack && pc.current) {
+        pc.current.addTrack(screenAudioTrack, stream)
       }
       setScreenSharing(true)
       if (!videoActive) { setVideoActive(true); setVideoOff(false) }
@@ -5131,7 +5703,7 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
   // Screen source picker modal
   if (screenSources !== null) {
     return (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ background: '#080808', borderRadius: 8, padding: 24, maxWidth: 560, width: '90%', maxHeight: '80vh', overflow: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <span style={{ color: '#fff', fontWeight: 700, fontSize: 16 }}>Share Screen</span>
@@ -5193,8 +5765,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
           <span style={{ color: '#fff', fontSize: 11, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {targetUser.name}
           </span>
-          <span style={{ color: '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
-            {status === 'calling' ? 'Calling…' : status === 'connected' ? `${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Ended'}
+          <span style={{ color: status === 'connected' ? '#43B581' : '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+            {status === 'calling' ? 'Calling…' : status === 'connecting' ? 'Connecting…' : status === 'connected' ? `${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Ended'}
           </span>
         </div>
         {showVideo ? (
@@ -5206,8 +5778,8 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
             {!remoteHasVideo && (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                 <Avatar url={targetUser.avatar} name={targetUser.name} size={24} />
-                <span style={{ color: '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
-                  {status === 'calling' ? 'Calling…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
+                <span style={{ color: status === 'connected' ? '#43B581' : '#6b6b6b', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+                  {status === 'calling' ? 'Calling…' : status === 'connecting' ? 'Connecting…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
                 </span>
               </div>
             )}
@@ -5220,17 +5792,28 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
           </div>
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 0 }}>
-            <Avatar url={targetUser.avatar} name={targetUser.name} size={32} />
-            <span style={{ color: '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-              {status === 'calling' ? 'Calling…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
+            <div style={{
+              borderRadius: '50%', padding: 2,
+              border: remoteSpeaking ? '2px solid #43B581' : '2px solid transparent',
+              transition: 'border-color 0.15s',
+              animation: (status === 'calling' || status === 'connecting') ? 'callingPulse 1.5s ease-out infinite' : remoteSpeaking ? 'speakingGlow 1.5s ease-in-out infinite' : 'none',
+            }}>
+              <Avatar url={targetUser.avatar} name={targetUser.name} size={32} />
+            </div>
+            <span style={{ color: status === 'connected' ? '#43B581' : '#6b6b6b', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+              {status === 'calling' ? 'Calling…' : status === 'connecting' ? 'Connecting…' : `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`}
             </span>
           </div>
         )}
         <div style={{ padding: '6px 10px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
-          <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
+          <CallControls muted={muted} onToggleMute={toggleMute} deafened={deafened} onToggleDeafen={toggleDeafen} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode="mini" onSetWindowMode={handleSetWindowMode}
             onHangup={hangup} callDuration={status === 'connected' ? callDuration : undefined}
-            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
+            screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality}
+            onSwitchAudioInput={switchAudioInput} onSwitchAudioOutput={switchAudioOutput} onSwitchVideoInput={switchVideoInput}
+            localSpeaking={localSpeaking} noiseSuppression={noiseSuppression} onToggleNoiseSuppression={toggleNoiseSuppression}
+            backgroundBlur={backgroundBlur} onToggleBackgroundBlur={toggleBackgroundBlur}
+            onReaction={sendReaction} pushToTalk={pushToTalk} onTogglePushToTalk={togglePushToTalk} />
         </div>
         {/* Hidden local video for non-video mini mode (needed for renegotiation) */}
         {!showVideo && <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />}
@@ -5261,24 +5844,42 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
             }} />
           )}
           {/* Status overlay for video */}
-          {status === 'calling' && (
+          {(status === 'calling' || status === 'connecting') && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}>
               <div style={{ textAlign: 'center' }}>
-                <Avatar url={targetUser.avatar} name={targetUser.name} size={64} />
+                <div style={{ display: 'inline-block', borderRadius: '50%', animation: 'callingPulse 1.5s ease-out infinite' }}>
+                  <Avatar url={targetUser.avatar} name={targetUser.name} size={64} />
+                </div>
                 <div style={{ color: '#fff', fontWeight: 700, fontSize: 16, marginTop: 8 }}>{targetUser.name}</div>
-                <div style={{ color: '#6b6b6b', fontSize: 13, marginTop: 8 }}>Calling…</div>
+                <div style={{ color: '#6b6b6b', fontSize: 13, marginTop: 8 }}>{status === 'connecting' ? 'Connecting…' : 'Calling…'}</div>
               </div>
             </div>
           )}
         </div>
       ) : (
         <div style={{ textAlign: 'center' }}>
-          <Avatar url={targetUser.avatar} name={targetUser.name} size={80} />
+          <div style={{
+            display: 'inline-block', borderRadius: '50%', padding: 3,
+            border: remoteSpeaking ? '3px solid #43B581' : '3px solid transparent',
+            transition: 'border-color 0.15s',
+            animation: (status === 'calling' || status === 'connecting') ? 'callingPulse 1.5s ease-out infinite' : remoteSpeaking ? 'speakingGlow 1.5s ease-in-out infinite' : 'none',
+          }}>
+            <Avatar url={targetUser.avatar} name={targetUser.name} size={80} />
+          </div>
           <div style={{ color: '#fff', fontWeight: 700, fontSize: 18, marginTop: 12 }}>{targetUser.name}</div>
-          <div style={{ color: '#6b6b6b', fontSize: 13, marginTop: 8 }}>
-            {status === 'calling' ? 'Calling…' : status === 'connected' ? `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Call ended'}
+          <div style={{ color: status === 'connected' ? '#43B581' : '#6b6b6b', fontSize: 13, marginTop: 8 }}>
+            {status === 'calling' ? 'Calling…' : status === 'connecting' ? 'Connecting…' : status === 'connected' ? `Connected · ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}` : 'Call ended'}
           </div>
           <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
+        </div>
+      )}
+      {/* PTT indicator banner */}
+      {pushToTalk && muted && status === 'connected' && (
+        <div style={{
+          padding: '6px 16px', borderRadius: 6, background: 'rgba(88,101,242,0.2)',
+          color: '#5865F2', fontSize: 12, fontWeight: 600, textAlign: 'center',
+        }}>
+          Push to Talk — Hold <span style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 3, padding: '1px 6px', marginLeft: 4 }}>V</span>
         </div>
       )}
       {/* Controls */}
@@ -5286,11 +5887,23 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
         ...(isFs ? { position: 'absolute' as const, bottom: 30, left: '50%', transform: 'translateX(-50%)', opacity: showControls ? 1 : 0, transition: 'opacity 0.3s' } : {}),
         padding: '10px 20px', borderRadius: 8, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent',
       }}>
-        <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
+        <CallControls muted={muted} onToggleMute={toggleMute} deafened={deafened} onToggleDeafen={toggleDeafen} videoOff={videoOff} onToggleVideo={toggleVideo}
           videoActive={videoActive} windowMode={windowMode} onSetWindowMode={handleSetWindowMode}
           onHangup={hangup}
-          screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
+          screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality}
+          onSwitchAudioInput={switchAudioInput} onSwitchAudioOutput={switchAudioOutput} onSwitchVideoInput={switchVideoInput}
+          localSpeaking={localSpeaking} noiseSuppression={noiseSuppression} onToggleNoiseSuppression={toggleNoiseSuppression}
+          backgroundBlur={backgroundBlur} onToggleBackgroundBlur={toggleBackgroundBlur}
+          onReaction={sendReaction} pushToTalk={pushToTalk} onTogglePushToTalk={togglePushToTalk} />
       </div>
+      {/* Floating emoji reactions */}
+      {callReactions.length > 0 && (
+        <div style={{ position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 8, pointerEvents: 'none', zIndex: 100 }}>
+          {callReactions.map(r => (
+            <span key={r.id} style={{ fontSize: 32, animation: 'callReactionFloat 3s ease-out forwards' }}>{r.emoji}</span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -5339,6 +5952,24 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   const [peerMuted, setPeerMuted] = useState<Map<string, boolean>>(new Map())
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
   const speakingTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  const [deafened, setDeafened] = useState(false)
+  const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map()) // 0-200, default 100
+  const [volumeMenuPeer, setVolumeMenuPeer] = useState<string | null>(null)
+  const gainNodesRef = useRef<Map<string, GainNode>>(new Map())
+  const audioContextsRef = useRef<Map<string, AudioContext>>(new Map())
+  const peerAnalysersRef = useRef<Map<string, AnalyserNode>>(new Map())
+  const speakingRafRef = useRef<number | null>(null)
+  const [localSpeaking, setLocalSpeaking] = useState(false)
+  const localAnalyserRef = useRef<AnalyserNode | null>(null)
+  const localAudioCtxRef = useRef<AudioContext | null>(null)
+  const localSpeakingRafRef = useRef<number | null>(null)
+  const [noiseSuppression, setNoiseSuppression] = useState(true)
+  const [viewMode, setViewMode] = useState<'grid' | 'focus'>('grid')
+  const [focusTarget, setFocusTarget] = useState<string | null>(null)
+  const [backgroundBlur, setBackgroundBlur] = useState(false)
+  const [pushToTalk, setPushToTalk] = useState(false)
+  const [callReactions, setCallReactions] = useState<Array<{ id: number; emoji: string; from: string }>>([])
+  const reactionIdRef = useRef(0)
 
   useEffect(() => {
     mountedRef.current = true
@@ -5411,7 +6042,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       }
       const remoteStream = peerData.stream
       console.log(`[Conference] ontrack from ${peerId}, tracks:`, remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`))
-      // Imperative audio element per peer (survives re-renders)
+      // Imperative audio element per peer with Web Audio GainNode for volume control
       if (e.track.kind === 'audio') {
         let audioEl = audioElementsRef.current.get(peerId)
         if (!audioEl) {
@@ -5419,7 +6050,32 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
           audioEl.autoplay = true
           audioElementsRef.current.set(peerId, audioEl)
         }
-        audioEl.srcObject = remoteStream
+        // Set up Web Audio pipeline: source → gain → analyser → destination
+        try {
+          let ctx = audioContextsRef.current.get(peerId)
+          if (!ctx) {
+            ctx = new AudioContext()
+            audioContextsRef.current.set(peerId, ctx)
+          }
+          const source = ctx.createMediaStreamSource(remoteStream)
+          const gain = ctx.createGain()
+          const vol = peerVolumes.get(peerId) ?? 100
+          gain.gain.value = vol / 100
+          gainNodesRef.current.set(peerId, gain)
+          const analyser = ctx.createAnalyser()
+          analyser.fftSize = 256
+          analyser.smoothingTimeConstant = 0.5
+          peerAnalysersRef.current.set(peerId, analyser)
+          source.connect(gain)
+          gain.connect(analyser)
+          // Connect to audio output via destination
+          const dest = ctx.createMediaStreamDestination()
+          gain.connect(dest)
+          audioEl.srcObject = dest.stream
+        } catch {
+          // Fallback: direct srcObject if Web Audio fails
+          audioEl.srcObject = remoteStream
+        }
         audioEl.play().catch(() => {})
       }
       if (mountedRef.current) {
@@ -5645,6 +6301,13 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     peersRef.current.clear()
     for (const [, audioEl] of audioElementsRef.current) { audioEl.pause(); audioEl.srcObject = null }
     audioElementsRef.current.clear()
+    for (const [, ctx] of audioContextsRef.current) { ctx.close().catch(() => {}) }
+    audioContextsRef.current.clear()
+    gainNodesRef.current.clear()
+    peerAnalysersRef.current.clear()
+    if (speakingRafRef.current) cancelAnimationFrame(speakingRafRef.current)
+    if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+    localAudioCtxRef.current?.close().catch(() => {})
     localStream.current?.getTracks().forEach(t => t.stop())
     screenShareStream.current?.getTracks().forEach(t => t.stop())
     if (sendLeave) {
@@ -5698,6 +6361,227 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     }).catch(() => {})
   }
 
+  function toggleDeafen() {
+    const newDeafened = !deafened
+    setDeafened(newDeafened)
+    // Mute/unmute all incoming audio
+    for (const [, audioEl] of audioElementsRef.current) { audioEl.muted = newDeafened }
+    // Auto-mute outgoing when deafening
+    if (newDeafened && !muted) {
+      localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+      setMuted(true)
+      fetch(`${config.apiBase}/api/calls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
+      }).catch(() => {})
+    }
+  }
+
+  // Device switching
+  async function switchAudioInput(deviceId: string) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId }, noiseSuppression } })
+      const newTrack = newStream.getAudioTracks()[0]
+      const oldTrack = localStream.current?.getAudioTracks()[0]
+      // Replace track on all peer connections
+      for (const [, peer] of peersRef.current) {
+        const sender = peer.pc.getSenders().find(s => s.track?.kind === 'audio')
+        if (sender) await sender.replaceTrack(newTrack)
+      }
+      if (oldTrack) { localStream.current?.removeTrack(oldTrack); oldTrack.stop() }
+      localStream.current?.addTrack(newTrack)
+      if (muted) newTrack.enabled = false
+      setupLocalSpeakingDetection()
+    } catch (err) { console.error('[Conference] switchAudioInput failed:', err) }
+  }
+
+  async function switchAudioOutput(deviceId: string) {
+    try {
+      for (const [, audioEl] of audioElementsRef.current) {
+        if ('setSinkId' in audioEl) await (audioEl as any).setSinkId(deviceId)
+      }
+    } catch (err) { console.error('[Conference] switchAudioOutput failed:', err) }
+  }
+
+  async function switchVideoInput(deviceId: string) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } })
+      const newTrack = newStream.getVideoTracks()[0]
+      const oldTrack = localStream.current?.getVideoTracks()[0]
+      for (const [, peer] of peersRef.current) {
+        const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
+        if (sender) await sender.replaceTrack(newTrack)
+      }
+      if (oldTrack) { localStream.current?.removeTrack(oldTrack); oldTrack.stop() }
+      localStream.current?.addTrack(newTrack)
+      if (localVideo.current) localVideo.current.srcObject = localStream.current
+      if (videoOff) newTrack.enabled = false
+    } catch (err) { console.error('[Conference] switchVideoInput failed:', err) }
+  }
+
+  // Noise suppression toggle
+  async function toggleNoiseSuppression() {
+    const newVal = !noiseSuppression
+    setNoiseSuppression(newVal)
+    const audioTrack = localStream.current?.getAudioTracks()[0]
+    if (audioTrack) {
+      try { await audioTrack.applyConstraints({ noiseSuppression: newVal }) } catch { /* not supported */ }
+    }
+  }
+
+  // Background blur toggle
+  async function toggleBackgroundBlur() {
+    const newVal = !backgroundBlur
+    setBackgroundBlur(newVal)
+    const videoTrack = localStream.current?.getVideoTracks()[0]
+    if (videoTrack) {
+      try { await videoTrack.applyConstraints({ backgroundBlur: newVal } as any) } catch { /* not supported */ }
+    }
+  }
+
+  // Push-to-Talk toggle
+  function togglePushToTalk() {
+    const newPtt = !pushToTalk
+    setPushToTalk(newPtt)
+    if (newPtt) {
+      localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+      setMuted(true)
+      fetch(`${config.apiBase}/api/calls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
+      }).catch(() => {})
+    }
+  }
+
+  // PTT keydown/keyup handler
+  useEffect(() => {
+    if (!pushToTalk) return
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === 'v' && !e.repeat && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        localStream.current?.getAudioTracks().forEach(t => { t.enabled = true })
+        setMuted(false)
+        fetch(`${config.apiBase}/api/calls`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'conference-mute', channelId, muted: false }),
+        }).catch(() => {})
+      }
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === 'v' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+        localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
+        setMuted(true)
+        fetch(`${config.apiBase}/api/calls`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
+        }).catch(() => {})
+      }
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [pushToTalk])
+
+  // Escape key to close modals
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setScreenSources(null); setShowInvite(false) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Emoji reaction
+  function sendReaction(emoji: string) {
+    const id = ++reactionIdRef.current
+    setCallReactions(prev => [...prev, { id, emoji, from: 'You' }])
+    setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
+    fetch(`${config.apiBase}/api/calls`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'conference-reaction', channelId, emoji }),
+    }).catch(() => {})
+  }
+
+  // Receive reactions from peers
+  useEffect(() => {
+    const onReaction = (e: Event) => {
+      const { emoji, from } = (e as CustomEvent<{ emoji: string; from: string }>).detail
+      const id = ++reactionIdRef.current
+      setCallReactions(prev => [...prev, { id, emoji, from }])
+      setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
+    }
+    window.addEventListener('bundy-conference-reaction', onReaction)
+    return () => window.removeEventListener('bundy-conference-reaction', onReaction)
+  }, [])
+
+  // Local speaking detection
+  function setupLocalSpeakingDetection() {
+    if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+    localAudioCtxRef.current?.close().catch(() => {})
+    if (!localStream.current) return
+    const audioTracks = localStream.current.getAudioTracks()
+    if (audioTracks.length === 0) return
+    try {
+      const ctx = new AudioContext()
+      const source = ctx.createMediaStreamSource(localStream.current)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      localAudioCtxRef.current = ctx
+      localAnalyserRef.current = analyser
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      const check = () => {
+        analyser.getByteFrequencyData(data)
+        const avg = data.reduce((a, b) => a + b, 0) / data.length
+        setLocalSpeaking(avg > 15)
+        localSpeakingRafRef.current = requestAnimationFrame(check)
+      }
+      check()
+    } catch { /* ignore */ }
+  }
+
+  // Start local speaking detection after init
+  useEffect(() => {
+    if (!localStream.current) return
+    setupLocalSpeakingDetection()
+    return () => {
+      if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
+      localAudioCtxRef.current?.close().catch(() => {})
+    }
+  }, [callDuration > 0 ? 1 : 0]) // trigger once after init
+
+  function setPeerVolume(peerId: string, vol: number) {
+    setPeerVolumes(prev => { const next = new Map(prev); next.set(peerId, vol); return next })
+    const gain = gainNodesRef.current.get(peerId)
+    if (gain) gain.gain.value = vol / 100
+  }
+
+  // Active speaker detection loop for all peers
+  useEffect(() => {
+    if (peerAnalysersRef.current.size === 0) { setSpeakingPeers(new Set()); return }
+    const data = new Uint8Array(128)
+    const detect = () => {
+      const speaking = new Set<string>()
+      for (const [peerId, analyser] of peerAnalysersRef.current) {
+        analyser.getByteFrequencyData(data)
+        let sum = 0
+        for (let i = 0; i < data.length; i++) sum += data[i]
+        if (sum / data.length > 15) speaking.add(peerId)
+      }
+      setSpeakingPeers(prev => {
+        if (prev.size === speaking.size && [...prev].every(id => speaking.has(id))) return prev
+        return speaking
+      })
+      speakingRafRef.current = requestAnimationFrame(detect)
+    }
+    speakingRafRef.current = requestAnimationFrame(detect)
+    return () => { if (speakingRafRef.current) cancelAnimationFrame(speakingRafRef.current) }
+  }, [peers.size])
+
   async function toggleScreenShare() {
     if (screenSharing) {
       screenShareStream.current?.getTracks().forEach(t => t.stop())
@@ -5727,12 +6611,16 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
     setScreenSources(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+      }).catch(() => navigator.mediaDevices.getUserMedia({
         audio: false,
         video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
-      })
+      }))
       screenShareStream.current = stream
       const screenTrack = stream.getVideoTracks()[0]
       screenTrack.onended = () => { setScreenSharing(false); screenShareStream.current = null }
+      const screenAudioTrack = stream.getAudioTracks()[0]
       for (const [peerId, peer] of peersRef.current) {
         const videoSender = peer.pc.getSenders().find(s => s.track?.kind === 'video')
         if (videoSender) {
@@ -5747,6 +6635,7 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
             body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
           })
         }
+        if (screenAudioTrack) peer.pc.addTrack(screenAudioTrack, stream)
       }
       setScreenSharing(true)
       if (!videoActive) { setVideoActive(true); setVideoOff(false) }
@@ -5810,13 +6699,18 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
   function renderParticipantTile(id: string, stream: MediaStream | null, name: string, avatar: string | null, isSelf: boolean) {
     const isMuted = isSelf ? muted : !!peerMuted.get(id)
     const isSpeaking = speakingPeers.has(id)
+    const vol = peerVolumes.get(id) ?? 100
     return (
       <div key={id} style={{
-        background: C.bgFloating, borderRadius: 4, overflow: 'hidden', position: 'relative',
+        background: C.bgFloating, borderRadius: 8, overflow: 'hidden', position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0,
         outline: isSpeaking ? '2px solid #43B581' : '2px solid transparent',
         transition: 'outline-color 0.15s',
-      }}>
+        animation: isSpeaking ? 'speakingGlow 1.5s ease-in-out infinite' : 'none',
+      }}
+      title={isSelf ? 'You' : name}
+      onContextMenu={e => { if (!isSelf) { e.preventDefault(); setVolumeMenuPeer(volumeMenuPeer === id ? null : id) } }}
+      >
         {stream && stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled ? (
           <video autoPlay playsInline muted={isSelf} ref={el => { if (el && el.srcObject !== stream) { el.srcObject = stream; el.play().catch(() => {}) } }}
             style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -5826,10 +6720,33 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
             <div style={{ color: '#fff', fontSize: windowMode === 'mini' ? 10 : 12, fontWeight: 600, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
           </div>
         )}
-        <div style={{ position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 10, textShadow: '0 1px 3px rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', gap: 3 }}>
+        <div style={{
+          position: 'absolute', bottom: 4, left: 6, color: '#fff', fontSize: 10,
+          display: 'flex', alignItems: 'center', gap: 3,
+          background: 'rgba(0,0,0,0.6)', borderRadius: 4, padding: '2px 6px',
+        }}>
           <span>{isSelf ? 'You' : name}</span>
           {isMuted && <MicOff size={8} color="#f87171" />}
         </div>
+        {/* Per-user volume slider (right-click menu) — only in normal/fullscreen */}
+        {!isSelf && volumeMenuPeer === id && windowMode !== 'mini' && (
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'absolute', bottom: 24, left: 6, right: 6,
+              background: 'rgba(0,0,0,0.85)', borderRadius: 6, padding: '8px 10px',
+              display: 'flex', alignItems: 'center', gap: 8, zIndex: 2,
+            }}
+          >
+            <span style={{ color: '#9ca3af', fontSize: 10, whiteSpace: 'nowrap' }}>Vol</span>
+            <input
+              type="range" min={0} max={200} value={vol}
+              onChange={e => setPeerVolume(id, Number(e.target.value))}
+              style={{ flex: 1, accentColor: '#43B581', height: 4, cursor: 'pointer' }}
+            />
+            <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 28, textAlign: 'right' }}>{vol}%</span>
+          </div>
+        )}
       </div>
     )
   }
@@ -5898,10 +6815,14 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
             {peerList.slice(0, 3).map(([id, p]) => renderParticipantTile(id, p.stream, p.name, p.avatar, false))}
           </div>
           <div style={{ padding: '4px 8px', display: 'flex', justifyContent: 'center', flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}>
-            <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
+            <CallControls muted={muted} onToggleMute={toggleMute} deafened={deafened} onToggleDeafen={toggleDeafen} videoOff={videoOff} onToggleVideo={toggleVideo}
               videoActive={videoActive} windowMode="mini" onSetWindowMode={setWindowMode}
               onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
-              screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality} />
+              screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality}
+              onSwitchAudioInput={switchAudioInput} onSwitchAudioOutput={switchAudioOutput} onSwitchVideoInput={switchVideoInput}
+              localSpeaking={localSpeaking} noiseSuppression={noiseSuppression} onToggleNoiseSuppression={toggleNoiseSuppression}
+              backgroundBlur={backgroundBlur} onToggleBackgroundBlur={toggleBackgroundBlur}
+              onReaction={sendReaction} pushToTalk={pushToTalk} onTogglePushToTalk={togglePushToTalk} />
           </div>
           <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
         </div>
@@ -5959,32 +6880,95 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       display: 'flex', flexDirection: 'column',
     }}>
       {/* Header */}
-      <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+      <div style={{
+        padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+        ...(isFs ? { opacity: showControls ? 1 : 0, transition: 'opacity 0.3s' } : {}),
+      }}>
         <Hash size={16} color="#94a3b8" />
         <span style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>{channelName}</span>
         <span style={{ color: '#6b6b6b', fontSize: 12 }}><Users size={12} style={{ verticalAlign: 'middle' }} /> {totalParticipants}</span>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => { setViewMode(viewMode === 'grid' ? 'focus' : 'grid'); if (viewMode === 'grid' && !focusTarget && peerList.length > 0) setFocusTarget(peerList[0][0]) }}
+          style={{ background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', color: '#ccc', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+          title={viewMode === 'grid' ? 'Switch to focus view' : 'Switch to grid view'}>
+          {viewMode === 'grid' ? <LayoutGrid size={14} /> : <LayoutList size={14} />}
+          {viewMode === 'grid' ? 'Grid' : 'Focus'}
+        </button>
       </div>
-      {/* Participant grid */}
-      <div style={{
-        flex: 1, display: 'grid', gridTemplateColumns: `repeat(${gridCols}, 1fr)`,
-        gap: 6, padding: '0 20px', minHeight: 0,
-      }}>
-        {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
-        {peerList.map(([id, p]) => renderParticipantTile(id, p.stream, p.name, p.avatar, false))}
-      </div>
+      {/* Participant grid / focus */}
+      {viewMode === 'grid' ? (
+        <div style={{
+          flex: 1, display: 'grid', gridTemplateColumns: `repeat(${gridCols}, 1fr)`,
+          gap: 8, padding: '0 20px', minHeight: 0,
+        }}>
+          {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
+          {peerList.map(([id, p]) => renderParticipantTile(id, p.stream, p.name, p.avatar, false))}
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, padding: '0 20px', minHeight: 0 }}>
+          {/* Focus: large tile */}
+          <div style={{ flex: 1, minHeight: 0 }}
+            onClick={() => {/* clicking focused tile does nothing */}}>
+            {(() => {
+              const ft = focusTarget
+              if (ft === auth.userId || !ft) return renderParticipantTile(auth.userId, localStream.current, 'You', null, true)
+              const p = peers.get(ft)
+              if (p) return renderParticipantTile(ft, p.stream, p.name, p.avatar, false)
+              return renderParticipantTile(auth.userId, localStream.current, 'You', null, true)
+            })()}
+          </div>
+          {/* Focus: bottom strip */}
+          <div style={{ display: 'flex', gap: 4, height: 80, flexShrink: 0, overflowX: 'auto' }}>
+            {(focusTarget !== auth.userId && focusTarget) && (
+              <div style={{ width: 100, flexShrink: 0, cursor: 'pointer' }} onClick={() => setFocusTarget(auth.userId)}>
+                {renderParticipantTile(auth.userId, localStream.current, 'You', null, true)}
+              </div>
+            )}
+            {peerList.filter(([id]) => id !== focusTarget).map(([id, p]) => (
+              <div key={id} style={{ width: 100, flexShrink: 0, cursor: 'pointer' }} onClick={() => setFocusTarget(id)}>
+                {renderParticipantTile(id, p.stream, p.name, p.avatar, false)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* PTT indicator banner */}
+      {pushToTalk && muted && (
+        <div style={{
+          padding: '6px 16px', textAlign: 'center',
+        }}>
+          <span style={{
+            display: 'inline-block', padding: '4px 14px', borderRadius: 6,
+            background: 'rgba(88,101,242,0.2)', color: '#5865F2', fontSize: 12, fontWeight: 600,
+          }}>
+            Push to Talk — Hold <span style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 3, padding: '1px 6px', marginLeft: 4 }}>V</span>
+          </span>
+        </div>
+      )}
       {/* Controls */}
       <div style={{
         padding: '16px 0', display: 'flex', justifyContent: 'center', flexShrink: 0,
         ...(isFs ? { opacity: showControls ? 1 : 0, transition: 'opacity 0.3s' } : {}),
       }}>
         <div style={{ padding: '10px 24px', borderRadius: 8, background: isFs ? 'rgba(0,0,0,0.6)' : 'transparent' }}>
-          <CallControls muted={muted} onToggleMute={toggleMute} videoOff={videoOff} onToggleVideo={toggleVideo}
+          <CallControls muted={muted} onToggleMute={toggleMute} deafened={deafened} onToggleDeafen={toggleDeafen} videoOff={videoOff} onToggleVideo={toggleVideo}
             videoActive={videoActive} windowMode={windowMode} onSetWindowMode={setWindowMode}
             onHangup={handleLeave} participantCount={totalParticipants} callDuration={callDuration}
             screenSharing={screenSharing} onToggleScreenShare={toggleScreenShare} connectionQuality={connectionQuality}
-            onInvite={loadInviteUsers} />
+            onInvite={loadInviteUsers} onSwitchAudioInput={switchAudioInput} onSwitchAudioOutput={switchAudioOutput} onSwitchVideoInput={switchVideoInput}
+            localSpeaking={localSpeaking} noiseSuppression={noiseSuppression} onToggleNoiseSuppression={toggleNoiseSuppression}
+            backgroundBlur={backgroundBlur} onToggleBackgroundBlur={toggleBackgroundBlur}
+            onReaction={sendReaction} pushToTalk={pushToTalk} onTogglePushToTalk={togglePushToTalk} />
         </div>
       </div>
+      {/* Floating emoji reactions */}
+      {callReactions.length > 0 && (
+        <div style={{ position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 8, pointerEvents: 'none', zIndex: 100 }}>
+          {callReactions.map(r => (
+            <span key={r.id} style={{ fontSize: 32, animation: 'callReactionFloat 3s ease-out forwards' }}>{r.emoji}</span>
+          ))}
+        </div>
+      )}
       <video ref={localVideo} autoPlay playsInline muted style={{ display: 'none' }} />
     </div>
     </>
@@ -9161,6 +10145,8 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
               headers: { Authorization: `Bearer ${apiConfig.token}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({ action: 'end', to: incomingCall.from }),
             }).catch(() => {})
+            // Dispatch missed call event (we declined)
+            window.dispatchEvent(new CustomEvent('bundy-missed-call', { detail: { userId: incomingCall.from, userName: incomingCall.fromName, callType: incomingCall.callType, reason: 'declined' } }))
             iceBufferRef.current = []
             answerSdpRef.current = null
             setIncomingCall(null)

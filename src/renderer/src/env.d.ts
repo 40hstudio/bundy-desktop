@@ -47,6 +47,7 @@ declare global {
       sendCallFloatAction: (action: Record<string, unknown>) => Promise<void>
       onCallFloatState: (cb: (state: Record<string, unknown>) => void) => () => void
       onCallFloatAction: (cb: (action: Record<string, unknown>) => void) => () => void
+      setCallFloatAlwaysOnTop: (onTop: boolean) => Promise<void>
     }
   }
 }

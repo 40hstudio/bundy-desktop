@@ -159,7 +159,9 @@ const api = {
     const handler = (_e: Electron.IpcRendererEvent, action: Record<string, unknown>): void => cb(action)
     ipcRenderer.on('call-float-action', handler)
     return () => ipcRenderer.removeListener('call-float-action', handler)
-  }
+  },
+  setCallFloatAlwaysOnTop: (onTop: boolean): Promise<void> =>
+    ipcRenderer.invoke('set-call-float-always-on-top', onTop),
 }
 
 if (process.contextIsolated) {

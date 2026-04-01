@@ -19,6 +19,7 @@ export default function FloatingCallOverlay(): JSX.Element {
     videoActive: false,
   })
   const [isDragging, setIsDragging] = useState(false)
+  const [pinned, setPinned] = useState(true)
   const dragStart = useRef({ x: 0, y: 0 })
 
   // Make body/html transparent for the floating window
@@ -144,6 +145,29 @@ export default function FloatingCallOverlay(): JSX.Element {
 
         {/* Controls */}
         <div data-no-drag style={{ display: 'flex', gap: 6 }}>
+          {/* Pin / stay-on-top toggle */}
+          <button
+            onClick={() => {
+              const newPinned = !pinned
+              setPinned(newPinned)
+              window.electronAPI?.setCallFloatAlwaysOnTop?.(newPinned)
+            }}
+            style={{
+              width: 30, height: 30, borderRadius: '50%',
+              background: pinned ? 'rgba(67, 181, 129, 0.3)' : 'rgba(255,255,255,0.1)',
+              border: 'none', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: pinned ? '#43B581' : '#fff', fontSize: 14,
+              transition: 'background 0.15s',
+            }}
+            title={pinned ? 'Unpin (disable stay on top)' : 'Pin (stay on top)'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="17" x2="12" y2="22" />
+              <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+            </svg>
+          </button>
+
           {/* Mute toggle */}
           <button
             onClick={() => handleAction(state.muted ? 'unmute' : 'mute')}

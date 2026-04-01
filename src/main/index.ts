@@ -678,6 +678,12 @@ ipcMain.handle('call-float-action', (_event, action: Record<string, unknown>) =>
   }
 })
 
+ipcMain.handle('set-call-float-always-on-top', (_event, onTop: boolean) => {
+  if (callFloatWin && !callFloatWin.isDestroyed()) {
+    callFloatWin.setAlwaysOnTop(onTop)
+  }
+})
+
 ipcMain.handle('get-api-config', async () => {
   const token = store.get('desktopToken')
   const remote = store.get('apiBase') || 'https://bundy.40h.studio'
