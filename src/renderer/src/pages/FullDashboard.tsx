@@ -2585,22 +2585,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   }, [showThreadsView, apiFetch])
 
   // Periodically refresh user profile info (alias, avatar) from /api/users.
-  // Also try to discover tracker status from server endpoints.
+  // Also fetch tracker status from /api/users/status for In/Break/Out badges.
   const trackerStatusRef = useRef<Record<string, string>>({})
-  const trackerProbed = useRef(false)
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshUserInfo() {
       apiFetch('/api/users').then((data: { users: any[] }) => {
         const userMap: Record<string, any> = {}
-        for (const u of (data.users ?? [])) {
-          userMap[u.id] = u
-          // If server ever adds status fields, pick them up automatically
-          const st = u.currentStatus ?? u.bundyStatus ?? u.trackerStatus ?? u.status
-          if (st && typeof st === 'string' && ['CHECK_IN', 'BACK', 'BREAK', 'CLOCK_OUT', 'NONE'].includes(st)) {
-            trackerStatusRef.current[u.id] = st
-          }
-        }
+        for (const u of (data.users ?? [])) userMap[u.id] = u
         setChannels(prev => prev.map(c => ({
           ...c,
           members: c.members.map(m => {
@@ -2619,42 +2611,20 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
       }).catch(() => {})
     }
 
-    // One-time probe of potential attendance endpoint
-    if (!trackerProbed.current) {
-      trackerProbed.current = true
-      apiFetch('/api/attendance/today').then((data: any) => {
-        console.log('[Bundy] /api/attendance/today response:', JSON.stringify(data))
-        const records = data.attendance ?? data.records ?? data.users ?? data
-        if (Array.isArray(records)) {
-          for (const r of records) {
-            const uid = r.userId ?? r.id
-            const st = r.currentStatus ?? r.status ?? r.action
-            if (uid && st) trackerStatusRef.current[uid] = st
-          }
-          setLastSeenTick(t => t + 1) // trigger re-render
+    function refreshTrackerStatus() {
+      apiFetch('/api/users/status').then((data: { statuses?: Record<string, string> }) => {
+        if (data.statuses) {
+          trackerStatusRef.current = data.statuses
+          setLastSeenTick(t => t + 1)
         }
-      }).catch(() => {
-        console.log('[Bundy] /api/attendance/today not available, trying /api/bundy/team')
-        apiFetch('/api/bundy/team').then((data: any) => {
-          console.log('[Bundy] /api/bundy/team response:', JSON.stringify(data))
-          const records = data.team ?? data.members ?? data.users ?? data
-          if (Array.isArray(records)) {
-            for (const r of records) {
-              const uid = r.userId ?? r.id
-              const st = r.currentStatus ?? r.status ?? r.action
-              if (uid && st) trackerStatusRef.current[uid] = st
-            }
-            setLastSeenTick(t => t + 1)
-          }
-        }).catch(() => {
-          console.log('[Bundy] No team tracker endpoint found. Tracker badges will rely on SSE user-status events.')
-        })
-      })
+      }).catch(() => {})
     }
 
     refreshUserInfo()
+    refreshTrackerStatus()
     const id = setInterval(refreshUserInfo, 30_000)
-    return () => clearInterval(id)
+    const trackerId = setInterval(refreshTrackerStatus, 30_000)
+    return () => { clearInterval(id); clearInterval(trackerId) }
   }, [apiFetch])
 
   // Handle self-leave from ChannelSettingsModal
