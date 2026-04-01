@@ -43,6 +43,18 @@ interface UserInfo {
 interface ChannelMember {
   userId: string; user: UserInfo
 }
+
+/** Normalize any server status value to the UI expected values: 'online' | 'break' | null */
+function normalizeStatus(u: Record<string, unknown>): string | null {
+  // Check multiple possible field names — server may use any of these
+  const raw = (u.userStatus ?? u.status ?? u.currentStatus ?? u.trackerStatus ?? null) as string | null
+  if (!raw) return null
+  const s = raw.trim().toUpperCase()
+  if (s === 'CHECK_IN' || s === 'BACK' || s === 'ONLINE' || s === 'ACTIVE') return 'online'
+  if (s === 'BREAK' || s === 'ON_BREAK') return 'break'
+  if (s === 'CLOCK_OUT' || s === 'NONE' || s === 'OUT' || s === 'OFFLINE') return null
+  return null
+}
 interface Conversation {
   id: string; type: 'channel' | 'group' | 'dm'
   name: string; avatar?: string | null
@@ -2081,8 +2093,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
         let name = ch.name ?? ''
         let avatar: string | null = null
         let partnerId: string | undefined
+        // Normalize member statuses from server format to UI format
+        const members = ch.members.map(m => ({
+          ...m, user: { ...m.user, userStatus: normalizeStatus(m.user as unknown as Record<string, unknown>) }
+        }))
         if (ch.type === 'dm') {
-          const other = ch.members.find(m => m.userId !== auth.userId)
+          const other = members.find(m => m.userId !== auth.userId)
           name = other?.user.alias ?? other?.user.username ?? 'DM'
           avatar = other?.user.avatarUrl ?? null
           partnerId = other?.userId
@@ -2094,7 +2110,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
         const last = ch.messages[0]
         return {
           id: ch.id, type: ch.type as Conversation['type'], name, avatar, partnerId,
-          members: ch.members, createdBy: ch.createdBy,
+          members, createdBy: ch.createdBy,
           lastMessage: last ? `${last.sender.alias ?? last.sender.username}: ${last.content}` : undefined,
           lastTime: last?.createdAt,
           unread: ch.unread ?? 0,
@@ -2384,12 +2400,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   m.id === messageId ? { ...m, isPinned, pinnedBy: isPinned ? pinnedBy : null, pinnedAt: isPinned ? new Date().toISOString() : null } : m
                 ))
               } else if (ev === 'user-status') {
-                // Real-time user status update (online/break/out)
-                const { userId, userStatus } = payload as { userId: string; userStatus: string | null }
+                // Real-time user status update — normalize server values to 'online'/'break'/null
+                const p = payload as Record<string, unknown>
+                const userId = p.userId as string
+                const normalized = normalizeStatus(p)
                 setChannels(prev => prev.map(c => ({
                   ...c,
                   members: c.members.map(m =>
-                    m.userId === userId ? { ...m, user: { ...m.user, userStatus } } : m
+                    m.userId === userId ? { ...m, user: { ...m.user, userStatus: normalized } } : m
                   ),
                 })))
               } else if (ev === 'call-invite') {
@@ -2542,9 +2560,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshStatuses() {
-      apiFetch('/api/users').then((data: { users: UserInfo[] }) => {
+      apiFetch('/api/users').then((data: { users: any[] }) => {
+        if (data.users?.[0]) console.log('[Bundy] /api/users sample:', JSON.stringify(data.users[0]))
         const statusMap: Record<string, string | null> = {}
-        for (const u of (data.users ?? [])) statusMap[u.id] = u.userStatus ?? null
+        for (const u of (data.users ?? [])) statusMap[u.id] = normalizeStatus(u)
         setChannels(prev => prev.map(c => ({
           ...c,
           members: c.members.map(m =>
