@@ -135,6 +135,10 @@ const api = {
   submitReportWithPlan: (content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>): Promise<void> =>
     ipcRenderer.invoke('submit-report-with-plan', content, planItems),
 
+  // ─── Dock / taskbar badge ─────────────────────────────────────────
+  setBadgeCount: (count: number): void =>
+    ipcRenderer.send('set-badge-count', count),
+
   // ─── Floating call window ──────────────────────────────────────────
   openCallFloat: (state: Record<string, unknown>): Promise<void> =>
     ipcRenderer.invoke('open-call-float', state),

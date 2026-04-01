@@ -2107,6 +2107,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
     const total = channels.reduce((sum, c) => sum + (c.unread ?? 0), 0)
     const hasMention = channels.some(c => mentionedChannels.has(c.id) && (c.unread ?? 0) > 0)
     window.dispatchEvent(new CustomEvent('bundy-unread-update', { detail: { count: total, mention: hasMention } }))
+    // Update dock / taskbar badge
+    window.electronAPI?.setBadgeCount?.(total)
   }, [channels, mentionedChannels])
 
   const loadMessages = useCallback(async (conv: Conversation) => {
@@ -2240,6 +2242,10 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                     method: 'POST',
                     headers: { Authorization: `Bearer ${config.token}` },
                   }).catch(() => {})
+                  // Play subtle sound for incoming messages in the currently open chat
+                  if (payload.senderId !== auth.userId) {
+                    new Audio('sounds/new-message.mp3').play().catch(() => {})
+                  }
                 } else if (payload.senderId !== auth.userId) {
                   // Not our own message in another channel — increment unread + notify
                   const isMention = !!payload.content && (
@@ -2252,8 +2258,8 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                   if (isMention) {
                     setMentionedChannels(prev => new Set([...prev, channelId]))
                   }
-                  // Sound notification
-                  new Audio(isMention ? 'sounds/mentioned-message.mp3' : 'sounds/new-message.mp3').play().catch(() => {})
+                  // Always use the prominent sound for messages in non-active channels
+                  new Audio('sounds/mentioned-message.mp3').play().catch(() => {})
                   // Desktop notification
                   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
                     void new Notification(isMention ? `📣 You were mentioned` : `New message`, {
@@ -2366,6 +2372,15 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
                 setMessages(prev => prev.map(m =>
                   m.id === messageId ? { ...m, isPinned, pinnedBy: isPinned ? pinnedBy : null, pinnedAt: isPinned ? new Date().toISOString() : null } : m
                 ))
+              } else if (ev === 'user-status') {
+                // Real-time user status update (online/break/out)
+                const { userId, userStatus } = payload as { userId: string; userStatus: string | null }
+                setChannels(prev => prev.map(c => ({
+                  ...c,
+                  members: c.members.map(m =>
+                    m.userId === userId ? { ...m, user: { ...m.user, userStatus } } : m
+                  ),
+                })))
               } else if (ev === 'call-invite') {
                 window.dispatchEvent(new CustomEvent('bundy-incoming-call', { detail: payload }))
               } else if (ev === 'call-answer') {
@@ -2511,6 +2526,24 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
       setThreadActivities(data.threads ?? [])
     }).catch(() => {})
   }, [showThreadsView, apiFetch])
+
+  // Periodically refresh member statuses so DM list stays up-to-date
+  useEffect(() => {
+    if (DEMO_MODE) return
+    const id = setInterval(() => {
+      apiFetch('/api/users/statuses').then((data: any) => {
+        const statusMap: Record<string, string | null> = {}
+        for (const u of (data.users ?? [])) statusMap[u.id] = u.userStatus ?? null
+        setChannels(prev => prev.map(c => ({
+          ...c,
+          members: c.members.map(m =>
+            m.userId in statusMap ? { ...m, user: { ...m.user, userStatus: statusMap[m.userId] } } : m
+          ),
+        })))
+      }).catch(() => {})
+    }, 30_000)
+    return () => clearInterval(id)
+  }, [apiFetch])
 
   // Handle self-leave from ChannelSettingsModal
   useEffect(() => {
@@ -3824,8 +3857,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef 
 function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void }) {
   const [hovered, setHovered] = useState(false)
   const hasUnread = (conv.unread ?? 0) > 0
-  const isOnlineDm = conv.type === 'dm' && conv.members?.some(m => m.user?.userStatus === 'online')
-  const dmStatus = conv.type === 'dm' ? conv.members?.[0]?.user?.userStatus : null
+  // Use partnerId to find the correct DM partner — members[0] may be the current user
+  const dmPartner = conv.type === 'dm'
+    ? (conv.partnerId ? conv.members?.find(m => m.userId === conv.partnerId) : conv.members?.[0])
+    : null
+  const dmStatus = dmPartner?.user?.userStatus ?? null
+  const isOnlineDm = dmStatus === 'online'
   const statusDotColor = dmStatus === 'online' ? C.success : dmStatus === 'break' ? C.warning : C.textMuted
 
   return (

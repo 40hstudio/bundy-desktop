@@ -535,6 +535,11 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   }
 })
 
+ipcMain.on('set-badge-count', (_event, count: number) => {
+  // macOS dock badge; no-op on unsupported platforms
+  if (app.setBadgeCount) app.setBadgeCount(count)
+})
+
 ipcMain.handle('get-version', () => app.getVersion())
 
 ipcMain.handle('get-update-state', () => ({

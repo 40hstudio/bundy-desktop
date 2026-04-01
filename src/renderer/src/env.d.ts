@@ -15,6 +15,7 @@ declare global {
       openExternal: (url: string) => Promise<void>
       checkForUpdates: () => Promise<void>
       installUpdate: () => Promise<void>
+      setBadgeCount: (count: number) => void
       getVersion: () => Promise<string>
       getUpdateState: () => Promise<{ version: string | null; percent: number | null; downloaded: boolean }>
       onUpdateAvailable: (cb: (info: { version: string }) => void) => () => void
