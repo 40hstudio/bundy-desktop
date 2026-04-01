@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Loader } from 'lucide-react'
-import { ApiConfig, Auth, TaskProject, TaskSection, UserInfo } from '../../types'
+import { ApiConfig, Auth, Task, TaskProject, TaskSection, UserInfo } from '../../types'
 import { C, neu } from '../../theme'
-
-const DEMO_MODE = false
 
 export default function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, onClose, onCreated }: {
   config: ApiConfig; auth: Auth
@@ -11,7 +9,7 @@ export default function CreateTaskModal({ config, auth, projects, sections, sele
   sections: TaskSection[]
   selectedProjectId: string | null
   onClose: () => void
-  onCreated: () => void
+  onCreated: (task: Task) => void
 }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -64,7 +62,8 @@ export default function CreateTaskModal({ config, auth, projects, sections, sele
         body: JSON.stringify(body),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }
-      onCreated()
+      const data = await res.json()
+      onCreated(data.task)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create task')
     } finally { setSaving(false) }

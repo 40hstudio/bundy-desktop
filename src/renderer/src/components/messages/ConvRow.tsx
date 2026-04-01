@@ -8,7 +8,7 @@ export function ConvRow({
   conv, selected, typingUsers, hasActiveCall, isMentioned,
   onClick, onClose, getPresence, getTrackerStatus,
 }: {
-  conv: Conversation; selected: boolean; auth?: never
+  conv: Conversation; selected: boolean
   typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean
   onClick: () => void; onClose?: () => void
   getPresence?: (userId: string) => 'active' | 'recent' | 'away'

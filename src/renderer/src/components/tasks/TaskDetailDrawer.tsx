@@ -16,8 +16,6 @@ import { Avatar } from '../shared/Avatar'
 import { OgPreview } from '../messages/OgPreview'
 import { TASK_STATUS_LABELS, TASK_STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'
 
-const DEMO_MODE = false
-
 export default function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, onDeleted }: {
   taskId: string; config: ApiConfig; auth: Auth
   projects: TaskProject[]

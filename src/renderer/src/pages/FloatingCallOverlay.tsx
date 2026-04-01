@@ -26,7 +26,7 @@ export default function FloatingCallOverlay(): JSX.Element {
   useEffect(() => {
     document.documentElement.style.background = 'transparent'
     document.body.style.background = 'transparent'
-    document.body.style.webkitAppRegion = 'no-drag'
+    ;(document.body.style as any).webkitAppRegion = 'no-drag'
   }, [])
 
   // Request initial state on mount (main process stores it for us)

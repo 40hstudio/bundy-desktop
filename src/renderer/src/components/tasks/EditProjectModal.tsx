@@ -3,16 +3,14 @@ import { X, Loader } from 'lucide-react'
 import { ApiConfig, TaskProject } from '../../types'
 import { C, neu } from '../../theme'
 
-const DEMO_MODE = false
-
 const PRESET_COLORS = ['#6c5ce7', '#00b894', '#fdcb6e', '#e17055', '#0984e3', '#d63031', '#e84393', '#00cec9', '#636e72', '#2d3436']
 
 export default function EditProjectModal({ config, project, onClose, onUpdated, onDeleted }: {
   config: ApiConfig
   project: TaskProject
   onClose: () => void
-  onUpdated: () => void
-  onDeleted: () => void
+  onUpdated: (project: TaskProject) => void
+  onDeleted: (id: string) => void
 }) {
   const [name, setName] = useState(project.name)
   const [clientName, setClientName] = useState(project.clientName ?? '')
@@ -33,7 +31,8 @@ export default function EditProjectModal({ config, project, onClose, onUpdated, 
         body: JSON.stringify({ name: name.trim(), clientName: clientName.trim() || null, color, description: description.trim() || null }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }
-      onUpdated()
+      const data = await res.json()
+      onUpdated(data.project)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update project')
     } finally { setSaving(false) }
@@ -47,7 +46,7 @@ export default function EditProjectModal({ config, project, onClose, onUpdated, 
         headers: { Authorization: `Bearer ${config.token}` },
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }
-      onDeleted()
+      onDeleted(project.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete project')
       setDeleting(false)

@@ -7,7 +7,7 @@ import {
   FolderOpen, Paperclip, ExternalLink, Download,
 } from 'lucide-react'
 import { C, neu } from '../../theme'
-import type { ApiConfig, Auth, Conversation, ChatMessage, ThreadActivity, ChannelMember, UserInfo } from '../../types'
+import type { ApiConfig, Auth, Conversation, ChatMessage, ThreadActivity, UserInfo } from '../../types'
 import { Avatar } from '../shared/Avatar'
 import { NewConvModal } from './NewConvModal'
 import { ChannelSettingsModal } from './ChannelSettingsModal'
@@ -1069,7 +1069,7 @@ export function MessagesPanel({
                     </button>
                   </div>
                   {!collapsedSections.channels && channelList.map(c => (
-                    <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />
+                    <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />
                   ))}
                 </>
               )}
@@ -1089,7 +1089,7 @@ export function MessagesPanel({
                     </button>
                   </div>
                   {!collapsedSections.groups && groupList.map(c => (
-                    <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />
+                    <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={!!activeConferences[c.id]} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} />
                   ))}
                 </>
               )}
@@ -1112,7 +1112,7 @@ export function MessagesPanel({
                     const partnerId = c.partnerId
                     const partnerInCall = !!(partnerId && (usersInCall.has(partnerId) || Object.values(activeConferences).some(ps => ps.some(p => p.id === partnerId))))
                     return (
-                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
+                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
                     )
                   })}
                 </>

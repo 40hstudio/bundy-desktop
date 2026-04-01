@@ -3,7 +3,7 @@ import {
   Plus, RefreshCw, Loader, CheckSquare, Filter, ChevronRight,
   Layers, LayoutList, LayoutGrid, FolderPlus, Edit2, MessageSquare, GitBranch
 } from 'lucide-react'
-import { ApiConfig, Auth, Task, TaskProject, TaskSection, UserInfo } from '../../types'
+import { ApiConfig, Auth, Task, TaskProject, TaskSection } from '../../types'
 import { C, neu } from '../../theme'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_BOARD_COLS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'

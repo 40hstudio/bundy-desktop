@@ -3,15 +3,13 @@ import { X, Layers, Edit2, Trash2, Plus, Loader, Check } from 'lucide-react'
 import { ApiConfig, TaskSection } from '../../types'
 import { C, neu } from '../../theme'
 
-const DEMO_MODE = false
-
 export default function ManageSectionsModal({ config, projectId, projectName, sections: initialSections, onClose, onUpdated }: {
   config: ApiConfig
   projectId: string
   projectName: string
   sections: TaskSection[]
   onClose: () => void
-  onUpdated: () => void
+  onUpdated: (sections: TaskSection[]) => void
 }) {
   const [secs, setSecs] = useState<TaskSection[]>(initialSections)
   const [newName, setNewName] = useState('')
@@ -32,9 +30,10 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const d = await res.json() as { section: TaskSection }
-      setSecs(prev => [...prev, d.section])
+      const newSecs = [...secs, d.section]
+      setSecs(newSecs)
       setNewName('')
-      onUpdated()
+      onUpdated(newSecs)
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to create section') } finally { setCreating(false) }
   }
 
@@ -48,9 +47,10 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
         body: JSON.stringify({ name: trimmed }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setSecs(prev => prev.map(s => s.id === id ? { ...s, name: trimmed } : s))
+      const newSecs = secs.map(s => s.id === id ? { ...s, name: trimmed } : s)
+      setSecs(newSecs)
       setEditingId(null)
-      onUpdated()
+      onUpdated(newSecs)
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to rename section') }
   }
 
@@ -62,8 +62,9 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
         headers: { Authorization: `Bearer ${config.token}` },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setSecs(prev => prev.filter(s => s.id !== id))
-      onUpdated()
+      const newSecs = secs.filter(s => s.id !== id)
+      setSecs(newSecs)
+      onUpdated(newSecs)
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to delete section') } finally { setDeletingId(null) }
   }
 

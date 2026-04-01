@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
-  Mic, MicOff, Video, VideoOff, Phone, PhoneOff,
+  Mic, MicOff, Video, VideoOff, PhoneOff,
   Headphones, Monitor, Users, ChevronUp, Settings2,
   Minimize2, Maximize2, UserPlus2,
   Wifi, WifiLow, WifiZero, WifiOff,

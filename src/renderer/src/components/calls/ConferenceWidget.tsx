@@ -5,8 +5,6 @@ import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
 import CallControls from './CallControls'
 
-const DEMO_MODE = false
-
 interface ConferencePeer {
   pc: RTCPeerConnection
   stream: MediaStream | null
@@ -48,7 +46,6 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
   const [inviteUsers, setInviteUsers] = useState<UserInfo[]>([])
   const [peerMuted, setPeerMuted] = useState<Map<string, boolean>>(new Map())
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
-  const speakingTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
   const [deafened, setDeafened] = useState(false)
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map())
   const [volumeMenuPeer, setVolumeMenuPeer] = useState<string | null>(null)
@@ -733,7 +730,7 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
           })
           const total = packetsLost + packetsReceived
           const lossRate = total > 0 ? packetsLost / total : 0
-          let q: typeof worstQuality = 'good'
+          let q: 'good' | 'fair' | 'poor' = 'good'
           if (lossRate > 0.1 || rtt > 0.5) q = 'poor'
           else if (lossRate > 0.03 || rtt > 0.2) q = 'fair'
           if (q === 'poor' || (q === 'fair' && worstQuality === 'good')) worstQuality = q

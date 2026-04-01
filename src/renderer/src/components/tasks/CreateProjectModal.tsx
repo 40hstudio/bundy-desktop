@@ -1,16 +1,14 @@
 import { useState } from 'react'
 import { X, Loader } from 'lucide-react'
-import { ApiConfig } from '../../types'
+import { ApiConfig, TaskProject } from '../../types'
 import { C, neu } from '../../theme'
-
-const DEMO_MODE = false
 
 const PRESET_COLORS = ['#6c5ce7', '#00b894', '#fdcb6e', '#e17055', '#0984e3', '#d63031', '#e84393', '#00cec9', '#636e72', '#2d3436']
 
 export default function CreateProjectModal({ config, onClose, onCreated }: {
   config: ApiConfig
   onClose: () => void
-  onCreated: () => void
+  onCreated: (project: TaskProject) => void
 }) {
   const [name, setName] = useState('')
   const [clientName, setClientName] = useState('')
@@ -29,7 +27,8 @@ export default function CreateProjectModal({ config, onClose, onCreated }: {
         body: JSON.stringify({ name: name.trim(), clientName: clientName.trim() || null, color, description: description.trim() || null }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }
-      onCreated()
+      const data = await res.json()
+      onCreated(data.project)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create project')
     } finally { setSaving(false) }
