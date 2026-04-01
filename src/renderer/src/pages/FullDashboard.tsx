@@ -124,7 +124,7 @@ interface PlanItem {
 }
 
 // ─── Demo mode — set to true to populate all tabs with dummy data ────────────
-const DEMO_MODE = true
+const DEMO_MODE = false
 
 // ─── Design tokens (VS Code × Discord dark) ─────────────────────────────────
 

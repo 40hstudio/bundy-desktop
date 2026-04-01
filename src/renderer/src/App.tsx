@@ -4,7 +4,7 @@ import Dashboard from './pages/Dashboard'
 import FullDashboard from './pages/FullDashboard'
 import FloatingCallOverlay from './pages/FloatingCallOverlay'
 
-const DEMO_MODE = true
+const DEMO_MODE = false
 
 interface Auth {
   userId: string
