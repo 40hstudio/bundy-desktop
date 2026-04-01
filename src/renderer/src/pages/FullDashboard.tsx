@@ -4743,7 +4743,11 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-      ]
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ],
+      iceTransportPolicy: 'all',
     })
     pc.current = peerConn
     stream.getTracks().forEach(t => peerConn.addTrack(t, stream))
@@ -4871,8 +4875,14 @@ function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp
       const payload = (e as CustomEvent<{ sdp?: string }>).detail
       if (!isReceiver && pc.current) {
         try {
+          console.log('[CallWidget] received call-answer SDP, setting remote description')
           await pc.current.setRemoteDescription({ type: 'answer', sdp: payload.sdp! })
           await drainIceBuffer(pc.current)
+          // Transition to connected immediately — the peer has accepted
+          if (statusRef.current === 'calling') {
+            setStatus('connected'); statusRef.current = 'connected'
+            if (callingAudioRef.current) { callingAudioRef.current.pause(); callingAudioRef.current.src = ''; callingAudioRef.current = null }
+          }
         } catch (err) { console.error('[CallWidget] setRemoteDescription(answer) failed:', err) }
       }
     }
@@ -5377,7 +5387,11 @@ function ConferenceWidget({ config, auth, channelId, channelName, initialPartici
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-      ]
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ],
+      iceTransportPolicy: 'all',
     })
     const peerData: ConferencePeer = { pc: peerConn, stream: null, name: peerName, avatar: peerAvatar, iceBuffer: [], remoteDescSet: false }
     peersRef.current.set(peerId, peerData)
