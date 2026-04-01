@@ -16,7 +16,7 @@ import {
   Smile, Pin, MessageCircle, ChevronUp,
   Monitor, MonitorOff, UserPlus2, Wifi, WifiLow, WifiZero,
   LogIn, LogOut as LogOutIcon, FolderOpen, ChevronDown,
-  Headphones, Bell
+  Headphones, Bell, Download
 } from 'lucide-react'
 
 // Electron-specific CSS property for window dragging
@@ -1552,13 +1552,12 @@ function AuthImage({ src, config, alt, style, onClick }: { src: string; config: 
 }
 
 // Inline image attachment (when message content matches attachment pattern)
-function InlineAttachment({ content, config }: { content: string; isMe?: boolean; config?: ApiConfig }) {
+function InlineAttachment({ content, config, onImageClick }: { content: string; isMe?: boolean; config?: ApiConfig; onImageClick?: (url: string, filename: string) => void }) {
   // Match [📎 filename](url) — allow any characters in filename including _ and spaces
   const match = content.match(/^\[📎\s([^\]]+?)\]\((https?:\/\/\S+?)\)\s*$/)
   if (!match) return null
   const [, filename, url] = match
   const cleanUrl = url.trim()
-  const [expanded, setExpanded] = useState(false)
   const [imgError, setImgError] = useState(false)
   const [imgLoaded, setImgLoaded] = useState(false)
 
@@ -1594,11 +1593,11 @@ function InlineAttachment({ content, config }: { content: string; isMe?: boolean
             config={config}
             alt={filename}
             style={{
-              maxWidth: 360, maxHeight: expanded ? 500 : 260,
+              maxWidth: 360, maxHeight: 260,
               objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in', display: 'block',
               border: `1px solid ${C.separator}`,
             }}
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => onImageClick?.(cleanUrl, filename)}
           />
         </div>
       )
@@ -1647,11 +1646,11 @@ function InlineAttachment({ content, config }: { content: string; isMe?: boolean
           src={cleanUrl}
           alt={filename}
           loading="lazy"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => onImageClick?.(cleanUrl, filename)}
           onLoad={() => setImgLoaded(true)}
           onError={() => setImgError(true)}
           style={{
-            maxWidth: 360, maxHeight: expanded ? 500 : 260,
+            maxWidth: 360, maxHeight: 260,
             objectFit: 'cover', borderRadius: 8, cursor: 'zoom-in',
             display: imgLoaded ? 'block' : 'none',
             border: `1px solid ${C.separator}`,
@@ -1981,6 +1980,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   // Activity-based presence: track when each user was last active
   const lastSeenRef = useRef<Record<string, number>>({})
   const [lastSeenTick, setLastSeenTick] = useState(0)
+  // Lightbox state
+  const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null)
+  useEffect(() => {
+    if (!lightbox) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox])
   // Active call state
   const [activeCall, setActiveCall] = useState<{
     targetUser: { id: string; name: string; avatar: string | null }
@@ -2071,6 +2078,12 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
     if (ago <= 5 * 60_000) return 'active'  // 5 minutes
     if (ago <= 30 * 60_000) return 'recent' // 30 minutes
     return 'away'
+  }, [lastSeenTick])
+
+  // Helper: get tracker status badge for a user
+  const getTrackerStatus = useCallback((userId: string): string | null => {
+    void lastSeenTick
+    return trackerStatusRef.current[userId] ?? null
   }, [lastSeenTick])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -2367,6 +2380,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   }, 3000)
                 }
               } else if (ev === 'channel-read') {
+                if (payload.userId !== auth.userId) lastSeenRef.current[payload.userId] = Date.now()
                 setMessages(prev => prev.map(m =>
                   payload.messageIds?.includes(m.id)
                     ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
@@ -2390,6 +2404,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                 const { messageId, userId, emoji, action } = payload as { messageId: string; userId: string; emoji: string; action: 'add' | 'remove'; userName: string }
                 // Skip SSE for own reactions — already handled optimistically in toggleReaction
                 if (userId === auth.userId) continue
+                lastSeenRef.current[userId] = Date.now()
                 const updateReaction = (prev: ChatMessage[]) => prev.map(m => {
                   if (m.id !== messageId) return m
                   const reactions = [...(m.reactions ?? [])]
@@ -2414,6 +2429,9 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                 // Real-time user status update from server
                 const { userId, userStatus } = payload as { userId: string; userStatus: string | null }
                 console.log('[Bundy] SSE user-status event:', JSON.stringify(payload))
+                if (userStatus) trackerStatusRef.current[userId] = userStatus
+                else delete trackerStatusRef.current[userId]
+                setLastSeenTick(t => t + 1) // trigger badge re-render
                 setChannels(prev => prev.map(c => ({
                   ...c,
                   members: c.members.map(m =>
@@ -2567,13 +2585,22 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   }, [showThreadsView, apiFetch])
 
   // Periodically refresh user profile info (alias, avatar) from /api/users.
-  // Note: /api/users does NOT return tracker status — only profile fields.
+  // Also try to discover tracker status from server endpoints.
+  const trackerStatusRef = useRef<Record<string, string>>({})
+  const trackerProbed = useRef(false)
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshUserInfo() {
       apiFetch('/api/users').then((data: { users: any[] }) => {
         const userMap: Record<string, any> = {}
-        for (const u of (data.users ?? [])) userMap[u.id] = u
+        for (const u of (data.users ?? [])) {
+          userMap[u.id] = u
+          // If server ever adds status fields, pick them up automatically
+          const st = u.currentStatus ?? u.bundyStatus ?? u.trackerStatus ?? u.status
+          if (st && typeof st === 'string' && ['CHECK_IN', 'BACK', 'BREAK', 'CLOCK_OUT', 'NONE'].includes(st)) {
+            trackerStatusRef.current[u.id] = st
+          }
+        }
         setChannels(prev => prev.map(c => ({
           ...c,
           members: c.members.map(m => {
@@ -2591,6 +2618,40 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
         })))
       }).catch(() => {})
     }
+
+    // One-time probe of potential attendance endpoint
+    if (!trackerProbed.current) {
+      trackerProbed.current = true
+      apiFetch('/api/attendance/today').then((data: any) => {
+        console.log('[Bundy] /api/attendance/today response:', JSON.stringify(data))
+        const records = data.attendance ?? data.records ?? data.users ?? data
+        if (Array.isArray(records)) {
+          for (const r of records) {
+            const uid = r.userId ?? r.id
+            const st = r.currentStatus ?? r.status ?? r.action
+            if (uid && st) trackerStatusRef.current[uid] = st
+          }
+          setLastSeenTick(t => t + 1) // trigger re-render
+        }
+      }).catch(() => {
+        console.log('[Bundy] /api/attendance/today not available, trying /api/bundy/team')
+        apiFetch('/api/bundy/team').then((data: any) => {
+          console.log('[Bundy] /api/bundy/team response:', JSON.stringify(data))
+          const records = data.team ?? data.members ?? data.users ?? data
+          if (Array.isArray(records)) {
+            for (const r of records) {
+              const uid = r.userId ?? r.id
+              const st = r.currentStatus ?? r.status ?? r.action
+              if (uid && st) trackerStatusRef.current[uid] = st
+            }
+            setLastSeenTick(t => t + 1)
+          }
+        }).catch(() => {
+          console.log('[Bundy] No team tracker endpoint found. Tracker badges will rely on SSE user-status events.')
+        })
+      })
+    }
+
     refreshUserInfo()
     const id = setInterval(refreshUserInfo, 30_000)
     return () => clearInterval(id)
@@ -2607,8 +2668,11 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
     return () => window.removeEventListener('bundy-channel-left', onLeft)
   }, [])
 
+  const justSwitchedRef = useRef(false)
+
   useEffect(() => {
     if (!selected) return
+    justSwitchedRef.current = true
     if (!DEMO_MODE) loadMessages(selected)
     // Close thread/pinned panel when switching channels
     setThreadParent(null)
@@ -2646,7 +2710,19 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
   }, [isVisible]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (justSwitchedRef.current) {
+      // Instant scroll to bottom on conversation switch / initial load
+      justSwitchedRef.current = false
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
+      })
+    } else {
+      // New message: only auto-scroll if user is already near bottom
+      const el = messagesScrollRef.current
+      if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 150) {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      }
+    }
   }, [messages])
 
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -3047,7 +3123,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                   <Plus size={14} />
                 </button>
               </div>
-              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} />)}
+              {!collapsedSections.dms && dmList.map(c => <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} auth={auth} typingUsers={typingMap[c.id] ?? []} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />)}
             </>
           )}
           {channels.length === 0 && (
@@ -3199,6 +3275,14 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                 <span style={{ fontWeight: 700, fontSize: 15, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {selected.name}
                 </span>
+                {selected.type === 'dm' && selected.partnerId && (() => {
+                  const ts = getTrackerStatus(selected.partnerId)
+                  const label = ts === 'CHECK_IN' || ts === 'BACK' ? 'In' : ts === 'BREAK' ? 'Break' : ts === 'CLOCK_OUT' ? 'Out' : null
+                  const color = ts === 'CHECK_IN' || ts === 'BACK' ? C.success : ts === 'BREAK' ? C.warning : ts === 'CLOCK_OUT' ? C.textMuted : null
+                  return label ? (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: color!, padding: '1px 6px', borderRadius: 3, background: `${color!}20`, flexShrink: 0, lineHeight: '16px', letterSpacing: 0.3 }}>{label}</span>
+                  ) : null
+                })()}
                 {selected.type !== 'dm' && selected.members.length > 0 && (
                   <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>
                     {selected.members.length} members
@@ -3498,7 +3582,7 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
                           </div>
                         </div>
                       ) : isAttachment ? (
-                        <InlineAttachment content={msg.content} isMe={isMe} config={config} />
+                        <InlineAttachment content={msg.content} isMe={isMe} config={config} onImageClick={(url, fn) => setLightbox({ url, filename: fn })} />
                       ) : (
                         <div style={{ fontSize: 14, color: C.text, lineHeight: 1.46, wordBreak: 'break-word', overflowWrap: 'break-word', userSelect: 'text', WebkitUserSelect: 'text' }}>
                           {renderMessageContent(msg.content, false)}
@@ -3911,17 +3995,86 @@ function MessagesPanel({ config, auth, acceptedCall, iceBufferRef, answerSdpRef,
           </button>
         </div>
       )}
+
+      {/* ─── Lightbox overlay ─── */}
+      {lightbox && (
+        <div
+          onClick={() => setLightbox(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 99999,
+            background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'zoom-out',
+          }}
+        >
+          {/* Close button */}
+          <button onClick={() => setLightbox(null)} style={{
+            position: 'absolute', top: 16, right: 16, background: 'rgba(255,255,255,0.15)',
+            border: 'none', borderRadius: '50%', width: 36, height: 36,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+          }}>
+            <X size={20} color="#fff" />
+          </button>
+          {/* Download button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              fetch(lightbox.url, { headers: { Authorization: `Bearer ${config.token}` } })
+                .then(r => r.blob())
+                .then(blob => {
+                  const a = document.createElement('a')
+                  a.href = URL.createObjectURL(blob)
+                  a.download = lightbox.filename
+                  a.click()
+                  setTimeout(() => URL.revokeObjectURL(a.href), 30_000)
+                })
+                .catch(() => {})
+            }}
+            style={{
+              position: 'absolute', top: 16, right: 64, background: 'rgba(255,255,255,0.15)',
+              border: 'none', borderRadius: '50%', width: 36, height: 36,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            }}
+          >
+            <Download size={18} color="#fff" />
+          </button>
+          {/* Filename */}
+          <div style={{ position: 'absolute', top: 20, left: 20, color: '#fff', fontSize: 14, fontWeight: 600, opacity: 0.8, maxWidth: 'calc(100% - 140px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {lightbox.filename}
+          </div>
+          {/* Image */}
+          <div onClick={(e) => e.stopPropagation()} style={{ cursor: 'default', maxWidth: '90vw', maxHeight: '85vh' }}>
+            {config ? (
+              <AuthImage
+                src={lightbox.url}
+                config={config}
+                alt={lightbox.filename}
+                style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 4 }}
+              />
+            ) : (
+              <img
+                src={lightbox.url}
+                alt={lightbox.filename}
+                style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 4 }}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose, getPresence }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void; getPresence?: (userId: string) => 'active' | 'recent' | 'away' }) {
+function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onClick, onClose, getPresence, getTrackerStatus }: { conv: Conversation; selected: boolean; auth?: Auth; typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean; onClick: () => void; onClose?: () => void; getPresence?: (userId: string) => 'active' | 'recent' | 'away'; getTrackerStatus?: (userId: string) => string | null }) {
   const [hovered, setHovered] = useState(false)
   const hasUnread = (conv.unread ?? 0) > 0
   // Activity-based presence for DM partner
   const partnerId = conv.type === 'dm' ? conv.partnerId : undefined
   const presence = partnerId && getPresence ? getPresence(partnerId) : 'away'
   const presenceDotColor = presence === 'active' ? C.success : presence === 'recent' ? C.warning : C.textMuted
+  // Tracker status badge
+  const trackerStatus = partnerId && getTrackerStatus ? getTrackerStatus(partnerId) : null
+  const trackerLabel = trackerStatus === 'CHECK_IN' || trackerStatus === 'BACK' ? 'In' : trackerStatus === 'BREAK' ? 'Break' : trackerStatus === 'CLOCK_OUT' ? 'Out' : null
+  const trackerColor = trackerStatus === 'CHECK_IN' || trackerStatus === 'BACK' ? C.success : trackerStatus === 'BREAK' ? C.warning : trackerStatus === 'CLOCK_OUT' ? C.textMuted : null
 
   return (
     <div
@@ -3980,6 +4133,13 @@ function ConvRow({ conv, selected, typingUsers, hasActiveCall, isMentioned, onCl
         </span>
         {typingUsers.length > 0 && (
           <span style={{ fontSize: 11, color: C.accent, fontStyle: 'italic', marginLeft: 6, flexShrink: 0 }}>typing…</span>
+        )}
+        {trackerLabel && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, color: trackerColor!, marginLeft: 6,
+            padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+            background: `${trackerColor!}20`, lineHeight: '14px', letterSpacing: 0.3,
+          }}>{trackerLabel}</span>
         )}
       </div>
       {hasActiveCall && (
