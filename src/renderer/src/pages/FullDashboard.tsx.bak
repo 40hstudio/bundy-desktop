@@ -1,3 +1,20 @@
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  DEPRECATED — DO NOT USE                                                    ║
+// ║                                                                              ║
+// ║  This file is the pre-refactor monolith snapshot of FullDashboard.tsx.      ║
+// ║  It has been superseded by the component-based architecture introduced in   ║
+// ║  v1.3.0. All logic has been extracted into:                                 ║
+// ║                                                                              ║
+// ║    src/renderer/src/types/             — shared TypeScript interfaces       ║
+// ║    src/renderer/src/theme.ts           — design tokens & style helpers      ║
+// ║    src/renderer/src/utils/             — format, markdown helpers           ║
+// ║    src/renderer/src/hooks/             — useApiConfig, useStatusTicker      ║
+// ║    src/renderer/src/components/        — all UI components by domain        ║
+// ║    src/renderer/src/pages/FullDashboard.tsx — thin orchestrator             ║
+// ║                                                                              ║
+// ║  Kept here for reference only. Will be removed in a future release.         ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Home, MessageSquare, CheckSquare, Activity, Settings,
