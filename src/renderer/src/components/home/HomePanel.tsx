@@ -490,3 +490,5 @@ export function HomePanel({
     </div>
   )
 }
+
+export default HomePanel

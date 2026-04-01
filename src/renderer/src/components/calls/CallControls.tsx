@@ -351,3 +351,5 @@ export function CallControls({
     </div>
   )
 }
+
+export default CallControls
