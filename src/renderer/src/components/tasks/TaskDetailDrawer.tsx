@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   X, Trash2, Check, Link, Edit2, AlignLeft, MessageSquare,
   Activity, ChevronRight, Loader, AlertCircle, Paperclip, FileText,
@@ -10,8 +10,10 @@ import {
   TaskActivityItem, TaskAttachment, UserInfo
 } from '../../types'
 import { C, neu } from '../../theme'
+import { apiFetch, apiGet } from '../../utils/api'
 import { timeAgo } from '../../utils/format'
 import { linkifyText, isImageUrl, extractUrls } from '../../utils/markdown'
+import { sanitizeHtml } from '../../utils/sanitize'
 import { Avatar } from '../shared/Avatar'
 import { OgPreview } from '../messages/OgPreview'
 import { TASK_STATUS_LABELS, TASK_STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'
@@ -55,23 +57,14 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
   const [viewTaskId, setViewTaskId] = useState(taskId)
   const [parentStack, setParentStack] = useState<string[]>([])
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
-
   useEffect(() => {
     setLoadingDetail(true)
     setLoadError(null)
     setActiveTab('detail')
     Promise.all([
-      apiFetch(`/api/tasks/${viewTaskId}`),
-      apiFetch('/api/users'),
-    ]).then(([taskData, userData]: [{ task: Task }, { users: UserInfo[] }]) => {
+      apiGet<{ task: Task }>(`/api/tasks/${viewTaskId}`),
+      apiGet<{ users: UserInfo[] }>('/api/users'),
+    ]).then(([taskData, userData]) => {
       setDetail(taskData.task)
       setComments(taskData.task.comments ?? [])
       setActivities(taskData.task.activities ?? [])
@@ -80,20 +73,22 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
       setEditDesc(taskData.task.description ?? '')
       setUsers(userData.users)
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
-  }, [viewTaskId, apiFetch])
+  }, [viewTaskId])
 
   useEffect(() => {
     if (!detail?.projectId) { setDetailSections([]); return }
-    apiFetch(`/api/tasks/sections?projectId=${detail.projectId}`)
-      .then((d: { sections: TaskSection[] }) => setDetailSections(d.sections))
+    apiGet<{ sections: TaskSection[] }>(`/api/tasks/sections?projectId=${detail.projectId}`)
+      .then(d => setDetailSections(d.sections))
       .catch(() => setDetailSections([]))
-  }, [detail?.projectId, apiFetch])
+  }, [detail?.projectId])
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
     if (!detail) return
     setSavingField(fieldName ?? null)
     try {
-      const d = await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
+      const res = await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'PATCH', body: JSON.stringify(data) })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const d = await res.json() as { task: Task }
       setDetail(prev => prev ? {
         ...prev, ...d.task,
         comments: prev.comments, subtasks: prev.subtasks, activities: prev.activities, attachments: prev.attachments,
@@ -128,9 +123,8 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
         if (commentText.trim()) formData.append('body', commentText.trim())
         formData.append('file', commentAttach)
         if (parentId) formData.append('parentCommentId', parentId)
-        const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/comments`, {
+        const res = await apiFetch(`/api/tasks/${viewTaskId}/comments`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}` },
           body: formData,
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -138,9 +132,11 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
         if (parentId) setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
         else setComments(prev => [...prev, d.comment])
       } else {
-        const d = await apiFetch(`/api/tasks/${viewTaskId}/comments`, {
+        const r = await apiFetch(`/api/tasks/${viewTaskId}/comments`, {
           method: 'POST', body: JSON.stringify({ body: commentText.trim(), parentCommentId: parentId }),
-        }) as { comment: TaskComment }
+        })
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const d = await r.json() as { comment: TaskComment }
         if (parentId) setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
         else setComments(prev => [...prev, d.comment])
       }
@@ -160,10 +156,12 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
     if (!newSubtaskTitle.trim() || !detail) return
     setAddingSubtask(true)
     try {
-      const d = await apiFetch('/api/tasks', {
+      const r = await apiFetch('/api/tasks', {
         method: 'POST',
         body: JSON.stringify({ title: newSubtaskTitle.trim(), parentTaskId: viewTaskId, projectId: detail.projectId, assigneeId: detail.assigneeId }),
-      }) as { task: Task }
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json() as { task: Task }
       setDetail(prev => prev ? { ...prev, subtasks: [...(prev.subtasks ?? []), d.task], _count: { ...prev._count, subtasks: prev._count.subtasks + 1 } } : prev)
       onUpdated({ ...detail, _count: { ...detail._count, subtasks: detail._count.subtasks + 1 } })
       setNewSubtaskTitle('')
@@ -196,8 +194,8 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
     try {
       const fd = new FormData()
       fd.append('file', file)
-      const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/attachments`, {
-        method: 'POST', headers: { Authorization: `Bearer ${config.token}` }, body: fd,
+      const res = await apiFetch(`/api/tasks/${viewTaskId}/attachments`, {
+        method: 'POST', body: fd,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const d = await res.json() as { attachment: TaskAttachment }
@@ -210,7 +208,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
     try {
       await apiFetch(`/api/tasks/${viewTaskId}/attachments`, { method: 'DELETE', body: JSON.stringify({ attachmentId: attId }) })
     } catch {
-      apiFetch(`/api/tasks/${viewTaskId}`).then((d: { task: Task }) => setAttachments(d.task.attachments ?? []))
+      apiGet<{ task: Task }>(`/api/tasks/${viewTaskId}`).then(d => setAttachments(d.task.attachments ?? []))
     }
   }
 
@@ -393,7 +391,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
                   else setEditingDesc(true)
                 }}
                   style={{ fontSize: 13, color: C.text, lineHeight: 1.6, cursor: 'pointer', minHeight: 40, padding: '8px 10px', ...neu(true), borderRadius: 4 }}
-                  dangerouslySetInnerHTML={{ __html: linkifyText(detail.description) }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(linkifyText(detail.description)) }}
                 />
               ) : (
                 <div onClick={() => setEditingDesc(true)}
@@ -603,7 +601,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
                         {c.body && (
                           <div onClick={(e) => { const t = e.target as HTMLElement; if (t.tagName === 'A') { e.preventDefault(); const href = t.getAttribute('href'); if (href) window.electronAPI.openExternal(href) } }}
                             style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: 2 }}
-                            dangerouslySetInnerHTML={{ __html: linkifyText(c.body) }}
+                            dangerouslySetInnerHTML={{ __html: sanitizeHtml(linkifyText(c.body)) }}
                           />
                         )}
                         {c.body && extractUrls(c.body).filter(u => !isImageUrl(u)).slice(0, 1).map(u => <OgPreview key={u} url={u} config={config} />)}
@@ -640,7 +638,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
                                 </div>
                                 {r.body && <div onClick={(e) => { const t = e.target as HTMLElement; if (t.tagName === 'A') { e.preventDefault(); const href = t.getAttribute('href'); if (href) window.electronAPI.openExternal(href) } }}
                                   style={{ fontSize: 12, color: C.text, lineHeight: 1.5, marginTop: 1 }}
-                                  dangerouslySetInnerHTML={{ __html: linkifyText(r.body) }} />}
+                                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(linkifyText(r.body)) }} />}
                                 {r.attachmentName && r.attachmentUrl && (
                                   rIsImage ? (
                                     <img src={`${config.apiBase}${r.attachmentUrl}`} alt={r.attachmentName}

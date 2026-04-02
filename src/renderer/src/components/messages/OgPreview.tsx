@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { C } from '../../theme'
 import type { ApiConfig } from '../../types'
+import { apiFetch } from '../../utils/api'
 
 interface OgMeta { title: string | null; description: string | null; image: string | null; siteName: string | null }
 
@@ -16,8 +17,7 @@ export function OgPreview({ url, config }: { url: string; config: ApiConfig }) {
   useEffect(() => {
     if (ogClientCache.has(url)) return
     const params = new URLSearchParams({ url })
-    fetch(`${config.apiBase}/api/opengraph?${params}`, {
-      headers: { Authorization: `Bearer ${config.token}` },
+    apiFetch(`/api/opengraph?${params}`, {
       signal: AbortSignal.timeout(8000),
     })
       .then(r => r.json())

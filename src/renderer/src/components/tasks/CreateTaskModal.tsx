@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { X, Loader } from 'lucide-react'
 import { ApiConfig, Auth, Task, TaskProject, TaskSection, UserInfo } from '../../types'
 import { C, neu } from '../../theme'
+import { apiFetch } from '../../utils/api'
 
 export default function CreateTaskModal({ config, auth, projects, sections, selectedProjectId, onClose, onCreated }: {
   config: ApiConfig; auth: Auth
@@ -27,7 +28,7 @@ export default function CreateTaskModal({ config, auth, projects, sections, sele
   const [projectSections, setProjectSections] = useState<TaskSection[]>(sections)
 
   useEffect(() => {
-    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+    apiFetch('/api/users')
       .then(r => r.json())
       .then((d: { users: UserInfo[] }) => setUsers(d.users))
       .catch(console.error)
@@ -35,7 +36,7 @@ export default function CreateTaskModal({ config, auth, projects, sections, sele
 
   useEffect(() => {
     if (!projectId) { setProjectSections([]); setSectionId(''); return }
-    fetch(`${config.apiBase}/api/tasks/sections?projectId=${projectId}`, { headers: { Authorization: `Bearer ${config.token}` } })
+    apiFetch(`/api/tasks/sections?projectId=${projectId}`)
       .then(r => r.json())
       .then((d: { sections: TaskSection[] }) => { setProjectSections(d.sections); setSectionId('') })
       .catch(() => { setProjectSections([]); setSectionId('') })
@@ -56,9 +57,8 @@ export default function CreateTaskModal({ config, auth, projects, sections, sele
         startDate: startDate || null,
         estimatedHours: estimatedHours ? parseFloat(estimatedHours) : null,
       }
-      const res = await fetch(`${config.apiBase}/api/tasks`, {
+      const res = await apiFetch('/api/tasks', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }

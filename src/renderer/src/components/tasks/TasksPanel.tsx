@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { ApiConfig, Auth, Task, TaskProject, TaskSection } from '../../types'
 import { C, neu } from '../../theme'
+import { apiFetch, apiGet } from '../../utils/api'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_BOARD_COLS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'
 import TaskListGroup from './TaskListGroup'
@@ -14,14 +15,15 @@ import CreateProjectModal from './CreateProjectModal'
 import EditProjectModal from './EditProjectModal'
 import ManageSectionsModal from './ManageSectionsModal'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 
 export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: {
   config: ApiConfig; auth: Auth; pendingTaskId?: string | null; onPendingTaskHandled?: () => void
 }) {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress' | 'overdue'>('mine')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress' | 'overdue'>(auth.role === 'admin' ? 'all' : 'mine')
   const [projects, setProjects] = useState<TaskProject[]>([])
   const [sections, setSections] = useState<TaskSection[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
@@ -36,17 +38,9 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
   const [editProject, setEditProject] = useState<TaskProject | null>(null)
   const [showManageSections, setShowManageSections] = useState(false)
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
-
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const params = new URLSearchParams()
       if (filter === 'mine') params.set('assigneeId', 'me')
@@ -55,21 +49,23 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
       if (filter === 'overdue') params.set('dueDate', 'overdue')
       if (selectedProjectId) params.set('projectId', selectedProjectId)
       const [taskData, projData] = await Promise.all([
-        apiFetch(`/api/tasks?${params.toString()}`) as Promise<{ tasks: Task[] }>,
-        apiFetch('/api/tasks/projects') as Promise<{ projects: TaskProject[] }>,
+        apiGet<{ tasks: Task[] }>(`/api/tasks?${params.toString()}`),
+        apiGet<{ projects: TaskProject[] }>('/api/tasks/projects'),
       ])
       setTasks(taskData.tasks)
       setProjects(projData.projects)
       if (selectedProjectId) {
-        const secData = await apiFetch(`/api/tasks/sections?projectId=${selectedProjectId}`) as { sections: TaskSection[] }
+        const secData = await apiGet<{ sections: TaskSection[] }>(`/api/tasks/sections?projectId=${selectedProjectId}`)
         setSections(secData.sections)
       } else {
         setSections([])
       }
-    } catch { /* offline */ } finally {
+    } catch (err: unknown) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load tasks')
+    } finally {
       setLoading(false)
     }
-  }, [apiFetch, filter, selectedProjectId])
+  }, [filter, selectedProjectId])
 
   useEffect(() => {
     if (DEMO_MODE) {
@@ -309,6 +305,12 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
       <div style={{ flex: 1, overflow: viewMode === 'board' ? 'hidden' : 'auto', minHeight: 0, padding: viewMode === 'board' ? '16px 12px' : 16 }}>
         {loading ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}><Loader size={24} /></div>
+        ) : loadError ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <div style={{ color: '#f04747', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Failed to load tasks</div>
+            <div style={{ color: C.textMuted, fontSize: 11, fontFamily: 'monospace', wordBreak: 'break-all' }}>{loadError}</div>
+            <button onClick={load} style={{ marginTop: 12, padding: '6px 14px', borderRadius: 8, border: 'none', background: C.accent, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Retry</button>
+          </div>
         ) : tasks.length === 0 ? (
           <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}>
             <CheckSquare size={40} strokeWidth={1} style={{ opacity: 0.4, margin: '0 auto' }} />

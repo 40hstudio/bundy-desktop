@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Hash, Users, Move, MicOff, LayoutGrid, LayoutList } from 'lucide-react'
 import { ApiConfig, Auth, UserInfo } from '../../types'
 import { C } from '../../theme'
+import { apiFetch, apiGet } from '../../utils/api'
 import Avatar from '../shared/Avatar'
 import CallControls from './CallControls'
 
@@ -177,9 +178,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
 
     peerConn.onicecandidate = e => {
       if (e.candidate) {
-        fetch(`${config.apiBase}/api/calls`, {
+        apiFetch('/api/calls', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'conference-ice', to: peerId, channelId, candidate: e.candidate }),
         }).catch(() => {})
       }
@@ -196,9 +196,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
             try {
               const offer = await peerConn.createOffer({ iceRestart: true })
               await peerConn.setLocalDescription(offer)
-              await fetch(`${config.apiBase}/api/calls`, {
+              await apiFetch('/api/calls', {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
               })
             } catch (err) { console.error(`[Conference] peer ${peerId} ICE restart failed:`, err) }
@@ -207,9 +206,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
       } else if (state === 'failed') {
         peerConn.createOffer({ iceRestart: true }).then(async offer => {
           await peerConn.setLocalDescription(offer)
-          await fetch(`${config.apiBase}/api/calls`, {
+          await apiFetch('/api/calls', {
             method: 'POST',
-            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
           })
         }).catch(() => { removePeer(peerId) })
@@ -256,9 +254,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
         const peerConn = createPeerConnection(p.id, p.name, p.avatar)
         const offer = await peerConn.createOffer()
         await peerConn.setLocalDescription(offer)
-        await fetch(`${config.apiBase}/api/calls`, {
+        await apiFetch('/api/calls', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'conference-offer', to: p.id, channelId, sdp: offer.sdp }),
         })
       }
@@ -287,9 +284,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
         await drainPeerIceBuffer(fromId)
         const answer = await peerConn.createAnswer()
         await peerConn.setLocalDescription(answer)
-        await fetch(`${config.apiBase}/api/calls`, {
+        await apiFetch('/api/calls', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'conference-answer', to: fromId, channelId, sdp: answer.sdp }),
         })
       } catch (err) { console.error('[Conference] handling offer from', fromId, err) }
@@ -381,9 +377,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
     localStream.current?.getTracks().forEach(t => t.stop())
     screenShareStream.current?.getTracks().forEach(t => t.stop())
     if (sendLeave) {
-      fetch(`${config.apiBase}/api/calls`, {
+      apiFetch('/api/calls', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'conference-leave', channelId }),
       }).catch(() => {})
     }
@@ -399,9 +394,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
           peer.pc.addTrack(videoTrack, localStream.current!)
           const offer = await peer.pc.createOffer()
           await peer.pc.setLocalDescription(offer)
-          await fetch(`${config.apiBase}/api/calls`, {
+          await apiFetch('/api/calls', {
             method: 'POST',
-            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
           })
         }
@@ -423,9 +417,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
     const newMuted = !muted
     localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
     setMuted(newMuted)
-    fetch(`${config.apiBase}/api/calls`, {
+    apiFetch('/api/calls', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'conference-mute', channelId, muted: newMuted }),
     }).catch(() => {})
   }
@@ -437,9 +430,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
     if (newDeafened && !muted) {
       localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
       setMuted(true)
-      fetch(`${config.apiBase}/api/calls`, {
+      apiFetch('/api/calls', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
       }).catch(() => {})
     }
@@ -509,9 +501,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
     if (newPtt) {
       localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
       setMuted(true)
-      fetch(`${config.apiBase}/api/calls`, {
+      apiFetch('/api/calls', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
       }).catch(() => {})
     }
@@ -523,9 +514,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
       if (e.key === 'v' && !e.repeat && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
         localStream.current?.getAudioTracks().forEach(t => { t.enabled = true })
         setMuted(false)
-        fetch(`${config.apiBase}/api/calls`, {
+        apiFetch('/api/calls', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'conference-mute', channelId, muted: false }),
         }).catch(() => {})
       }
@@ -534,9 +524,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
       if (e.key === 'v' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
         localStream.current?.getAudioTracks().forEach(t => { t.enabled = false })
         setMuted(true)
-        fetch(`${config.apiBase}/api/calls`, {
+        apiFetch('/api/calls', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'conference-mute', channelId, muted: true }),
         }).catch(() => {})
       }
@@ -558,9 +547,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
     const id = ++reactionIdRef.current
     setCallReactions(prev => [...prev, { id, emoji, from: 'You' }])
     setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
-    fetch(`${config.apiBase}/api/calls`, {
+    apiFetch('/api/calls', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'conference-reaction', channelId, emoji }),
     }).catch(() => {})
   }
@@ -684,9 +672,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
           peer.pc.addTrack(screenTrack, stream)
           const offer = await peer.pc.createOffer()
           await peer.pc.setLocalDescription(offer)
-          await fetch(`${config.apiBase}/api/calls`, {
+          await apiFetch('/api/calls', {
             method: 'POST',
-            headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'conference-offer', to: peerId, channelId, sdp: offer.sdp }),
           })
         }
@@ -699,9 +686,7 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
 
   async function loadInviteUsers() {
     try {
-      const res = await fetch(`${config.apiBase}/api/channels/${channelId}/members`, {
-        headers: { Authorization: `Bearer ${config.token}` },
-      })
+      const res = await apiFetch(`/api/channels/${channelId}/members`)
       if (!res.ok) throw new Error('HTTP ' + res.status)
       const data = await res.json()
       const inConf = new Set([auth.userId, ...Array.from(peersRef.current.keys())])
@@ -830,9 +815,8 @@ export default function ConferenceWidget({ config, auth, channelId, channelName,
             <Avatar url={u.avatarUrl ?? null} name={u.alias ?? u.username} size={32} />
             <span style={{ flex: 1, color: '#cccccc', fontSize: 13 }}>{u.alias ?? u.username}</span>
             <button onClick={async () => {
-              await fetch(`${config.apiBase}/api/calls`, {
+              await apiFetch('/api/calls', {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'conference-invite', to: u.id, channelId }),
               }).catch(() => {})
               setInviteUsers(prev => prev.filter(x => x.id !== u.id))

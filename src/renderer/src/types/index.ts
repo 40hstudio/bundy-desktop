@@ -6,6 +6,7 @@ export interface BundyStatus {
   isClockedIn: boolean; onBreak: boolean; isTracking: boolean
   elapsedMs: number; username: string; role: string
 }
+export interface Permissions { screen: string; accessibility: boolean }
 export interface UserInfo {
   id: string; username: string; alias: string | null; avatarUrl: string | null; role?: string; userStatus?: string | null
 }
@@ -24,10 +25,11 @@ export interface Conversation {
 export interface ChatMessage {
   id: string; content: string; createdAt: string; editedAt: string | null
   sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-  reads?: { userId: string }[]
+  reads?: { userId: string; readAt?: string | null }[]
   reactions?: { emoji: string; userId: string; user: { id: string; username: string; alias: string | null } }[]
   parentMessageId?: string | null
   replyCount?: number
+  replySenders?: { id: string; username: string; alias: string | null; avatarUrl: string | null }[]
   isPinned?: boolean
   pinnedAt?: string | null
   pinnedBy?: string | null
@@ -39,6 +41,7 @@ export interface ThreadActivity {
   channelType: 'channel' | 'group' | 'dm'
   parentMessage: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null } }
   lastReply: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null }; createdAt: string }
+  recentReplies?: { content: string; sender: { alias: string | null; username: string; avatarUrl: string | null }; createdAt: string }[]
   replyCount: number
   unread: boolean
 }

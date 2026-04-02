@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, Loader } from 'lucide-react'
 import { ApiConfig, TaskProject } from '../../types'
 import { C, neu } from '../../theme'
+import { apiFetch } from '../../utils/api'
 
 const PRESET_COLORS = ['#6c5ce7', '#00b894', '#fdcb6e', '#e17055', '#0984e3', '#d63031', '#e84393', '#00cec9', '#636e72', '#2d3436']
 
@@ -21,9 +22,8 @@ export default function CreateProjectModal({ config, onClose, onCreated }: {
     if (!name.trim()) { setError('Project name is required'); return }
     setSaving(true); setError(null)
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks/projects`, {
+      const res = await apiFetch('/api/tasks/projects', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), clientName: clientName.trim() || null, color, description: description.trim() || null }),
       })
       if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `HTTP ${res.status}`) }

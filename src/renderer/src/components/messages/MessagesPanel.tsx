@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import {
-  MessageSquare, Edit2, Search, Hash, Users, Plus, ChevronDown,
+  MessageSquare, Edit2, Search, Hash, Users, User, Plus, ChevronDown,
   Loader, Phone, Video, Pin, Settings2, MessageCircle, ChevronRight,
   Smile, CornerDownRight, Trash2, ChevronUp, Send, X,
   FolderOpen, Paperclip, ExternalLink, Download,
+  Check, CheckCheck, Clock, AlertCircle,
 } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { ApiConfig, Auth, Conversation, ChatMessage, ThreadActivity, UserInfo } from '../../types'
@@ -17,11 +18,12 @@ import { OgPreview } from './OgPreview'
 import { InlineAttachment, AuthImage } from './Attachments'
 import { renderMessageContent, extractUrls, isImageUrl } from '../../utils/markdown'
 import { formatTime, timeAgo } from '../../utils/format'
+import { apiFetch, apiFetchUrl, apiGet } from '../../utils/api'
 import CallWidget from '../calls/CallWidget'
 import ConferenceWidget from '../calls/ConferenceWidget'
 import type { IncomingCallPayload } from './IncomingCallOverlay'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
 
 // ─── Demo data helpers (kept here so DEMO_MODE works) ─────────────────────────
@@ -69,6 +71,7 @@ export function MessagesPanel({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [pendingMsgs, setPendingMsgs] = useState<Array<{ id: string; content: string; status: 'sending' | 'failed' }>>([]);
   const [showNewConv, setShowNewConv] = useState<false | 'dm' | 'group' | 'channel'>(false)
   const [showSettings, setShowSettings] = useState(false)
 
@@ -100,6 +103,7 @@ export function MessagesPanel({
   const [threadMessages, setThreadMessages] = useState<ChatMessage[]>([])
   const [threadInput, setThreadInput] = useState('')
   const [sendingThread, setSendingThread] = useState(false)
+  const [threadAlsoSendToChannel, setThreadAlsoSendToChannel] = useState(false)
 
   // Emoji picker
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null)
@@ -116,7 +120,10 @@ export function MessagesPanel({
   // Threads view
   const [showThreadsView, setShowThreadsView] = useState(false)
   const [threadActivities, setThreadActivities] = useState<ThreadActivity[]>([])
+  const [loadingThreads, setLoadingThreads] = useState(false)
   const pendingThreadRef = useRef<ChatMessage | null>(null)
+  const [inlineInputs, setInlineInputs] = useState<Record<string, string>>({})
+  const [sendingInline, setSendingInline] = useState<Record<string, boolean>>({})
 
   // Shared media directory
   const [showSharedMedia, setShowSharedMedia] = useState(false)
@@ -252,29 +259,16 @@ export function MessagesPanel({
   const messagesScrollRef = useRef<HTMLDivElement>(null)
   const typingTimers = useRef<Record<string, NodeJS.Timeout>>({})
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: {
-        'Authorization': `Bearer ${config.token}`,
-        'Content-Type': 'application/json',
-        ...(opts?.headers ?? {}),
-      },
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
-
   const loadChannels = useCallback(async () => {
     try {
-      const data = await apiFetch('/api/channels') as {
+      const data = await apiGet<{
         channels: Array<{
           id: string; type: string; name: string | null; createdBy?: string
           members: Array<{ userId: string; user: UserInfo }>
           messages: Array<{ content: string; createdAt: string; sender: { username: string; alias: string | null } }>
           unread?: number
         }>
-      }
+      }>('/api/channels')
       const convs: Conversation[] = data.channels.map(ch => {
         let name = ch.name ?? ''
         let avatar: string | null = null
@@ -301,7 +295,7 @@ export function MessagesPanel({
       })
       setChannels(convs)
     } catch { /* offline */ }
-  }, [apiFetch, auth.userId])
+  }, [auth.userId])
 
   // Broadcast unread count to FullDashboard for sidebar badge
   useEffect(() => {
@@ -314,34 +308,35 @@ export function MessagesPanel({
   const loadMessages = useCallback(async (conv: Conversation) => {
     setLoadingMsgs(true)
     try {
-      const data = await apiFetch(`/api/channels/${conv.id}/messages?limit=50`) as {
+      const data = await apiGet<{
         messages: Array<{
           id: string; content: string; createdAt: string; editedAt: string | null
           sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-          reads: { userId: string }[]
+          reads: { userId: string; readAt?: string | null }[]
           reactions?: ChatMessage['reactions']
           parentMessageId?: string | null; replyCount?: number
+          replySenders?: ChatMessage['replySenders']
           isPinned?: boolean; pinnedAt?: string | null; pinnedBy?: string | null
         }>
         hasMore?: boolean
-      }
+      }>(`/api/channels/${conv.id}/messages?limit=50`)
       setMessages(data.messages.map(m => ({
         id: m.id, content: m.content, createdAt: m.createdAt, editedAt: m.editedAt,
         sender: m.sender, reads: m.reads, reactions: m.reactions ?? [],
         parentMessageId: m.parentMessageId, replyCount: m.replyCount ?? 0,
+        replySenders: m.replySenders ?? [],
         isPinned: m.isPinned ?? false, pinnedAt: m.pinnedAt, pinnedBy: m.pinnedBy,
       })))
       setHasMore(data.hasMore ?? false)
       setChannels(prev => prev.map(c => c.id === conv.id ? { ...c, unread: 0 } : c))
       setMentionedChannels(prev => { const next = new Set(prev); next.delete(conv.id); return next })
-      fetch(`${config.apiBase}/api/channels/${conv.id}/read`, {
+      apiFetch(`/api/channels/${conv.id}/read`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}` },
       }).catch(() => {})
     } catch { setMessages([]); setHasMore(false) } finally {
       setLoadingMsgs(false)
     }
-  }, [apiFetch, config])
+  }, [config])
 
   // SSE for real-time messages + typing + read (with auto-reconnect)
   const selectedRef = useRef(selected)
@@ -359,8 +354,7 @@ export function MessagesPanel({
       if (dead) return
       ctrl = new AbortController()
       let buf = ''
-      fetch(`${config.apiBase}/api/bundy/stream`, {
-        headers: { Authorization: `Bearer ${config.token}` },
+      apiFetch('/api/bundy/stream', {
         signal: ctrl.signal,
       }).then(async res => {
         if (!res.body) { scheduleReconnect(); return }
@@ -389,9 +383,17 @@ export function MessagesPanel({
                 if (isCurrentChannel) {
                   if (parentMsgId) {
                     if (payload.senderId !== auth.userId) {
-                      setMessages(prev => prev.map(m =>
-                        m.id === parentMsgId ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m
-                      ))
+                      setMessages(prev => prev.map(m => {
+                        if (m.id !== parentMsgId) return m
+                        const newSender = { id: payload.senderId, username: payload.senderName, alias: payload.senderAlias ?? null, avatarUrl: payload.senderAvatar ?? null }
+                        const existingSenders = m.replySenders ?? []
+                        const alreadyIn = existingSenders.some(s => s.id === payload.senderId)
+                        return {
+                          ...m,
+                          replyCount: (m.replyCount ?? 0) + 1,
+                          replySenders: alreadyIn ? existingSenders : [...existingSenders, newSender].slice(0, 3),
+                        }
+                      }))
                     }
                     setThreadMessages(prev => {
                       if (prev.some(m => m.id === payload.id)) return prev
@@ -424,8 +426,8 @@ export function MessagesPanel({
                     })
                   }
                   if (isVisibleRef.current) {
-                    fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
-                      method: 'POST', headers: { Authorization: `Bearer ${config.token}` },
+                    apiFetch(`/api/channels/${channelId}/read`, {
+                      method: 'POST',
                     }).catch(() => {})
                   } else {
                     setChannels(prev => prev.map(c =>
@@ -500,7 +502,7 @@ export function MessagesPanel({
                 if (payload.userId !== auth.userId) lastSeenRef.current[payload.userId] = Date.now()
                 setMessages(prev => prev.map(m =>
                   payload.messageIds?.includes(m.id)
-                    ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId }] }
+                    ? { ...m, reads: [...(m.reads ?? []), { userId: payload.userId, readAt: new Date().toISOString() }] }
                     : m
                 ))
                 if (payload.userId === auth.userId) {
@@ -604,7 +606,7 @@ export function MessagesPanel({
       ctrl.abort()
       if (reconnectTimer) clearTimeout(reconnectTimer)
     }
-  }, [config, auth.userId, loadChannels]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config, auth.userId, loadChannels]) // eslint-disable-line react-hooks/exhaustive-deps -- other refs (setMessages, setChannels, trackerStatusRef) are stable
 
   // Request notification permission once
   useEffect(() => {
@@ -655,19 +657,20 @@ export function MessagesPanel({
     loadChannels()
   }, [loadChannels])
 
-  // Thread activities (loaded when threads view opens)
+  // Thread activities (loaded when threads view opens, retries when channels reload after auth)
   useEffect(() => {
     if (!showThreadsView || DEMO_MODE) return
-    apiFetch('/api/threads').then((data: any) => {
+    setLoadingThreads(true)
+    apiGet<any>('/api/threads').then((data) => {
       setThreadActivities(data.threads ?? [])
-    }).catch(() => {})
-  }, [showThreadsView, apiFetch])
+    }).catch(() => {}).finally(() => setLoadingThreads(false))
+  }, [showThreadsView, channels.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Periodic refresh of user profile info + tracker status
   useEffect(() => {
     if (DEMO_MODE) return
     function refreshUserInfo() {
-      apiFetch('/api/users').then((data: { users: any[] }) => {
+      apiGet<{ users: any[] }>('/api/users').then((data) => {
         const userMap: Record<string, any> = {}
         for (const u of (data.users ?? [])) userMap[u.id] = u
         setChannels(prev => prev.map(c => ({
@@ -681,7 +684,7 @@ export function MessagesPanel({
       }).catch(() => {})
     }
     function refreshTrackerStatus() {
-      apiFetch('/api/users/status').then((data: { statuses?: Record<string, string> }) => {
+      apiGet<{ statuses?: Record<string, string> }>('/api/users/status').then((data) => {
         if (data.statuses) { trackerStatusRef.current = data.statuses; setLastSeenTick(t => t + 1) }
       }).catch(() => {})
     }
@@ -689,7 +692,7 @@ export function MessagesPanel({
     const id = setInterval(refreshUserInfo, 30_000)
     const trackerId = setInterval(refreshTrackerStatus, 30_000)
     return () => { clearInterval(id); clearInterval(trackerId) }
-  }, [apiFetch])
+  }, [])
 
   // Handle self-leave from ChannelSettingsModal
   useEffect(() => {
@@ -713,7 +716,7 @@ export function MessagesPanel({
       pendingThreadRef.current = null
       openThread(pending)
     }
-  }, [selected, loadMessages]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected, loadMessages]) // eslint-disable-line react-hooks/exhaustive-deps -- stable setters (setThreadParent etc.) intentionally omitted
 
   function handleCreated(id: string) {
     loadChannels().then(() => {
@@ -730,10 +733,10 @@ export function MessagesPanel({
     if (!isVisible || !selected || DEMO_MODE) return
     setChannels(prev => prev.map(c => c.id === selected.id ? { ...c, unread: 0 } : c))
     setMentionedChannels(prev => { const next = new Set(prev); next.delete(selected.id); return next })
-    fetch(`${config.apiBase}/api/channels/${selected.id}/read`, {
-      method: 'POST', headers: { Authorization: `Bearer ${config.token}` },
+    apiFetch(`/api/channels/${selected.id}/read`, {
+      method: 'POST',
     }).catch(() => {})
-  }, [isVisible]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isVisible]) // eslint-disable-line react-hooks/exhaustive-deps -- reads current selected/config at the time visibility changes
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -753,24 +756,29 @@ export function MessagesPanel({
     if (!selected) return
     if (typingTimerRef.current) return
     typingTimerRef.current = setTimeout(() => { typingTimerRef.current = null }, 2000)
-    fetch(`${config.apiBase}/api/channels/${selected.id}/typing`, {
-      method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+    apiFetch(`/api/channels/${selected.id}/typing`, {
+      method: 'POST',
     }).catch(() => {})
   }
 
   async function send() {
     if (!input.trim() || !selected || sending) return
     const content = input.trim()
+    const tmpId = `tmp_${Date.now()}`
     setSending(true); setInput('')
+    setPendingMsgs(prev => [...prev, { id: tmpId, content, status: 'sending' }])
     try {
       await apiFetch(`/api/channels/${selected.id}/messages`, { method: 'POST', body: JSON.stringify({ content }) })
       await loadMessages(selected)
+      setPendingMsgs(prev => prev.filter(m => m.id !== tmpId))
       setChannels(prev => prev.map(c =>
         c.id === selected.id
           ? { ...c, lastMessage: `${auth.username}: ${content}`, lastTime: new Date().toISOString() }
           : c
       ))
-    } catch { /* offline */ } finally { setSending(false) }
+    } catch {
+      setPendingMsgs(prev => prev.map(m => m.id === tmpId ? { ...m, status: 'failed' } : m))
+    } finally { setSending(false) }
   }
 
   async function handleEditMessage() {
@@ -801,7 +809,7 @@ export function MessagesPanel({
     searchTimer.current = setTimeout(async () => {
       setSearching(true)
       try {
-        const data = await apiFetch(`/api/channels/search?${new URLSearchParams({ q: q.trim() })}`)
+        const data = await apiGet<any>(`/api/channels/search?${new URLSearchParams({ q: q.trim() })}`)
         setSearchResults(data.messages ?? [])
       } catch { setSearchResults([]) }
       setSearching(false)
@@ -822,7 +830,7 @@ export function MessagesPanel({
     const prevScrollTop = container?.scrollTop ?? 0
     try {
       const oldest = messages[0]
-      const data = await apiFetch(`/api/channels/${selected.id}/messages?before=${oldest.id}&limit=50`)
+      const data = await apiGet<any>(`/api/channels/${selected.id}/messages?before=${oldest.id}&limit=50`)
       const older: ChatMessage[] = (data.messages ?? []).map((m: any) => ({
         ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0, isPinned: m.isPinned ?? false,
       }))
@@ -834,9 +842,11 @@ export function MessagesPanel({
   async function toggleReaction(msgId: string, emoji: string, isThread = false) {
     if (!selected) return
     try {
-      const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/reactions`, {
+      const r = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/reactions`, {
         method: 'POST', body: JSON.stringify({ emoji }),
       })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const res = await r.json()
       const action = res.action as 'added' | 'removed'
       const updateFn = (prev: ChatMessage[]) => prev.map(m => {
         if (m.id !== msgId) return m
@@ -857,7 +867,9 @@ export function MessagesPanel({
   async function togglePin(msgId: string) {
     if (!selected) return
     try {
-      const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/pin`, { method: 'POST' })
+      const r = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/pin`, { method: 'POST' })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const res = await r.json()
       setMessages(prev => prev.map(m =>
         m.id === msgId ? { ...m, isPinned: res.isPinned, pinnedAt: res.pinnedAt, pinnedBy: res.pinnedBy } : m
       ))
@@ -867,7 +879,7 @@ export function MessagesPanel({
   async function loadPinnedMessages() {
     if (!selected) return
     try {
-      const data = await apiFetch(`/api/channels/${selected.id}/pins`)
+      const data = await apiGet<any>(`/api/channels/${selected.id}/pins`)
       setPinnedMessages(data.messages ?? [])
     } catch { setPinnedMessages([]) }
   }
@@ -876,7 +888,7 @@ export function MessagesPanel({
     if (!selected) return
     setLoadingSharedMedia(true)
     try {
-      const data = await apiFetch(`/api/channels/${selected.id}/shared-media`) as { links: any[]; media: any[]; files: any[] }
+      const data = await apiGet<{ links: any[]; media: any[]; files: any[] }>(`/api/channels/${selected.id}/shared-media`)
       setSharedMedia(data)
     } catch { setSharedMedia({ links: [], media: [], files: [] }) }
     finally { setLoadingSharedMedia(false) }
@@ -885,7 +897,7 @@ export function MessagesPanel({
   async function openThread(msg: ChatMessage) {
     setThreadParent(msg); setThreadInput('')
     try {
-      const data = await apiFetch(`/api/channels/${selected!.id}/messages?parentMessageId=${msg.id}`)
+      const data = await apiGet<any>(`/api/channels/${selected!.id}/messages?parentMessageId=${msg.id}`)
       setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({ ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0 })))
     } catch { setThreadMessages([]) }
   }
@@ -898,10 +910,44 @@ export function MessagesPanel({
       await apiFetch(`/api/channels/${selected.id}/messages`, {
         method: 'POST', body: JSON.stringify({ content, parentMessageId: threadParent.id }),
       })
-      const data = await apiFetch(`/api/channels/${selected.id}/messages?parentMessageId=${threadParent.id}`)
+      if (threadAlsoSendToChannel) {
+        await apiFetch(`/api/channels/${selected.id}/messages`, {
+          method: 'POST', body: JSON.stringify({ content }),
+        }).catch(() => {})
+      }
+      const data = await apiGet<any>(`/api/channels/${selected.id}/messages?parentMessageId=${threadParent.id}`)
       setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({ ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0 })))
-      setMessages(prev => prev.map(m => m.id === threadParent.id ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m))
+      setMessages(prev => prev.map(m => {
+        if (m.id !== threadParent.id) return m
+        const mySender = { id: auth.userId, username: auth.username, alias: null, avatarUrl: null }
+        const existingSenders = m.replySenders ?? []
+        const alreadyIn = existingSenders.some(s => s.id === auth.userId)
+        return {
+          ...m,
+          replyCount: (m.replyCount ?? 0) + 1,
+          replySenders: alreadyIn ? existingSenders : [...existingSenders, mySender].slice(0, 3),
+        }
+      }))
+      // Refresh thread activities so threads menu stays up to date
+      apiGet<any>('/api/threads').then(d => setThreadActivities(d.threads ?? [])).catch(() => {})
     } catch { /* offline */ } finally { setSendingThread(false) }
+  }
+
+  async function sendInlineReply(thread: ThreadActivity) {
+    const content = (inlineInputs[thread.id] ?? '').trim()
+    if (!content || sendingInline[thread.id]) return
+    const ch = channels.find(c => c.id === thread.channelId)
+    if (!ch) return
+    setSendingInline(prev => ({ ...prev, [thread.id]: true }))
+    setInlineInputs(prev => ({ ...prev, [thread.id]: '' }))
+    try {
+      await apiFetch(`/api/channels/${ch.id}/messages`, {
+        method: 'POST', body: JSON.stringify({ content, parentMessageId: thread.id }),
+      })
+      apiGet<any>('/api/threads').then(d => setThreadActivities(d.threads ?? [])).catch(() => {})
+    } catch { /* offline */ } finally {
+      setSendingInline(prev => ({ ...prev, [thread.id]: false }))
+    }
   }
 
   function groupReactions(reactions: NonNullable<ChatMessage['reactions']>) {
@@ -928,8 +974,8 @@ export function MessagesPanel({
   // ─── Conference join helper ─────────────────────────────────────────────────
   async function joinConference(channelId: string, channelName: string) {
     try {
-      const res = await fetch(`${config.apiBase}/api/calls`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
+      const res = await apiFetch('/api/calls', {
+        method: 'POST',
         body: JSON.stringify({ action: 'conference-join', channelId }),
       })
       const data = await res.json()
@@ -1137,16 +1183,27 @@ export function MessagesPanel({
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text, flex: 1 }}>Threads</span>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-            {threadActivities.map((thread, i) => {
+            {[...threadActivities].sort((a, b) => new Date(b.lastReply.createdAt).getTime() - new Date(a.lastReply.createdAt).getTime()).map((thread) => {
               const senderName = thread.parentMessage.sender.alias ?? thread.parentMessage.sender.username
-              const replierName = thread.lastReply.sender.alias ?? thread.lastReply.sender.username
+              const threadCh = channels.find(c => c.id === thread.channelId)
+              const displayChannelName = threadCh ? threadCh.name : thread.channelName
+              const replies = thread.recentReplies ?? [{ content: thread.lastReply.content, sender: thread.lastReply.sender, createdAt: thread.lastReply.createdAt }]
+              const hiddenCount = thread.replyCount - replies.length
+              const inlineVal = inlineInputs[thread.id] ?? ''
               return (
-                <div key={thread.id}>
+                <div key={thread.id} style={{ margin: '0 0 1px 0', borderBottom: `1px solid ${C.separator}`, background: thread.unread ? `${C.accent}07` : 'transparent' }}>
+                  {/* Thread header: channel + time */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '10px 16px 4px', minWidth: 0 }}>
+                    {thread.channelType === 'channel' ? <Hash size={11} color={C.textMuted} strokeWidth={2.5} style={{ flexShrink: 0 }} /> : thread.channelType === 'group' ? <Users size={11} color={C.textMuted} style={{ flexShrink: 0 }} /> : <User size={11} color={C.textMuted} style={{ flexShrink: 0 }} />}
+                    <span style={{ flex: 1, fontSize: 11, fontWeight: 700, color: thread.unread ? C.accent : C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayChannelName}</span>
+                    {thread.unread && <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.accent, flexShrink: 0 }} />}
+                    <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0, marginLeft: 4 }}>{timeAgo(thread.lastReply.createdAt)}</span>
+                  </div>
+                  {/* Parent message */}
                   <button
                     onClick={() => {
                       setShowThreadsView(false)
-                      const ch = channels.find(c => c.id === thread.channelId)
-                        ?? channels.find(c => c.name === thread.channelName || `#${c.name?.replace('#', '')}` === thread.channelName)
+                      const ch = threadCh ?? channels.find(c => c.name === thread.channelName || `#${c.name?.replace('#', '')}` === thread.channelName)
                       if (!ch) return
                       const mockMsg: ChatMessage = {
                         id: thread.id, content: thread.parentMessage.content, createdAt: '', editedAt: null,
@@ -1156,42 +1213,80 @@ export function MessagesPanel({
                       if (selected?.id === ch.id) { openThread(mockMsg) }
                       else { pendingThreadRef.current = mockMsg; setSelected(ch) }
                     }}
-                    style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8, padding: '14px 20px', border: 'none', textAlign: 'left', background: 'transparent', cursor: 'pointer', transition: 'background 0.1s ease' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = C.sidebarHover)}
+                    style={{ width: '100%', display: 'flex', gap: 10, alignItems: 'flex-start', padding: '4px 16px 8px', border: 'none', textAlign: 'left', background: 'transparent', cursor: 'pointer' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = `${C.accent}08`)}
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {thread.channelType === 'channel' ? <Hash size={12} color={C.textMuted} /> : thread.channelType === 'group' ? <Users size={12} color={C.textMuted} /> : null}
-                      <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted }}>{thread.channelName}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                      <Avatar url={thread.parentMessage.sender.avatarUrl} name={senderName} size={28} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{senderName}</div>
-                        <div style={{ fontSize: 13, color: C.text, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{thread.parentMessage.content}</div>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 38 }}>
-                      <Avatar url={thread.lastReply.sender.avatarUrl} name={replierName} size={18} />
-                      <span style={{ fontSize: 12, color: C.accent, fontWeight: 600 }}>{thread.replyCount} {thread.replyCount === 1 ? 'reply' : 'replies'}</span>
-                      <span style={{ fontSize: 11, color: C.textMuted }}>{timeAgo(thread.lastReply.createdAt)}</span>
-                      {thread.unread && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, flexShrink: 0 }} />}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', paddingLeft: 38, marginTop: -2 }}>
-                      <span style={{ fontSize: 12, color: C.textMuted }}>
-                        <span style={{ fontWeight: 600, color: C.sidebarText }}>{replierName}:</span>{' '}
-                        {thread.lastReply.content}
-                      </span>
+                    <div style={{ flexShrink: 0, paddingTop: 2 }}><Avatar url={thread.parentMessage.sender.avatarUrl} name={senderName} size={32} /></div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{senderName}</div>
+                      <div style={{ fontSize: 13, color: C.textMuted, marginTop: 1, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', lineHeight: 1.45, fontWeight: thread.unread ? 500 : 400, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{thread.parentMessage.content}</div>
                     </div>
                   </button>
-                  {i < threadActivities.length - 1 && <div style={{ height: 1, background: C.separator, margin: '0 20px' }} />}
+                  {/* Replies */}
+                  <div style={{ paddingLeft: 58, paddingRight: 16, paddingBottom: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {hiddenCount > 0 && (
+                      <button onClick={() => {
+                        setShowThreadsView(false)
+                        const ch = threadCh; if (!ch) return
+                        const mockMsg: ChatMessage = { id: thread.id, content: thread.parentMessage.content, createdAt: '', editedAt: null, sender: { id: '', username: thread.parentMessage.sender.username, alias: thread.parentMessage.sender.alias, avatarUrl: thread.parentMessage.sender.avatarUrl }, reactions: [], replyCount: thread.replyCount, reads: [] }
+                        if (selected?.id === ch.id) { openThread(mockMsg) } else { pendingThreadRef.current = mockMsg; setSelected(ch) }
+                      }} style={{ background: 'none', border: 'none', padding: '1px 0', cursor: 'pointer', color: C.accent, fontSize: 12, fontWeight: 600, textAlign: 'left' }}>
+                        {hiddenCount} more {hiddenCount === 1 ? 'reply' : 'replies'}
+                      </button>
+                    )}
+                    {replies.map((reply, ri) => {
+                      const rName = reply.sender.alias ?? reply.sender.username
+                      return (
+                        <div key={ri} style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                          <div style={{ flexShrink: 0, paddingTop: 1 }}><Avatar url={reply.sender.avatarUrl} name={rName} size={18} /></div>
+                          <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: C.text, lineHeight: 1.4, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                            <span style={{ fontWeight: 700, color: C.text, marginRight: 5 }}>{rName}</span>
+                            <span style={{ color: C.textMuted }}>{reply.content}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {/* Inline reply input */}
+                  <div style={{ padding: '4px 16px 10px', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      value={inlineVal}
+                      onChange={e => setInlineInputs(prev => ({ ...prev, [thread.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInlineReply(thread) } }}
+                      placeholder="Reply…"
+                      style={{ flex: 1, fontSize: 13, padding: '6px 10px', borderRadius: 20, border: `1px solid ${C.separator}`, background: C.bgInput, color: C.text, outline: 'none', fontFamily: 'inherit', transition: 'border-color 0.15s' }}
+                      onFocus={e => (e.currentTarget.style.borderColor = C.accent)}
+                      onBlur={e => (e.currentTarget.style.borderColor = C.separator)}
+                    />
+                    {inlineVal.trim() && (
+                      <button onClick={() => sendInlineReply(thread)} disabled={!!sendingInline[thread.id]}
+                        style={{ width: 28, height: 28, borderRadius: '50%', border: 'none', background: C.accent, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        {sendingInline[thread.id] ? <Loader size={12} /> : <Send size={12} />}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )
             })}
-            {threadActivities.length === 0 && (
+            {loadingThreads && threadActivities.length === 0 && (
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: C.textMuted, fontSize: 13 }}>
+                <Loader size={24} style={{ marginBottom: 8, opacity: 0.5, animation: 'spin 1s linear infinite' }} /><br />
+                Loading threads…
+              </div>
+            )}
+            {!loadingThreads && threadActivities.length === 0 && (
               <div style={{ padding: '40px 20px', textAlign: 'center', color: C.textMuted, fontSize: 13 }}>
                 <MessageCircle size={32} strokeWidth={1} style={{ marginBottom: 8, opacity: 0.5 }} /><br />
                 No threads yet. Reply to a message to start a thread.
+                <div style={{ marginTop: 12 }}>
+                  <button onClick={() => {
+                    setLoadingThreads(true)
+                    apiGet<any>('/api/threads').then((data) => setThreadActivities(data.threads ?? [])).catch(() => {}).finally(() => setLoadingThreads(false))
+                  }} style={{ background: 'none', border: `1px solid ${C.separator}`, borderRadius: 6, padding: '5px 14px', color: C.textMuted, cursor: 'pointer', fontSize: 12 }}>
+                    Refresh
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1471,14 +1566,45 @@ export function MessagesPanel({
                             style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, background: 'transparent', border: '1px solid transparent', cursor: 'pointer', padding: '4px 8px', borderRadius: 6, width: '100%', transition: 'background 0.15s, border-color 0.15s' }}
                             onMouseEnter={e => { e.currentTarget.style.background = C.bgInput; e.currentTarget.style.borderColor = C.separator }}
                             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent' }}>
-                            <div style={{ width: 20, height: 20, borderRadius: 4, background: C.accent + '22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                              <MessageCircle size={11} color={C.accent} />
-                            </div>
+                            {/* Stacked participant avatars */}
+                            {(msg.replySenders ?? []).length > 0 ? (
+                              <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                                {(msg.replySenders ?? []).slice(0, 3).map((s, idx) => (
+                                  <div key={s.id} style={{ marginLeft: idx > 0 ? -6 : 0, zIndex: 3 - idx, position: 'relative', border: `2px solid ${C.lgBg}`, borderRadius: '50%', flexShrink: 0 }}>
+                                    <Avatar url={s.avatarUrl} name={s.alias ?? s.username} size={20} />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ width: 20, height: 20, borderRadius: 4, background: C.accent + '22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                <MessageCircle size={11} color={C.accent} />
+                              </div>
+                            )}
                             <span style={{ color: C.accent, fontSize: 12, fontWeight: 700 }}>{msg.replyCount} {msg.replyCount === 1 ? 'reply' : 'replies'}</span>
-                            <span style={{ color: C.textMuted, fontSize: 11 }}>View thread</span>
-                            <ChevronRight size={14} color={C.textMuted} style={{ marginLeft: 'auto' }} />
+                            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <span style={{ color: C.textMuted, fontSize: 11 }}>View thread</span>
+                              <ChevronRight size={14} color={C.textMuted} />
+                            </div>
                           </button>
                         )}
+                        {isMe && !isEditing && (() => {
+                          const hasRead = msg.reads && msg.reads.some(r => r.userId !== auth.userId)
+                          const sentAt = new Date(msg.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+                          const firstRead = msg.reads?.find(r => r.userId !== auth.userId)
+                          const readAt = firstRead?.readAt
+                            ? new Date(firstRead.readAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+                            : sentAt
+                          const tooltip = hasRead ? `Read · ${readAt}` : `Delivered · ${sentAt}`
+                          return (
+                            <div title={tooltip} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 2, cursor: 'default' }}>
+                              {hasRead ? (
+                                <CheckCheck size={13} color={C.text} />
+                              ) : (
+                                <Check size={13} color={C.text} />
+                              )}
+                            </div>
+                          )
+                        })()}
                       </div>
 
                       {/* Hover toolbar */}
@@ -1531,6 +1657,34 @@ export function MessagesPanel({
                 )
               })}
 
+              {pendingMsgs.map(pm => (
+                <div key={pm.id} style={{ display: 'flex', padding: '8px 20px 4px', gap: 8, opacity: pm.status === 'failed' ? 1 : 0.65 }}>
+                  <div style={{ width: 36, flexShrink: 0 }}>
+                    <Avatar url={auth?.userId ? null : null} name={auth.username} size={36} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{auth.username}</span>
+                      <span style={{ fontSize: 11, color: C.textMuted }}>{new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>
+                    </div>
+                    <div style={{ fontSize: 14, color: C.text, lineHeight: 1.46, wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                      {pm.content}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                      {pm.status === 'sending' && <span title="Sending…" style={{ display: 'flex' }}><Clock size={13} color={C.text} /></span>}
+                      {pm.status === 'failed' && (
+                        <>
+                          <span title="Failed to send" style={{ display: 'flex' }}><AlertCircle size={13} color={C.text} /></span>
+                          <button onClick={() => {
+                            setPendingMsgs(prev => prev.filter(m => m.id !== pm.id))
+                            setInput(pm.content)
+                          }} style={{ fontSize: 10, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginLeft: 4 }}>Retry</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
               {selectedTyping.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', paddingLeft: 8 }}>
                   <div style={{ display: 'flex', gap: 3 }}>
@@ -1548,70 +1702,114 @@ export function MessagesPanel({
 
             {/* Thread side panel */}
             {threadParent && (
-              <div style={{ width: 320, borderLeft: `1px solid ${C.separator}`, background: C.lgBg, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Thread</span>
+              <div style={{ width: 380, borderLeft: `1px solid ${C.separator}`, background: C.contentBg, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                {/* Header */}
+                <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.separator}`, background: C.lgBg, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Thread</span>
+                    {selected && (
+                      <span style={{ fontSize: 11, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 3 }}>
+                        {selected.type === 'channel' ? <Hash size={10} color={C.textMuted} /> : <User size={10} color={C.textMuted} />}
+                        {selected.name.replace(/^#/, '')}
+                      </span>
+                    )}
+                  </div>
                   <button onClick={() => { setThreadParent(null); setThreadMessages([]) }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
-                    <X size={14} />
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = C.sidebarHover)}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
+                    <X size={16} />
                   </button>
                 </div>
-                <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.separator}`, background: C.bgInput }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <Avatar url={threadParent.sender.avatarUrl} name={threadParent.sender.alias ?? threadParent.sender.username} size={20} />
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{threadParent.sender.alias ?? threadParent.sender.username}</span>
-                    <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(threadParent.createdAt)}</span>
-                  </div>
-                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                    {renderMessageContent(threadParent.content)}
-                  </div>
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {threadMessages.length === 0 && (
-                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No replies yet</div>
-                  )}
-                  {threadMessages.map(reply => {
-                    const rName = reply.sender.alias ?? reply.sender.username
-                    const rIsMe = reply.sender.id === auth.userId
-                    const rGrouped = groupReactions(reply.reactions ?? [])
-                    return (
-                      <div key={reply.id}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                          <Avatar url={reply.sender.avatarUrl} name={rName} size={18} />
-                          <span style={{ fontSize: 11, fontWeight: 700, color: rIsMe ? C.accent : C.text }}>{rName}</span>
-                          <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(reply.createdAt)}</span>
+                {/* Scrollable messages */}
+                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+                  {/* Parent message */}
+                  <div style={{ padding: '16px 16px 12px' }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{ flexShrink: 0 }}><Avatar url={threadParent.sender.avatarUrl} name={threadParent.sender.alias ?? threadParent.sender.username} size={36} /></div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 3 }}>
+                          <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{threadParent.sender.alias ?? threadParent.sender.username}</span>
+                          <span style={{ fontSize: 11, color: C.textMuted }}>{formatTime(threadParent.createdAt)}</span>
                         </div>
-                        <div style={{ paddingLeft: 24, fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                          {renderMessageContent(reply.content)}
+                        <div style={{ fontSize: 14, color: C.text, lineHeight: 1.55, wordBreak: 'break-word' }}>
+                          {renderMessageContent(threadParent.content)}
                         </div>
-                        {rGrouped.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 3, paddingLeft: 24 }}>
-                            {rGrouped.map(r => (
-                              <button key={r.emoji} onClick={() => toggleReaction(reply.id, r.emoji, true)} title={r.users.join(', ')}
-                                style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '1px 5px', borderRadius: 8, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 11 }}>
-                                <span>{r.emoji}</span>
-                                <span style={{ fontSize: 9, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                    )
-                  })}
+                    </div>
+                  </div>
+                  {/* Replies divider */}
+                  <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', marginBottom: 4 }}>
+                    <div style={{ flex: 1, height: 1, background: C.separator }} />
+                    <span style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, padding: '0 10px', whiteSpace: 'nowrap' }}>
+                      {threadMessages.length === 0 ? 'No replies yet' : `${threadMessages.length} ${threadMessages.length === 1 ? 'reply' : 'replies'}`}
+                    </span>
+                    <div style={{ flex: 1, height: 1, background: C.separator }} />
+                  </div>
+                  {/* Reply messages */}
+                  <div style={{ display: 'flex', flexDirection: 'column', paddingBottom: 8 }}>
+                    {threadMessages.map(reply => {
+                      const rName = reply.sender.alias ?? reply.sender.username
+                      const rGrouped = groupReactions(reply.reactions ?? [])
+                      return (
+                        <div key={reply.id} style={{ padding: '10px 16px 6px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                          <div style={{ flexShrink: 0 }}><Avatar url={reply.sender.avatarUrl} name={rName} size={36} /></div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 3 }}>
+                              <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{rName}</span>
+                              <span style={{ fontSize: 11, color: C.textMuted }}>{formatTime(reply.createdAt)}</span>
+                            </div>
+                            <div style={{ fontSize: 14, color: C.text, lineHeight: 1.55, wordBreak: 'break-word' }}>
+                              {renderMessageContent(reply.content)}
+                            </div>
+                            {rGrouped.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 5 }}>
+                                {rGrouped.map(r => (
+                                  <button key={r.emoji} onClick={() => toggleReaction(reply.id, r.emoji, true)} title={r.users.join(', ')}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? `${C.accent}18` : C.bgInput, cursor: 'pointer', fontSize: 13 }}>
+                                    <span>{r.emoji}</span>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
-                <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.separator}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                  <textarea
-                    value={threadInput}
-                    onChange={e => setThreadInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadReply() } }}
-                    placeholder="Reply…"
-                    rows={1}
-                    style={{ flex: 1, resize: 'none', padding: '8px 10px', fontSize: 12, border: `1px solid ${C.separator}`, borderRadius: 8, outline: 'none', color: C.text, background: C.bgInput, minHeight: 32, maxHeight: 80, fontFamily: 'inherit' }}
-                  />
-                  <button onClick={sendThreadReply} disabled={!threadInput.trim() || sendingThread}
-                    style={{ padding: '8px 10px', borderRadius: 8, border: 'none', background: threadInput.trim() ? C.accent : C.lgBg, color: threadInput.trim() ? '#fff' : C.textMuted, cursor: threadInput.trim() ? 'pointer' : 'default', flexShrink: 0 }}>
-                    {sendingThread ? <Loader size={14} /> : <Send size={14} />}
-                  </button>
+                {/* Reply input */}
+                <div style={{ padding: '8px 12px 12px', borderTop: `1px solid ${C.separator}`, flexShrink: 0 }}>
+                  <div style={{ border: `1px solid ${C.separator}`, borderRadius: 10, background: C.bgInput, overflow: 'hidden', transition: 'border-color 0.15s' }}
+                    onFocusCapture={e => (e.currentTarget.style.borderColor = C.accent)}
+                    onBlurCapture={e => (e.currentTarget.style.borderColor = C.separator)}>
+                    <textarea
+                      value={threadInput}
+                      onChange={e => setThreadInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadReply() } }}
+                      placeholder="Reply…"
+                      rows={2}
+                      style={{ width: '100%', resize: 'none', padding: '10px 12px 6px', fontSize: 14, border: 'none', outline: 'none', color: C.text, background: 'transparent', fontFamily: 'inherit', boxSizing: 'border-box', lineHeight: 1.5 }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '4px 8px 8px' }}>
+                      <button onClick={sendThreadReply} disabled={!threadInput.trim() || sendingThread}
+                        style={{ width: 32, height: 32, borderRadius: '50%', border: 'none', background: threadInput.trim() ? C.accent : C.separator, color: threadInput.trim() ? '#fff' : C.textMuted, cursor: threadInput.trim() ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.15s', flexShrink: 0 }}>
+                        {sendingThread ? <Loader size={14} /> : <Send size={14} />}
+                      </button>
+                    </div>
+                  </div>
+                  {selected?.type !== 'dm' && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, cursor: 'pointer', userSelect: 'none' }}>
+                      <input type="checkbox" checked={threadAlsoSendToChannel} onChange={e => setThreadAlsoSendToChannel(e.target.checked)}
+                        style={{ width: 14, height: 14, accentColor: C.accent, cursor: 'pointer' }} />
+                      <span style={{ fontSize: 12, color: C.textMuted }}>Also send to
+                        <span style={{ fontWeight: 600, color: C.sidebarText }}>
+                          {' '}{selected?.type === 'channel' ? <Hash size={11} style={{ display: 'inline', verticalAlign: 'middle' }} /> : null}{selected?.name.replace(/^#/, '')}
+                        </span>
+                      </span>
+                    </label>
+                  )}
                 </div>
               </div>
             )}
@@ -1763,7 +1961,7 @@ export function MessagesPanel({
           <button
             onClick={e => {
               e.stopPropagation()
-              fetch(lightbox.url, { headers: { Authorization: `Bearer ${config.token}` } })
+              apiFetchUrl(lightbox.url)
                 .then(r => r.blob())
                 .then(blob => {
                   const a = document.createElement('a')

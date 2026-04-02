@@ -3,6 +3,7 @@ import { FileText, Loader, ChevronDown } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig } from '../../types'
 import { isImageUrl, isVideoUrl } from '../../utils/markdown'
+import { apiFetchUrl } from '../../utils/api'
 
 // ─── Auth-aware image (fetches with bearer token for protected uploads) ───────
 
@@ -17,7 +18,7 @@ export function AuthImage({
     if (!src) return
     let objectUrl: string | null = null
     let cancelled = false
-    fetch(src, { headers: { Authorization: `Bearer ${config.token}` } })
+    apiFetchUrl(src)
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob() })
       .then(blob => { if (!cancelled) { objectUrl = URL.createObjectURL(blob); setBlobUrl(objectUrl) } })
       .catch(() => { if (!cancelled) setError(true) })

@@ -3,6 +3,7 @@ import { X, Loader, Check } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { Auth, ApiConfig, UserInfo } from '../../types'
 import { Avatar } from '../shared/Avatar'
+import { apiFetch } from '../../utils/api'
 
 export function NewConvModal({
   config, auth, onClose, onCreated, initialMode = 'dm',
@@ -21,7 +22,7 @@ export function NewConvModal({
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+    apiFetch('/api/users')
       .then(r => r.json())
       .then((d: { users: UserInfo[] }) => setUsers(d.users.filter(u => u.id !== auth.userId)))
       .catch(() => {})
@@ -38,9 +39,8 @@ export function NewConvModal({
       if (selected.length !== 1) { setError('Pick one person'); return }
       setBusy(true)
       try {
-        const res = await fetch(`${config.apiBase}/api/channels`, {
+        const res = await apiFetch('/api/channels', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'dm', partnerId: selected[0] }),
         })
         const d = await res.json() as { channel?: { id: string }; error?: string }
@@ -52,9 +52,8 @@ export function NewConvModal({
       if (mode === 'group' && selected.length === 0) { setError('Pick at least one member'); return }
       setBusy(true)
       try {
-        const res = await fetch(`${config.apiBase}/api/channels`, {
+        const res = await apiFetch('/api/channels', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: mode, name: name.trim(), memberIds: selected }),
         })
         const d = await res.json() as { channel?: { id: string }; error?: string }

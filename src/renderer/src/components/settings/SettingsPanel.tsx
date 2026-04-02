@@ -3,8 +3,10 @@ import { Edit2, LogOut, RefreshCw } from 'lucide-react'
 import { ApiConfig, Auth } from '../../types'
 import { C, card, neu } from '../../theme'
 import Avatar from '../shared/Avatar'
+import { useAppStore } from '../../store'
+import { apiFetch } from '../../utils/api'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 
 function PermRow({ label, granted, onFix }: { label: string; granted: boolean; onFix: () => void }) {
   return (
@@ -23,9 +25,11 @@ function PermRow({ label, granted, onFix }: { label: string; granted: boolean; o
 }
 
 export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; config: ApiConfig; onLogout: () => void }) {
-  const [perms, setPerms] = useState<{ screen: string; accessibility: boolean } | null>(null)
-  const [version, setVersion] = useState<string | null>(null)
-  const [updateState, setUpdateState] = useState<{ version: string | null; percent: number | null; downloaded: boolean } | null>(null)
+  const perms = useAppStore((s) => s.permissions)
+  const appVersion = useAppStore((s) => s.appVersion)
+  const updateVersion = useAppStore((s) => s.updateVersion)
+  const downloadPercent = useAppStore((s) => s.downloadPercent)
+  const updateDownloaded = useAppStore((s) => s.updateDownloaded)
   const [profile, setProfile] = useState<{ alias: string; email: string; phone: string; userStatus: string; avatarUrl: string | null } | null>(null)
   const [editAlias, setEditAlias] = useState('')
   const [editEmail, setEditEmail] = useState('')
@@ -37,9 +41,6 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
 
   useEffect(() => {
     if (DEMO_MODE) {
-      setPerms({ screen: 'granted', accessibility: true })
-      setVersion('2.3.1')
-      setUpdateState(null)
       setProfile({ alias: 'John Doe', email: 'john.doe@company.com', phone: '+1 (555) 123-4567', userStatus: 'Working on dashboard redesign', avatarUrl: null })
       setEditAlias('John Doe')
       setEditEmail('john.doe@company.com')
@@ -47,21 +48,8 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
       setEditStatus('Working on dashboard redesign')
       return
     }
-    window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
-    window.electronAPI.getVersion().then(setVersion).catch(() => {})
-    window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
-    const unsubAvail = window.electronAPI.onUpdateAvailable((info) => {
-      setUpdateState(prev => ({ version: info.version, percent: prev?.percent ?? null, downloaded: false }))
-    })
-    const unsubProgress = window.electronAPI.onDownloadProgress((info) => {
-      setUpdateState(prev => ({ version: prev?.version ?? null, percent: info.percent, downloaded: false }))
-    })
-    const unsubDownloaded = window.electronAPI.onUpdateDownloaded(() => {
-      setUpdateState(prev => ({ version: prev?.version ?? null, percent: 100, downloaded: true }))
-    })
-    fetch(`${config.apiBase}/api/user/profile`, {
-      headers: { Authorization: `Bearer ${config.token}` }
-    }).then(r => r.json()).then((d: { user: typeof profile }) => {
+    apiFetch('/api/user/profile')
+      .then(r => r.json()).then((d: { user: typeof profile }) => {
       if (d.user) {
         setProfile(d.user)
         setEditAlias(d.user?.alias ?? '')
@@ -70,21 +58,19 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
         setEditStatus(d.user?.userStatus ?? '')
       }
     }).catch(() => {})
-    return () => { unsubAvail(); unsubProgress(); unsubDownloaded() }
   }, [config])
 
   async function checkPerms() {
     const p = await window.electronAPI.checkPermissions()
-    setPerms(p)
+    useAppStore.getState().setPermissions(p)
   }
 
   async function saveProfile() {
     setSaving(true)
     setSaveMsg('')
     try {
-      const res = await fetch(`${config.apiBase}/api/user/profile`, {
+      const res = await apiFetch('/api/user/profile', {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ alias: editAlias, email: editEmail, phone: editPhone, userStatus: editStatus }),
       })
       if (!res.ok) throw new Error('Failed')
@@ -101,9 +87,8 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
     setSaving(true)
     setSaveMsg('Uploading…')
     try {
-      const res = await fetch(`${config.apiBase}/api/user/avatar`, {
+      const res = await apiFetch('/api/user/avatar', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}` },
         body: form,
       })
       const d = await res.json() as { user?: { avatarUrl: string } }
@@ -197,15 +182,15 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Bundy Desktop</div>
-            <div style={{ fontSize: 12, color: C.textMuted }}>v{version ?? '…'}</div>
+            <div style={{ fontSize: 12, color: C.textMuted }}>v{appVersion || '…'}</div>
           </div>
-          {updateState?.downloaded ? (
+          {updateDownloaded ? (
             <button onClick={() => window.electronAPI.installUpdate()}
               style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.success, fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
-              Restart to Update v{updateState.version}
+              Restart to Update v{updateVersion}
             </button>
-          ) : updateState?.version ? (
-            <div style={{ fontSize: 12, color: C.accent }}>Downloading v{updateState.version}… {updateState.percent ?? 0}%</div>
+          ) : updateVersion ? (
+            <div style={{ fontSize: 12, color: C.accent }}>Downloading v{updateVersion}… {downloadPercent ?? 0}%</div>
           ) : (
             <button onClick={() => window.electronAPI.checkForUpdates()}
               style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.textMuted, fontSize: 12, cursor: 'pointer' }}>

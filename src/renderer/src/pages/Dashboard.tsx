@@ -71,7 +71,7 @@ function simpleMarkdown(md: string): string {
     .replace(/_(.+?)_/g, '<em>$1</em>')
     .replace(/~~(.+?)~~/g, '<del>$1</del>')
     .replace(/`([^`]+)`/g, '<code style="background:rgba(128,128,128,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.85em">$1</code>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:var(--accent,#5865F2);text-decoration:underline">$1</a>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:var(--accent,#6366f1);text-decoration:underline">$1</a>')
     .replace(/\n/g, '<br>')
 }
 
@@ -290,7 +290,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
       >
         <div>
           <div style={{ fontWeight: 700, fontSize: '14px' }}>{auth.username}</div>
-          <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
             {auth.role}{appVersion ? <span style={{ marginLeft: '6px', opacity: 0.5, textTransform: 'none', fontWeight: 400 }}>v{appVersion}</span> : null}
           </div>
         </div>
@@ -300,7 +300,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
             background: 'none',
             border: 'none',
             fontSize: '10px',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-muted)',
             cursor: 'pointer',
             padding: '4px 8px'
           }}
@@ -350,7 +350,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
 
       {/* Timer */}
       <div
-        className="glass"
+        className="neu-inset"
         style={{ padding: '16px', textAlign: 'center' }}
       >
         <div
@@ -359,7 +359,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
             fontWeight: 700,
             fontFamily: 'SF Mono, Menlo, monospace',
             letterSpacing: '2px',
-            color: status?.isClockedIn ? 'var(--success)' : 'var(--text-secondary)'
+            color: status?.isClockedIn ? 'var(--success)' : 'var(--text-muted)'
           }}
         >
           {status?.isClockedIn || (status?.elapsedMs ?? 0) > 0
@@ -370,7 +370,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           style={{
             fontSize: '10px',
             marginTop: '4px',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-muted)',
             textTransform: 'uppercase',
             letterSpacing: '1px'
           }}
@@ -504,8 +504,8 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                   fontSize: '11px',
                   padding: '6px 8px',
                   borderRadius: '6px',
-                  border: '1px solid var(--separator)',
-                  background: 'var(--fill-tertiary)',
+                  border: '1px solid var(--border, #ccc)',
+                  background: 'var(--bg)',
                   color: 'var(--text)',
                   boxSizing: 'border-box',
                   width: '100%'
@@ -535,8 +535,8 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                   fontSize: '11px',
                   padding: '6px 8px',
                   borderRadius: '6px',
-                  border: '1px solid var(--separator)',
-                  background: 'var(--fill-tertiary)',
+                  border: '1px solid var(--border, #ccc)',
+                  background: 'var(--bg)',
                   color: 'var(--text)',
                   boxSizing: 'border-box',
                   width: '100%'
@@ -566,7 +566,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           {/* Plan items list */}
           <div style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {planItems.length === 0 ? (
-            <div style={{ fontSize: '10px', color: 'var(--text-secondary)', textAlign: 'center', padding: '4px' }}>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', padding: '4px' }}>
               No plan items yet. Tap + to add.
             </div>
           ) : (
@@ -584,12 +584,12 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
                   <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center', paddingTop: '1px' }}>
                     {item.status === 'completed'     ? <CheckCircle2  size={13} style={{ color: 'var(--success)' }} />
-                     : item.status === 'continued'  ? <RotateCcw     size={13} style={{ color: 'var(--text-secondary)' }} />
+                     : item.status === 'continued'  ? <RotateCcw     size={13} style={{ color: 'var(--text-muted)' }} />
                      : item.status === 'in-progress' ? <PlayCircle    size={13} style={{ color: 'var(--warning)' }} />
-                     : item.status === 'ready-qa'   ? <FlaskConical  size={13} style={{ color: '#1a8ad4' }} />
+                     : item.status === 'ready-qa'   ? <FlaskConical  size={13} style={{ color: '#8b5cf6' }} />
                      : item.status === 'ready-client' ? <Send         size={13} style={{ color: '#0ea5e9' }} />
                      : item.status === 'blocked'    ? <Ban           size={13} style={{ color: 'var(--danger)' }} />
-                     : <CircleDot size={13} style={{ color: 'var(--text-secondary)' }} />}
+                     : <CircleDot size={13} style={{ color: 'var(--text-muted)' }} />}
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -610,7 +610,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                       background: 'none',
                       border: 'none',
                       cursor: 'pointer',
-                      color: 'var(--text-secondary)',
+                      color: 'var(--text-muted)',
                       padding: '0 2px',
                       flexShrink: 0,
                       opacity: 0.5,
@@ -622,9 +622,9 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                 {/* Status selector */}
                 <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', paddingLeft: '20px' }}>
                   {([
-                    { value: 'planned',      label: 'To Do',      Icon: CircleDot,   color: 'var(--text-secondary)' },
+                    { value: 'planned',      label: 'To Do',      Icon: CircleDot,   color: 'var(--text-muted)' },
                     { value: 'in-progress', label: 'In Progress', Icon: PlayCircle,  color: 'var(--warning)' },
-                    { value: 'ready-qa',    label: 'QA',          Icon: FlaskConical,color: '#1a8ad4' },
+                    { value: 'ready-qa',    label: 'QA',          Icon: FlaskConical,color: '#8b5cf6' },
                     { value: 'ready-client',label: 'Client',      Icon: Send,        color: '#0ea5e9' },
                     { value: 'blocked',     label: 'Blocked',     Icon: Ban,         color: 'var(--danger)' },
                   ] as const).map(opt => (
@@ -644,7 +644,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                         borderRadius: '5px',
                         cursor: 'pointer',
                         background: item.status === opt.value ? undefined : 'transparent',
-                        color: item.status === opt.value ? opt.color : 'var(--text-secondary)',
+                        color: item.status === opt.value ? opt.color : 'var(--text-muted)',
                         fontWeight: item.status === opt.value ? 600 : 400,
                         opacity: item.status === opt.value ? 1 : 0.7,
                         display: 'flex',
@@ -728,13 +728,13 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                 Restart Now
               </button>
             ) : (
-              <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                 {downloadPercent !== null ? `${downloadPercent}%` : 'Starting…'}
               </span>
             )}
           </div>
           {!updateReady && (
-            <div style={{ height: '4px', borderRadius: '2px', background: 'var(--fill-tertiary)', overflow: 'hidden' }}>
+            <div style={{ height: '4px', borderRadius: '2px', background: 'var(--neo-inset, rgba(0,0,0,0.12))', overflow: 'hidden' }}>
               <div
                 style={{
                   height: '100%',
@@ -767,14 +767,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
         >
           <ExternalLink size={9} />Open Dashboard
         </button>
-        <span style={{ fontSize: '10px', color: 'var(--text-secondary)', opacity: 0.3 }}>|</span>
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)', opacity: 0.3 }}>|</span>
         <button
           onClick={() => { setCrashNote(''); setCrashSent(false); setShowCrashModal(true) }}
           style={{
             background: 'none',
             border: 'none',
             fontSize: '10px',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-muted)',
             cursor: 'pointer',
             opacity: 0.6,
             textDecoration: 'underline'
@@ -790,7 +790,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.85)',
+            background: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -799,32 +799,34 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           }}
         >
           <div
-            className="glass-lg"
+            className="neu-raised"
             style={{
               width: '100%',
               maxWidth: '340px',
+              borderRadius: '16px',
               padding: '16px',
               display: 'flex',
               flexDirection: 'column',
-              gap: '10px'
+              gap: '10px',
+              background: 'var(--bg)'
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 700, fontSize: '13px' }}>🐛 Report an Issue</span>
               <button
                 onClick={() => setShowCrashModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '14px' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px' }}
               >✕</button>
             </div>
 
             {crashSent ? (
               <div style={{ textAlign: 'center', padding: '20px 0' }}>
                 <div style={{ fontSize: '24px', marginBottom: '8px' }}>✅</div>
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Report sent. Thank you!</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Report sent. Thank you!</div>
               </div>
             ) : (
               <>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   Describe what happened or what went wrong. App version and system info will be included automatically.
                 </div>
                 <textarea
@@ -832,12 +834,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                   onChange={(e) => setCrashNote(e.target.value)}
                   placeholder="What happened? What were you doing when the issue occurred?"
                   rows={5}
-                  className="glass-inset"
                   style={{
                     width: '100%',
+                    borderRadius: '10px',
                     padding: '10px',
                     fontSize: '12px',
+                    background: 'var(--bg)',
                     color: 'var(--text)',
+                    border: '1px solid var(--border, #ccc)',
                     resize: 'none',
                     boxSizing: 'border-box',
                     lineHeight: '1.5'
@@ -876,7 +880,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.85)',
+            background: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -885,14 +889,16 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
           }}
         >
           <div
-            className="glass-lg"
+            className="neu-raised"
             style={{
               width: '100%',
               maxWidth: '380px',
+              borderRadius: '16px',
               padding: '16px',
               display: 'flex',
               flexDirection: 'column',
               gap: '10px',
+              background: 'var(--bg)',
               maxHeight: '90vh',
               overflowY: 'auto'
             }}
@@ -904,14 +910,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
               </span>
               <button
                 onClick={() => { setShowReportModal(false); setShowPreview(false) }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '14px' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px' }}
               >✕</button>
             </div>
 
             {/* ─── Step 1: Plan Confirmation ─── */}
             {clockOutStep === 'plan' && (
               <>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                   Update the status of each task before clocking out.
                 </div>
 
@@ -927,7 +933,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                       >
                         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                           <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--accent)' }}>{item.project.name}</span>
-                          <span style={{ fontSize: '10px', color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {item.details}
                           </span>
                         </div>
@@ -936,7 +942,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                           {([
                             { value: 'completed', label: '✅ Done', color: 'var(--success)' },
                             { value: 'continued', label: '🔁 To be continued', color: 'var(--warning)' },
-                            { value: 'planned', label: '📌 Haven\'t started', color: 'var(--text-secondary)' },
+                            { value: 'planned', label: '📌 Haven\'t started', color: 'var(--text-muted)' },
                             { value: 'blocked', label: '🚫 Blocked', color: 'var(--danger)' },
                           ] as const).map(opt => (
                             <button
@@ -952,7 +958,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                                 borderRadius: '6px',
                                 cursor: 'pointer',
                                 background: ci.status === opt.value ? undefined : 'transparent',
-                                color: ci.status === opt.value ? opt.color : 'var(--text-secondary)',
+                                color: ci.status === opt.value ? opt.color : 'var(--text-muted)',
                                 fontWeight: ci.status === opt.value ? 600 : 400
                               }}
                             >
@@ -971,8 +977,8 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                             fontSize: '10px',
                             padding: '5px 8px',
                             borderRadius: '6px',
-                            border: '1px solid var(--separator)',
-                            background: 'var(--fill-tertiary)',
+                            border: '1px solid var(--border, #ccc)',
+                            background: 'var(--bg)',
                             color: 'var(--text)',
                             boxSizing: 'border-box',
                             width: '100%'
@@ -1020,7 +1026,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                         borderRadius: '6px',
                         cursor: 'pointer',
                         background: 'transparent',
-                        color: (!showPreview === (tab === 'Write')) ? 'var(--text)' : 'var(--text-secondary)'
+                        color: (!showPreview === (tab === 'Write')) ? 'var(--text)' : 'var(--text-muted)'
                       }}
                     >
                       {tab}
@@ -1093,13 +1099,15 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                     }}
                     placeholder="What did you work on today?&#10;&#10;- Task 1&#10;- Task 2&#10;&#10;## Notes&#10;Any blockers?"
                     rows={8}
-                    className="glass-inset"
                     style={{
                       width: '100%',
+                      borderRadius: '10px',
                       padding: '10px',
                       fontSize: '12px',
                       fontFamily: 'SF Mono, Menlo, monospace',
+                      background: 'var(--bg)',
                       color: 'var(--text)',
+                      border: '1px solid var(--border, #ccc)',
                       resize: 'none',
                       boxSizing: 'border-box',
                       lineHeight: '1.5'
@@ -1107,13 +1115,15 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                   />
                 ) : (
                   <div
-                    className="glass-inset"
                     style={{
                       width: '100%',
                       minHeight: '160px',
+                      borderRadius: '10px',
                       padding: '10px',
                       fontSize: '12px',
+                      background: 'var(--bg)',
                       color: 'var(--text)',
+                      border: '1px solid var(--border, #ccc)',
                       boxSizing: 'border-box',
                       lineHeight: '1.5',
                       overflowY: 'auto'
@@ -1128,7 +1138,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
 
                 {/* Footer stats */}
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                     {reportContent.split(/\s+/).filter(Boolean).length} words
                   </span>
                 </div>

@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react'
 import { X, Monitor, Move } from 'lucide-react'
 import { ApiConfig, Auth } from '../../types'
 import { C } from '../../theme'
+import { apiFetch } from '../../utils/api'
 import Avatar from '../shared/Avatar'
 import CallControls from './CallControls'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 
 export default function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
   config: ApiConfig; auth: Auth
@@ -238,7 +239,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
             try {
               const offer = await peerConn.createOffer({ iceRestart: true })
               await peerConn.setLocalDescription(offer)
-              await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
+              await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
             } catch { /* ignore */ }
           }
         }, 5000)
@@ -246,12 +247,12 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       else if (state === 'failed') {
         peerConn.createOffer({ iceRestart: true }).then(async offer => {
           await peerConn.setLocalDescription(offer)
-          await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
+          await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
         }).catch(() => { cleanup(true); setStatus('ended'); onEnd() })
       }
     }
     peerConn.onicecandidate = e => {
-      if (e.candidate) fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'ice', to: targetUser.id, candidate: e.candidate }) }).catch(() => {})
+      if (e.candidate) apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'ice', to: targetUser.id, candidate: e.candidate }) }).catch(() => {})
     }
     return peerConn
   }
@@ -272,7 +273,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       const peerConn = await setupPeer(stream)
       const offer = await peerConn.createOffer()
       await peerConn.setLocalDescription(offer)
-      await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'offer', to: targetUser.id, sdp: offer.sdp, callType }) })
+      await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'offer', to: targetUser.id, sdp: offer.sdp, callType }) })
     } catch { cleanup(true); onEnd() }
   }
 
@@ -286,7 +287,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       await drainIceBuffer(peerConn)
       const answer = await peerConn.createAnswer()
       await peerConn.setLocalDescription(answer)
-      await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'answer', to: targetUser.id, sdp: answer.sdp }) })
+      await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'answer', to: targetUser.id, sdp: answer.sdp }) })
     } catch { cleanup(true); onEnd() }
   }
 
@@ -319,7 +320,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
         renegotiating.current = true
         await pc.current.setRemoteDescription({ type: 'offer', sdp: payload.sdp })
         const answer = await pc.current.createAnswer(); await pc.current.setLocalDescription(answer)
-        await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reanswer', to: targetUser.id, sdp: answer.sdp }) })
+        await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'reanswer', to: targetUser.id, sdp: answer.sdp }) })
         renegotiating.current = false
       } catch { renegotiating.current = false }
     }
@@ -350,7 +351,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
     audioContextRef.current?.close().catch(() => {})
     if (localSpeakingRafRef.current) cancelAnimationFrame(localSpeakingRafRef.current)
     localAudioCtxRef.current?.close().catch(() => {})
-    if (sendEnd) fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'end', to: targetUser.id }) }).catch(() => {})
+    if (sendEnd) apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'end', to: targetUser.id }) }).catch(() => {})
   }
 
   function toggleMute() { localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted }); setMuted(!muted) }
@@ -420,7 +421,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
 
   function sendReaction(emoji: string) {
     const id = ++reactionIdRef.current; setCallReactions(prev => [...prev, { id, emoji }]); setTimeout(() => setCallReactions(prev => prev.filter(r => r.id !== id)), 3000)
-    fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'call-reaction', to: targetUser.id, emoji }) }).catch(() => {})
+    apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'call-reaction', to: targetUser.id, emoji }) }).catch(() => {})
   }
 
   useEffect(() => {
@@ -477,7 +478,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
         setVideoActive(true); setVideoOff(false)
         renegotiating.current = true
         const offer = await pc.current.createOffer(); await pc.current.setLocalDescription(offer)
-        await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
+        await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
       } catch { /* ignore */ }
     } else if (!videoOff) {
       localStream.current?.getVideoTracks().forEach(t => { t.enabled = false }); setVideoOff(true)
@@ -518,7 +519,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       if (videoSender) { await videoSender.replaceTrack(screenTrack) } else {
         pc.current.addTrack(screenTrack, stream); renegotiating.current = true
         const offer = await pc.current.createOffer(); await pc.current.setLocalDescription(offer)
-        await fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
+        await apiFetch('/api/calls', { method: 'POST', body: JSON.stringify({ action: 'reoffer', to: targetUser.id, sdp: offer.sdp }) })
       }
       const screenAudioTrack = stream.getAudioTracks()[0]; if (screenAudioTrack && pc.current) pc.current.addTrack(screenAudioTrack, stream)
       setScreenSharing(true); if (!videoActive) { setVideoActive(true); setVideoOff(false) }

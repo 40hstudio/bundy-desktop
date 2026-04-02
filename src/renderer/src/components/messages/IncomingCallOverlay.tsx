@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { Phone, PhoneOff } from 'lucide-react'
 import { neu } from '../../theme'
 import type { ApiConfig, Auth } from '../../types'
@@ -19,6 +19,10 @@ export function IncomingCallOverlay({
   config?: ApiConfig; auth?: Auth
   onAccept: () => void; onReject: () => void
 }) {
+  const onAcceptRef = useRef(onAccept)
+  const onRejectRef = useRef(onReject)
+  useEffect(() => { onAcceptRef.current = onAccept; onRejectRef.current = onReject })
+
   useEffect(() => {
     const audio = new Audio('sounds/incoming-call.mp3')
     audio.loop = true
@@ -29,11 +33,11 @@ export function IncomingCallOverlay({
         body: payload.fromName,
         silent: false,
       })
-      n.onclick = () => { window.electronAPI.focusWindow(); onAccept() }
+      n.onclick = () => { window.electronAPI.focusWindow(); onAcceptRef.current() }
     }
     window.electronAPI.focusWindow()
     return () => { audio.pause(); audio.src = '' }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [payload.callType, payload.fromName])
 
   return (
     <div style={{
@@ -51,12 +55,12 @@ export function IncomingCallOverlay({
           {payload.fromName}
         </div>
       </div>
-      <button onClick={onReject}
+      <button onClick={() => onRejectRef.current()}
         style={{ width: 36, height: 36, borderRadius: '50%', background: '#f04747', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         title="Decline">
         <PhoneOff size={16} color="#fff" />
       </button>
-      <button onClick={onAccept}
+      <button onClick={() => onAcceptRef.current()}
         style={{ width: 36, height: 36, borderRadius: '50%', background: '#43B581', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         title="Accept">
         <Phone size={16} color="#fff" />

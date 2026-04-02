@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, Layers, Edit2, Trash2, Plus, Loader, Check } from 'lucide-react'
 import { ApiConfig, TaskSection } from '../../types'
 import { C, neu } from '../../theme'
+import { apiFetch } from '../../utils/api'
 
 export default function ManageSectionsModal({ config, projectId, projectName, sections: initialSections, onClose, onUpdated }: {
   config: ApiConfig
@@ -23,9 +24,8 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
     if (!newName.trim()) return
     setCreating(true); setError(null)
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks/sections`, {
+      const res = await apiFetch('/api/tasks/sections', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName.trim(), projectId }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -41,9 +41,8 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
     const trimmed = editName.trim()
     if (!trimmed) { setEditingId(null); return }
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks/sections/${id}`, {
+      const res = await apiFetch(`/api/tasks/sections/${id}`, {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: trimmed }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -57,9 +56,8 @@ export default function ManageSectionsModal({ config, projectId, projectName, se
   async function deleteSection(id: string) {
     setDeletingId(id)
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks/sections/${id}`, {
+      const res = await apiFetch(`/api/tasks/sections/${id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${config.token}` },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const newSecs = secs.filter(s => s.id !== id)

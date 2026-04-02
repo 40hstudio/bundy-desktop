@@ -133,35 +133,7 @@ const api = {
   deletePlanItem: (itemId: string): Promise<void> =>
     ipcRenderer.invoke('delete-plan-item', itemId),
   submitReportWithPlan: (content: string, planItems: Array<{ itemId: string; status: string; outcome?: string }>): Promise<void> =>
-    ipcRenderer.invoke('submit-report-with-plan', content, planItems),
-
-  // ─── Dock / taskbar badge ─────────────────────────────────────────
-  setBadgeCount: (count: number): void =>
-    ipcRenderer.send('set-badge-count', count),
-
-  // ─── Floating call window ──────────────────────────────────────────
-  openCallFloat: (state: Record<string, unknown>): Promise<void> =>
-    ipcRenderer.invoke('open-call-float', state),
-  getCallFloatState: (): Promise<Record<string, unknown> | null> =>
-    ipcRenderer.invoke('get-call-float-state'),
-  closeCallFloat: (): Promise<void> =>
-    ipcRenderer.invoke('close-call-float'),
-  updateCallFloat: (state: Record<string, unknown>): Promise<void> =>
-    ipcRenderer.invoke('update-call-float', state),
-  sendCallFloatAction: (action: Record<string, unknown>): Promise<void> =>
-    ipcRenderer.invoke('call-float-action', action),
-  onCallFloatState: (cb: (state: Record<string, unknown>) => void): (() => void) => {
-    const handler = (_e: Electron.IpcRendererEvent, state: Record<string, unknown>): void => cb(state)
-    ipcRenderer.on('call-float-state', handler)
-    return () => ipcRenderer.removeListener('call-float-state', handler)
-  },
-  onCallFloatAction: (cb: (action: Record<string, unknown>) => void): (() => void) => {
-    const handler = (_e: Electron.IpcRendererEvent, action: Record<string, unknown>): void => cb(action)
-    ipcRenderer.on('call-float-action', handler)
-    return () => ipcRenderer.removeListener('call-float-action', handler)
-  },
-  setCallFloatAlwaysOnTop: (onTop: boolean): Promise<void> =>
-    ipcRenderer.invoke('set-call-float-always-on-top', onTop),
+    ipcRenderer.invoke('submit-report-with-plan', content, planItems)
 }
 
 if (process.contextIsolated) {

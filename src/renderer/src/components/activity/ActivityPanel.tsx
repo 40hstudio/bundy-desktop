@@ -3,8 +3,9 @@ import { ChevronRight, RefreshCw, Loader } from 'lucide-react'
 import { ApiConfig } from '../../types'
 import { C, card } from '../../theme'
 import { formatMs, formatTime } from '../../utils/format'
+import { apiFetch } from '../../utils/api'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 
 interface ActivityScreenshot {
   id: string; url: string; capturedAt: string; displayIndex: number
@@ -111,9 +112,7 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${config.apiBase}/api/user/activity?date=${selectedDate}`, {
-        headers: { Authorization: `Bearer ${config.token}` }
-      })
+      const res = await apiFetch(`/api/user/activity?date=${selectedDate}`)
       if (res.ok) {
         const json = await res.json() as ActivityData
         setData(json)
@@ -214,9 +213,8 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
     if (!manualReqForm) return
     setManualSubmitting(true)
     try {
-      const res = await fetch(`${config.apiBase}/api/bundy/manual-request`, {
+      const res = await apiFetch('/api/bundy/manual-request', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
         body: JSON.stringify(manualReqForm),
       })
       if (res.ok) {

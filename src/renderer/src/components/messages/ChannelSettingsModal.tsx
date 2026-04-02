@@ -3,6 +3,7 @@ import { X, UserPlus, LogOut, Trash2 } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { Auth, ApiConfig, Conversation, ChannelMember, UserInfo } from '../../types'
 import { Avatar } from '../shared/Avatar'
+import { apiFetch } from '../../utils/api'
 
 export function ChannelSettingsModal({
   config, auth, conv, onClose,
@@ -15,7 +16,7 @@ export function ChannelSettingsModal({
   const isCreator = conv.createdBy === auth.userId
 
   useEffect(() => {
-    fetch(`${config.apiBase}/api/users`, { headers: { Authorization: `Bearer ${config.token}` } })
+    apiFetch('/api/users')
       .then(r => r.json())
       .then((d: { users: UserInfo[] }) => setAllUsers(d.users))
       .catch(() => {})
@@ -24,9 +25,8 @@ export function ChannelSettingsModal({
   async function addMember(userId: string) {
     setBusy(true)
     try {
-      const res = await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+      const res = await apiFetch(`/api/channels/${conv.id}/members`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
       })
       const d = await res.json() as { ok?: boolean; user?: UserInfo }
@@ -37,9 +37,8 @@ export function ChannelSettingsModal({
   async function removeMember(userId: string) {
     setBusy(true)
     try {
-      await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+      await apiFetch(`/api/channels/${conv.id}/members`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
       })
       setMembers(prev => prev.filter(m => m.userId !== userId))
@@ -50,9 +49,8 @@ export function ChannelSettingsModal({
     if (!confirm(`Leave "${conv.name}"?`)) return
     setBusy(true)
     try {
-      await fetch(`${config.apiBase}/api/channels/${conv.id}/members`, {
+      await apiFetch(`/api/channels/${conv.id}/members`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: auth.userId }),
       })
       onClose()
@@ -64,9 +62,8 @@ export function ChannelSettingsModal({
     if (!confirm(`Delete "${conv.name}" permanently? This cannot be undone.`)) return
     setBusy(true)
     try {
-      await fetch(`${config.apiBase}/api/channels/${conv.id}`, {
+      await apiFetch(`/api/channels/${conv.id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${config.token}` },
       })
       onClose()
     } catch (err) { console.error('[ChannelSettings] delete failed:', err) } finally { setBusy(false) }

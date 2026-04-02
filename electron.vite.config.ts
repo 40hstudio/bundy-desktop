@@ -21,6 +21,9 @@ export default defineConfig({
         input: resolve('src/renderer/index.html')
       }
     },
+    define: {
+      __DEMO_MODE__: JSON.stringify(false)
+    },
     plugins: [react()],
     resolve: {
       alias: {

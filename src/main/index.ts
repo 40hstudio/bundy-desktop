@@ -6,7 +6,6 @@ import {
   Menu,
   nativeImage,
   powerMonitor,
-  screen,
   shell,
   systemPreferences,
   Tray
@@ -23,7 +22,6 @@ import { initCrashReporter, sendUserReport } from './crash-reporter'
 let tray: Tray | null = null
 let popupWin: BrowserWindow | null = null
 let fullNativeWin: BrowserWindow | null = null
-let callFloatWin: BrowserWindow | null = null
 const fullWindowIds = new Set<number>()
 let statusPollerTimer: NodeJS.Timeout | null = null
 let pendingUpdateVersion: string | null = null
@@ -265,15 +263,6 @@ async function openFullWindow(): Promise<void> {
   fullNativeWin.webContents.once('did-finish-load', () => {
     flushUpdateState()
   })
-
-  // Enable DevTools via Cmd+Option+I in production builds too
-  fullNativeWin.webContents.on('before-input-event', (event, input) => {
-    if (input.meta && input.alt && input.key.toLowerCase() === 'i') {
-      fullNativeWin?.webContents.toggleDevTools()
-      event.preventDefault()
-    }
-  })
-
   app.dock?.show()
   fullNativeWin.show()
   fullNativeWin.focus()
@@ -544,11 +533,6 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   }
 })
 
-ipcMain.on('set-badge-count', (_event, count: number) => {
-  // macOS dock badge; no-op on unsupported platforms
-  if (app.setBadgeCount) app.setBadgeCount(count)
-})
-
 ipcMain.handle('get-version', () => app.getVersion())
 
 ipcMain.handle('get-update-state', () => ({
@@ -590,98 +574,6 @@ ipcMain.handle('get-screen-sources', async () => {
 
 ipcMain.handle('get-window-mode', (event) => {
   return fullWindowIds.has(event.sender.id) ? 'full' : 'popup'
-})
-
-// ─── Floating call window ──────────────────────────────────────────────────────
-
-ipcMain.handle('open-call-float', async (_event, state: Record<string, unknown>) => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.focus()
-    return
-  }
-
-  // Position at bottom-right of primary display
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
-
-  callFloatWin = new BrowserWindow({
-    width: 300,
-    height: 100,
-    x: sw - 316,
-    y: sh - 116,
-    show: false,
-    frame: false,
-    resizable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    transparent: true,
-    hasShadow: true,
-    backgroundColor: '#00000000',
-    roundedCorners: true,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    }
-  })
-
-  callFloatWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
-  callFloatWin.on('closed', () => {
-    callFloatWin = null
-    // Notify main window to restore in-app call UI
-    if (fullNativeWin && !fullNativeWin.isDestroyed()) {
-      fullNativeWin.webContents.send('call-float-action', { action: 'expand' })
-    }
-  })
-
-  // Store initial state BEFORE loading so it's available immediately
-  ;(callFloatWin as any).__initialState = state
-
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    await callFloatWin.loadURL(process.env.ELECTRON_RENDERER_URL + '#call-float')
-  } else {
-    await callFloatWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'call-float' })
-  }
-
-  callFloatWin.show()
-})
-
-ipcMain.handle('get-call-float-state', () => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    return (callFloatWin as any).__initialState ?? null
-  }
-  return null
-})
-
-ipcMain.handle('close-call-float', () => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.destroy()
-    callFloatWin = null
-  }
-})
-
-ipcMain.handle('update-call-float', (_event, state: Record<string, unknown>) => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.webContents.send('call-float-state', state)
-  }
-})
-
-// Actions from floating window → forward to main window
-ipcMain.handle('call-float-action', (_event, action: Record<string, unknown>) => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.destroy()
-    callFloatWin = null
-  }
-  if (fullNativeWin && !fullNativeWin.isDestroyed()) {
-    fullNativeWin.webContents.send('call-float-action', action)
-  }
-})
-
-ipcMain.handle('set-call-float-always-on-top', (_event, onTop: boolean) => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.setAlwaysOnTop(onTop)
-  }
 })
 
 ipcMain.handle('get-api-config', async () => {

@@ -1,10 +1,5 @@
 import type React from 'react'
 
-// ─── Module-level API base (set once when config loads) ───────────────────────
-// Used by Avatar and AuthImage to resolve server-relative URLs like /uploads/...
-export let apiBase = ''
-export function setApiBase(base: string) { apiBase = base }
-
 // ─── Design tokens ────────────────────────────────────────────────────────────
 
 export const C = {

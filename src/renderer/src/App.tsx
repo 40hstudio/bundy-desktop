@@ -2,9 +2,6 @@ import { useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import FullDashboard from './pages/FullDashboard'
-import FloatingCallOverlay from './pages/FloatingCallOverlay'
-
-const DEMO_MODE = false
 
 interface Auth {
   userId: string
@@ -13,16 +10,10 @@ interface Auth {
 }
 
 export default function App(): JSX.Element {
-  // Floating call overlay window — minimal shell, no auth needed
-  if (window.location.hash === '#call-float') {
-    return <FloatingCallOverlay />
-  }
-
-  const [auth, setAuth] = useState<Auth | null | undefined>(DEMO_MODE ? { userId: 'demo', username: 'john.doe', role: 'developer' } : undefined)
-  const [windowMode, setWindowMode] = useState<'popup' | 'full' | null>(DEMO_MODE ? 'full' : null)
+  const [auth, setAuth] = useState<Auth | null | undefined>(undefined)
+  const [windowMode, setWindowMode] = useState<'popup' | 'full' | null>(null)
 
   useEffect(() => {
-    if (DEMO_MODE) return
     Promise.all([
       window.electronAPI.getStoredAuth(),
       window.electronAPI.getWindowMode(),
@@ -34,7 +25,6 @@ export default function App(): JSX.Element {
 
   // If the server rejects our token (expired at 5 AM WIB), force re-login
   useEffect(() => {
-    if (DEMO_MODE) return
     return window.electronAPI.onTokenExpired(() => {
       setAuth(null)
     })
@@ -48,10 +38,7 @@ export default function App(): JSX.Element {
           alignItems: 'center',
           justifyContent: 'center',
           height: '100%',
-          color: '#6b6b6b',
-          fontSize: '14px',
-          fontWeight: 500,
-          letterSpacing: '0.5px'
+          color: 'var(--text-muted)'
         }}
       >
         Loading…

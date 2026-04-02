@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { C } from '../../theme'
-import { apiBase } from '../../hooks/useApiConfig'
+import { getApiBase } from '../../utils/api'
 
 export function Avatar({
   url,
@@ -15,7 +15,7 @@ export function Avatar({
 }) {
   const [err, setErr] = useState(false)
   // Resolve server-relative URLs (e.g. /uploads/avatars/...) using the stored apiBase
-  const resolvedUrl = url && url.startsWith('/') ? `${apiBase}${url}` : url
+  const resolvedUrl = url && url.startsWith('/') ? `${getApiBase()}${url}` : url
   if (resolvedUrl && !err) {
     return (
       <img

@@ -3,12 +3,15 @@ import {
   Check, Circle, Play, AlertCircle, ChevronRight, X, Loader,
 } from 'lucide-react'
 import { C, card, neu } from '../../theme'
-import type { Auth, ApiConfig, BundyStatus, Task, PlanItem } from '../../types'
+import type { Auth, ApiConfig, Task } from '../../types'
 import { useStatusTicker } from '../../hooks/useStatusTicker'
 import { formatMs, insertMarkdownAt } from '../../utils/format'
 import { simpleMarkdown } from '../../utils/markdown'
+import { sanitizeHtml } from '../../utils/sanitize'
+import { useAppStore } from '../../store'
+import { apiFetch } from '../../utils/api'
 
-const DEMO_MODE = false
+const DEMO_MODE = __DEMO_MODE__
 
 const ACTION_COLORS: Record<string, string> = {
   'clock-in': '#43B581',
@@ -41,14 +44,14 @@ export function HomePanel({
   config: ApiConfig | null
   onOpenTask?: (taskId: string) => void
 }) {
-  const [status, setStatus] = useState<BundyStatus | null>(null)
+  const status = useAppStore((s) => s.status)
+  const planItems = useAppStore((s) => s.planItems)
+  const statusSnapshotAt = useAppStore((s) => s.statusSnapshotAt)
   const [todayTasks, setTodayTasks] = useState<Task[]>([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [actioning, setActioning] = useState(false)
-  const [snapshotAt] = useState(Date.now())
 
   // Clock-out report modal state
-  const [planItems, setPlanItems] = useState<PlanItem[]>([])
   const [confirmItems, setConfirmItems] = useState<Array<{ itemId: string; status: string; outcome: string }>>([])
   const [clockOutStep, setClockOutStep] = useState<'tasks' | 'plan' | 'report'>('report')
   const [showReportModal, setShowReportModal] = useState(false)
@@ -62,30 +65,14 @@ export function HomePanel({
   const displayMs = useStatusTicker(
     status?.elapsedMs ?? 0,
     status?.isTracking ?? false,
-    snapshotAt
+    statusSnapshotAt
   )
-
-  const load = useCallback(async () => {
-    try {
-      const s = await window.electronAPI.getStatus()
-      setStatus(s)
-    } catch { /* offline */ }
-  }, [])
-
-  const loadPlan = useCallback(async () => {
-    try {
-      const plan = await window.electronAPI.getDailyPlan()
-      setPlanItems(plan?.items ?? [])
-    } catch { /* non-fatal */ }
-  }, [])
 
   const loadTasks = useCallback(async () => {
     if (!config) return
     setLoadingTasks(true)
     try {
-      const res = await fetch(`${config.apiBase}/api/tasks?assigneeId=me&dueDate=today&includeSubtasks=1`, {
-        headers: { 'Authorization': `Bearer ${config.token}` },
-      })
+      const res = await apiFetch('/api/tasks?assigneeId=me&dueDate=today&includeSubtasks=1')
       if (res.ok) {
         const data = await res.json() as { tasks: Task[] }
         setTodayTasks(data.tasks.filter(t => t.status !== 'done' && t.status !== 'cancelled'))
@@ -95,27 +82,16 @@ export function HomePanel({
 
   useEffect(() => {
     if (DEMO_MODE) {
-      setStatus({ isClockedIn: true, onBreak: false, isTracking: true, elapsedMs: 14_520_000, username: 'john.doe', role: 'developer' })
       setTodayTasks([
         { id: 'd1', title: 'Fix login page responsiveness', description: 'The login page breaks on small screens', status: 'in-progress', priority: 'high', dueDate: new Date().toISOString(), estimatedHours: 3, createdBy: 'u1', projectId: 'p1', assigneeId: 'u2', project: { id: 'p1', name: 'Bundy Web', color: '#007acc' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 2, subtasks: 1 } },
         { id: 'd2', title: 'Write unit tests for auth module', description: null, status: 'todo', priority: 'medium', dueDate: new Date().toISOString(), estimatedHours: 2, createdBy: 'u1', projectId: 'p2', assigneeId: 'u2', project: { id: 'p2', name: 'Backend API', color: '#43B581' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 0, subtasks: 3 } },
         { id: 'd3', title: 'Update README documentation', description: 'Add new API endpoints to the docs', status: 'todo', priority: 'low', dueDate: new Date().toISOString(), estimatedHours: 1, createdBy: 'u3', projectId: 'p1', assigneeId: 'u2', project: { id: 'p1', name: 'Bundy Web', color: '#007acc' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 5, subtasks: 0 } },
         { id: 'd4', title: 'Review PR #142 — Dashboard redesign', description: null, status: 'in-progress', priority: 'urgent', dueDate: new Date().toISOString(), estimatedHours: 1, createdBy: 'u4', projectId: 'p3', assigneeId: 'u2', project: { id: 'p3', name: 'Desktop App', color: '#cca700' }, section: null, assignee: { id: 'u2', username: 'john.doe', alias: 'John', avatarUrl: null }, _count: { comments: 8, subtasks: 0 } },
       ])
-      setPlanItems([
-        { id: 'pl1', project: { id: 'p1', name: 'Bundy Web' }, details: 'Fix responsive issues on login + dashboard', status: 'in-progress', outcome: null },
-        { id: 'pl2', project: { id: 'p2', name: 'Backend API' }, details: 'Write auth module unit tests (target 80% coverage)', status: 'pending', outcome: null },
-        { id: 'pl3', project: { id: 'p3', name: 'Desktop App' }, details: 'Review and merge dashboard redesign PR', status: 'pending', outcome: null },
-      ])
       return
     }
-    load()
     loadTasks()
-    loadPlan()
-    const unsub = window.electronAPI.onStatusUpdate((s) => setStatus(s))
-    const unsubPlan = window.electronAPI.onPlanUpdate((plan) => setPlanItems(plan.items ?? []))
-    return () => { unsub(); unsubPlan() }
-  }, [load, loadTasks, loadPlan])
+  }, [loadTasks])
 
   function openClockOutModal() {
     setReportContent('')
@@ -136,7 +112,7 @@ export function HomePanel({
     try {
       await window.electronAPI.doAction(action)
       const s = await window.electronAPI.getStatus()
-      setStatus(s)
+      useAppStore.getState().setStatus(s)
     } catch { /* offline, queued */ } finally { setActioning(false) }
   }
 
@@ -305,11 +281,10 @@ export function HomePanel({
                   <button onClick={() => { setShowReportModal(false); setShowPreview(false) }}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>Cancel</button>
                   <button onClick={async () => {
-                    if (config && Object.keys(taskStatusUpdates).length > 0) {
+                    if (Object.keys(taskStatusUpdates).length > 0) {
                       await Promise.allSettled(Object.entries(taskStatusUpdates).map(([id, status]) =>
-                        fetch(`${config.apiBase}/api/tasks/${id}`, {
+                        apiFetch(`/api/tasks/${id}`, {
                           method: 'PATCH',
-                          headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
                           body: JSON.stringify({ status }),
                         })
                       ))
@@ -434,7 +409,7 @@ export function HomePanel({
                   />
                 ) : (
                   <div style={{ width: '100%', minHeight: 160, borderRadius: 4, padding: 12, fontSize: 13, ...neu(true), color: C.text, boxSizing: 'border-box', lineHeight: 1.6, overflowY: 'auto' }}
-                    dangerouslySetInnerHTML={{ __html: reportContent.trim() ? simpleMarkdown(reportContent) : '<span style="opacity:0.4">Nothing to preview yet…</span>' }}
+                    dangerouslySetInnerHTML={{ __html: reportContent.trim() ? sanitizeHtml(simpleMarkdown(reportContent)) : '<span style="opacity:0.4">Nothing to preview yet…</span>' }}
                   />
                 )}
 
@@ -466,9 +441,9 @@ export function HomePanel({
                         setShowReportModal(false)
                         setShowPreview(false)
                         setReportContent('')
-                        await loadPlan()
+                        await useAppStore.getState().refreshPlan()
                         const s = await window.electronAPI.getStatus()
-                        setStatus(s)
+                        useAppStore.getState().setStatus(s)
                       } catch (err: unknown) {
                         setReportError(err instanceof Error ? err.message : 'Failed to submit')
                       } finally { setReportSubmitting(false) }
