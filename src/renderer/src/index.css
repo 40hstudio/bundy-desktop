@@ -1,0 +1,458 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* ─── Backgrounds (layered dark surfaces) ─── */
+  --bg-tertiary: #0e0e0e;
+  --bg-secondary: #161616;
+  --bg-primary: #1c1c1c;
+  --bg-floating: #080808;
+  --bg-input: #282828;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.08);
+
+  /* ─── Text ─── */
+  --text: #cccccc;
+  --text-secondary: #9d9d9d;
+  --text-tertiary: #6b6b6b;
+  --text-muted: #6b6b6b;
+  --text-on-accent: #ffffff;
+
+  /* ─── Accent & status ─── */
+  --accent: #007acc;
+  --accent-hover: #1a8ad4;
+  --accent-light: rgba(0, 122, 204, 0.18);
+  --success: #43B581;
+  --success-light: rgba(67, 181, 129, 0.18);
+  --warning: #cca700;
+  --warning-light: rgba(204, 167, 0, 0.18);
+  --danger: #f04747;
+  --danger-light: rgba(240, 71, 71, 0.18);
+
+  /* ─── Borders & separators ─── */
+  --separator: rgba(255, 255, 255, 0.06);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  /* ─── Fills (input/recessed areas) ─── */
+  --fill-tertiary: #282828;
+  --fill-secondary: #333333;
+  --fill-primary: #3e3e3e;
+
+  /* ─── Radii ─── */
+  --radius-lg: 12px;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --radius-full: 9999px;
+
+  /* ─── Shadows ─── */
+  --shadow-low: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-med: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-high: 0 8px 16px rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 16px 64px rgba(0, 0, 0, 0.7);
+
+  /* ─── Font ─── */
+  --font: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-tertiary);
+  -webkit-font-smoothing: antialiased;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+textarea, input {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-app-region: no-drag;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Surfaces — flat solid panels
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.surface {
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+}
+
+.surface-floating {
+  background: var(--bg-floating);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+}
+
+/* ─── Primary button ─── */
+.btn-primary,
+.liquid-glass-tinted {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.17s ease, box-shadow 0.17s ease;
+}
+
+.btn-primary:hover,
+.liquid-glass-tinted:hover {
+  background: #1a8ad4;
+  box-shadow: 0 0 12px rgba(0, 122, 204, 0.3);
+}
+
+.btn-primary:active,
+.liquid-glass-tinted:active {
+  background: #006bb3;
+}
+
+/* ─── Secondary button ─── */
+.btn-secondary,
+.liquid-glass-btn {
+  background: var(--bg-hover);
+  color: var(--text);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease;
+}
+
+.btn-secondary:hover,
+.liquid-glass-btn:hover {
+  background: var(--bg-active);
+}
+
+/* ─── Ghost / tertiary button ─── */
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease, color 0.17s ease;
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+/* ─── Input field ─── */
+.input-field,
+.glass-inset,
+.neu-inset {
+  background: var(--bg-input);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.input-field:focus-within,
+.glass-inset:focus-within {
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.4);
+}
+
+/* ─── Legacy class aliases (map old glass classes to new flat surfaces) ─── */
+.liquid-glass,
+.liquid-glass-lg,
+.liquid-glass-clear,
+.glass,
+.glass-lg {
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+}
+
+.glass-button,
+.neu-raised {
+  background: var(--bg-hover);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.17s ease;
+}
+
+.glass-button:hover,
+.neu-raised:hover {
+  background: var(--bg-active);
+}
+
+button,
+input,
+a {
+  -webkit-app-region: no-drag;
+}
+
+button {
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 14px;
+}
+
+input {
+  font-family: var(--font);
+  font-size: 14px;
+  outline: none;
+  border: none;
+  background: transparent;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+@keyframes callReactionFloat {
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-60px) scale(1.4); }
+}
+
+@keyframes callingPulse {
+  0% { box-shadow: 0 0 0 0 rgba(67, 181, 129, 0.6); }
+  70% { box-shadow: 0 0 0 18px rgba(67, 181, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(67, 181, 129, 0); }
+}
+
+@keyframes speakingGlow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(67, 181, 129, 0.3); }
+  50% { box-shadow: 0 0 14px 4px rgba(67, 181, 129, 0.5); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TipTap / ProseMirror – Document Editor
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tiptap-editor {
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-app-region: no-drag;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.7;
+  min-height: 400px;
+  caret-color: var(--accent);
+}
+
+.tiptap-editor > *:first-child { margin-top: 0; }
+
+/* ── Headings ──────────────────────────────────────────────────────────── */
+.tiptap-editor h1 { font-size: 28px; font-weight: 700; margin: 1.2em 0 0.5em; color: #fff; }
+.tiptap-editor h2 { font-size: 22px; font-weight: 600; margin: 1em 0 0.4em; color: #fff; }
+.tiptap-editor h3 { font-size: 17px; font-weight: 600; margin: 0.8em 0 0.3em; color: var(--text); }
+
+/* ── Paragraphs & inline ───────────────────────────────────────────────── */
+.tiptap-editor p { margin: 0.6em 0; }
+.tiptap-editor strong { font-weight: 700; }
+.tiptap-editor em { font-style: italic; }
+.tiptap-editor u { text-decoration: underline; }
+.tiptap-editor s { text-decoration: line-through; color: var(--text-tertiary); }
+.tiptap-editor sub { font-size: 0.75em; }
+.tiptap-editor sup { font-size: 0.75em; }
+
+/* ── Links ─────────────────────────────────────────────────────────────── */
+.tiptap-editor .tiptap-link,
+.tiptap-editor a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.tiptap-editor a:hover { color: var(--accent-hover); }
+
+/* ── Code ──────────────────────────────────────────────────────────────── */
+.tiptap-editor code {
+  background: var(--bg-input);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 0.88em;
+  color: #e0e0e0;
+}
+.tiptap-editor pre {
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tiptap-editor pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* ── Blockquote ────────────────────────────────────────────────────────── */
+.tiptap-editor blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 16px;
+  margin: 0.8em 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ── Lists ─────────────────────────────────────────────────────────────── */
+.tiptap-editor ul { list-style: disc; padding-left: 24px; margin: 0.5em 0; }
+.tiptap-editor ol { list-style: decimal; padding-left: 24px; margin: 0.5em 0; }
+.tiptap-editor li { margin: 0.2em 0; }
+.tiptap-editor li p { margin: 0.15em 0; }
+
+/* ── Task lists ────────────────────────────────────────────────────────── */
+.tiptap-editor ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.tiptap-editor ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+}
+.tiptap-editor ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 3px;
+  cursor: pointer;
+}
+.tiptap-editor ul[data-type="taskList"] li > label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.tiptap-editor ul[data-type="taskList"] li > div {
+  flex: 1;
+}
+.tiptap-editor ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+
+/* ── Horizontal rule ───────────────────────────────────────────────────── */
+.tiptap-editor hr {
+  border: none;
+  border-top: 1px solid var(--separator);
+  margin: 1.5em 0;
+}
+
+/* ── Images ────────────────────────────────────────────────────────────── */
+.tiptap-editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.8em 0;
+  cursor: default;
+}
+.tiptap-editor img.ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.tiptap-editor table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.8em 0;
+  table-layout: fixed;
+  overflow: hidden;
+}
+.tiptap-editor th,
+.tiptap-editor td {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 8px 12px;
+  vertical-align: top;
+  min-width: 80px;
+  position: relative;
+}
+.tiptap-editor th {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-secondary);
+}
+.tiptap-editor td { background: transparent; }
+
+.tiptap-editor .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 122, 204, 0.15);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Column resize handle */
+.tiptap-editor .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 20;
+}
+.tiptap-editor .tableWrapper { overflow-x: auto; margin: 0.8em 0; }
+
+/* ── Highlight ─────────────────────────────────────────────────────────── */
+.tiptap-editor mark {
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+
+/* ── Placeholder ───────────────────────────────────────────────────────── */
+.tiptap-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--text-muted);
+  pointer-events: none;
+  height: 0;
+}
+
+/* ── Selection ─────────────────────────────────────────────────────────── */
+.tiptap-editor ::selection {
+  background: rgba(0, 122, 204, 0.35);
+}
+
+/* ── Gapcursor ─────────────────────────────────────────────────────────── */
+.tiptap-editor .ProseMirror-gapcursor::after {
+  border-top-color: var(--text);
+}
