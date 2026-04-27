@@ -1,6 +1,6 @@
 {
   "name": "bundy-desktop",
-  "version": "1.4.1501",
+  "version": "1.4.5200",
   "description": "Bundy Clock – macOS menu bar app",
   "main": "out/main/index.js",
   "author": "40h Studio",
@@ -10,7 +10,14 @@
     "build": "electron-vite build",
     "predist": "bash scripts/setup-codesign.sh",
     "dist": "npm run build && electron-builder",
-    "postinstall": "electron-builder install-app-deps"
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:all": "npm run build && electron-builder --mac --win",
+    "postinstall": "electron-builder install-app-deps",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
@@ -40,12 +47,14 @@
     "dompurify": "^3.3.3",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.3",
+    "livekit-client": "^2.18.1",
     "lucide-react": "^1.7.0",
     "uiohook-napi": "^1.5.3",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^1.0.1",
+    "@eslint/js": "^10.0.1",
     "@types/dompurify": "^3.0.5",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
@@ -53,9 +62,14 @@
     "electron": "^33.0.0",
     "electron-builder": "^25.0.5",
     "electron-vite": "^2.3.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.8.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.5.4",
-    "vite": "^5.4.6"
+    "typescript-eslint": "^8.58.2",
+    "vite": "^5.4.6",
+    "vitest": "^4.1.4"
   }
 }

@@ -37,6 +37,13 @@ mac:
   identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
+
+win:
+  icon: resources/icon.ico
+  target:
+    - nsis
+    - zip
+
 publish:
   provider: github
   owner: 40hstudio
