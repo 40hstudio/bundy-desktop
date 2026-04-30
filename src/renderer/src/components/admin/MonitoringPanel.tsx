@@ -154,20 +154,23 @@ export default function MonitoringPanel({ config }: { config: ApiConfig }) {
     return () => clearInterval(iv)
   }, [config])
 
-  // Fetch real-time current app for all online users
+  // Real-time current app for ALL online users — one consolidated query
+  // every 2s instead of one query per user. See P3.13.
   useEffect(() => {
     const online = overview.filter(u => u.status !== 'Offline')
     if (online.length === 0) return
     const headers = { Authorization: `Bearer ${config.token}` }
     const fetchApps = async () => {
-      const results: Record<string, CurrentAppInfo> = {}
-      await Promise.all(online.map(async u => {
-        try {
-          const res = await fetch(`${config.apiBase}/api/user/current-activity?userId=${u.id}`, { headers })
-          if (res.ok) { results[u.id] = await res.json() as CurrentAppInfo }
-        } catch { /* ignore */ }
-      }))
-      setCurrentApps(results)
+      try {
+        const res = await fetch(`${config.apiBase}/api/admin/online-users`, { headers })
+        if (!res.ok) return
+        const data = await res.json() as { users: Array<{ userId: string; app: string | null; url: string | null }> }
+        const results: Record<string, CurrentAppInfo> = {}
+        for (const u of data.users) {
+          results[u.userId] = { app: u.app, url: u.url } as CurrentAppInfo
+        }
+        setCurrentApps(results)
+      } catch { /* ignore */ }
     }
     void fetchApps()
     const iv = setInterval(fetchApps, 2_000)
@@ -319,19 +322,56 @@ export default function MonitoringPanel({ config }: { config: ApiConfig }) {
         {/* ── Analytics ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <SectionHeader icon={<BarChart2 size={14} />} title="Analytics" />
-          <div style={{ display: 'flex', gap: 2, background: C.bgInput, borderRadius: 6, padding: 2 }}>
-            {(['today', 'week', 'month'] as const).map(r => (
-              <button key={r} onClick={() => setAnalyticsRange(r)}
-                style={{
-                  padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                  fontSize: 10, fontWeight: 600, letterSpacing: 0.3,
-                  background: analyticsRange === r ? 'rgba(0, 122, 204, 0.15)' : 'transparent',
-                  color: analyticsRange === r ? C.accent : C.textMuted,
-                  transition: 'all 0.1s',
-                }}>
-                {r.charAt(0).toUpperCase() + r.slice(1)}
-              </button>
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {/* CSV export — covers the same range as the analytics tabs (P3.15) */}
+            <button
+              onClick={() => {
+                const today = new Date()
+                const fmt = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+                let from = fmt(today), to = fmt(today)
+                if (analyticsRange === 'week') {
+                  const start = new Date(today.getTime() - 6 * 86400000)
+                  from = fmt(start); to = fmt(today)
+                } else if (analyticsRange === 'month') {
+                  const start = new Date(today.getTime() - 29 * 86400000)
+                  from = fmt(start); to = fmt(today)
+                }
+                const url = `${config.apiBase}/api/admin/activity/export?from=${from}&to=${to}`
+                fetch(url, { headers: { Authorization: `Bearer ${config.token}` } })
+                  .then(r => r.blob())
+                  .then(blob => {
+                    const dl = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = dl
+                    a.download = `activity-${from}_to_${to}.csv`
+                    document.body.appendChild(a)
+                    a.click()
+                    a.remove()
+                    URL.revokeObjectURL(dl)
+                  })
+                  .catch(() => {})
+              }}
+              title="Export current range as CSV"
+              style={{
+                padding: '4px 10px', borderRadius: 4, border: `1px solid ${C.separator}`,
+                background: 'transparent', color: C.textMuted, cursor: 'pointer',
+                fontSize: 10, fontWeight: 600, letterSpacing: 0.3, fontFamily: 'inherit',
+              }}
+            >Export CSV</button>
+            <div style={{ display: 'flex', gap: 2, background: C.bgInput, borderRadius: 6, padding: 2 }}>
+              {(['today', 'week', 'month'] as const).map(r => (
+                <button key={r} onClick={() => setAnalyticsRange(r)}
+                  style={{
+                    padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, letterSpacing: 0.3,
+                    background: analyticsRange === r ? 'rgba(0, 122, 204, 0.15)' : 'transparent',
+                    color: analyticsRange === r ? C.accent : C.textMuted,
+                    transition: 'all 0.1s',
+                  }}>
+                  {r.charAt(0).toUpperCase() + r.slice(1)}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -453,6 +493,8 @@ function UserDetailView({ config, user, bases, holidays, currentApp, onBack }: {
   const [loadingActivity, setLoadingActivity] = useState(true)
   const [tab, setTab] = useState<'overview' | 'screenshots' | 'timeline' | 'apps' | 'salary'>('overview')
   const [lightbox, setLightbox] = useState<number | null>(null) // index into screenshots
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [liveApp, setLiveApp] = useState<CurrentAppInfo | null>(currentApp)
 
   const allScreenshots = activityData?.screenshots ?? []
@@ -634,15 +676,80 @@ function UserDetailView({ config, user, bases, holidays, currentApp, onBack }: {
             {/* Image */}
             <div onClick={e => e.stopPropagation()} style={{ maxWidth: '85vw', maxHeight: '88vh', cursor: 'default' }}>
               <AuthImage src={`${config.apiBase}${shot.url}`} config={config} style={{ maxWidth: '85vw', maxHeight: '80vh', objectFit: 'contain', borderRadius: 8 }} />
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 10, alignItems: 'center' }}>
                 <span style={{ color: '#fff', fontSize: 11 }}>{fmtTime(shot.capturedAt)}</span>
                 {shot.topApp && <span style={{ color: C.accent, fontSize: 11 }}>{shot.topApp}</span>}
                 {shot.activityPct != null && <span style={{ color: C.success, fontSize: 11 }}>Activity: {shot.activityPct}%</span>}
+                <button
+                  onClick={e => { e.stopPropagation(); setConfirmDelete(shot.id) }}
+                  title="Delete screenshot"
+                  style={{
+                    background: 'rgba(240,71,71,0.2)', border: `1px solid ${C.danger}55`, borderRadius: 6,
+                    padding: '4px 10px', cursor: 'pointer', color: C.danger,
+                    fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4,
+                  }}
+                >Delete</button>
               </div>
             </div>
           </div>
         )
       })()}
+
+      {/* Confirm-delete modal — admin-only screenshot removal (P0.4) */}
+      {confirmDelete && (
+        <div
+          onClick={() => setConfirmDelete(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 10000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{
+            background: C.bgPrimary, border: `1px solid ${C.separator}`, borderRadius: 10,
+            padding: 20, width: 360, color: C.text,
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>Delete this screenshot?</div>
+            <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+              The image is removed from disk and the row is soft-deleted. This cannot be undone.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                style={{
+                  padding: '7px 14px', borderRadius: 6, border: `1px solid ${C.separator}`,
+                  background: 'transparent', color: C.text, fontSize: 12, cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >Cancel</button>
+              <button
+                onClick={async () => {
+                  if (!confirmDelete) return
+                  setDeleting(true)
+                  try {
+                    await fetch(`${config.apiBase}/api/admin/screenshots/${confirmDelete}`, {
+                      method: 'DELETE',
+                      headers: { Authorization: `Bearer ${config.token}` },
+                    })
+                    setConfirmDelete(null)
+                    setLightbox(null)
+                    // refresh activity (will skip the soft-deleted row)
+                    setActivityData(prev => prev ? { ...prev, screenshots: prev.screenshots.filter(s => s.id !== confirmDelete) } : prev)
+                  } catch { /* surface via toast or noop — server will retry next load */ }
+                  finally { setDeleting(false) }
+                }}
+                disabled={deleting}
+                style={{
+                  padding: '7px 14px', borderRadius: 6, border: 'none',
+                  background: C.danger, color: '#fff', fontSize: 12, fontWeight: 600,
+                  cursor: deleting ? 'default' : 'pointer', opacity: deleting ? 0.6 : 1,
+                  fontFamily: 'inherit',
+                }}
+              >{deleting ? 'Deleting…' : 'Delete'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

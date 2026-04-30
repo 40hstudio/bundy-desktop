@@ -94,6 +94,9 @@ export function HomePanel({
   const [otReason, setOtReason] = useState('')
   const [otSubmitting, setOtSubmitting] = useState(false)
   const [otMsg, setOtMsg] = useState('')
+  // 24-hour activity heatmap (P3.19) — buckets today's ActivitySummary
+  // windows into hours and renders a strip in the timer card.
+  const [hourlyHeatmap, setHourlyHeatmap] = useState<number[]>(Array(24).fill(0))
 
   const displayMs = useStatusTicker(
     status?.elapsedMs ?? 0,
@@ -123,6 +126,28 @@ export function HomePanel({
         const data = await res.json() as { workLimit?: typeof workLimit }
         if (data.workLimit) setWorkLimit(data.workLimit)
       }
+    } catch { /* */ }
+  }, [config])
+
+  // Pull today's activity windows and bucket them into 24 hourly slots.
+  // Refreshes every 60s while the panel is mounted (P3.19).
+  const loadHourlyHeatmap = useCallback(async () => {
+    if (!config) return
+    try {
+      const today = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10)
+      const res = await fetch(`${config.apiBase}/api/user/activity?date=${today}`, {
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      if (!res.ok) return
+      const data = await res.json() as { activity: Array<{ windowStart: string; mouseActiveSeconds: number; keyActiveSeconds: number; totalSeconds: number }> }
+      const buckets = Array<{ active: number; total: number }>(24).fill(null as never).map(() => ({ active: 0, total: 0 }))
+      for (const w of data.activity) {
+        // WIB hour of windowStart
+        const h = (new Date(w.windowStart).getUTCHours() + 7) % 24
+        buckets[h].active += (w.mouseActiveSeconds + w.keyActiveSeconds) / 2
+        buckets[h].total += w.totalSeconds
+      }
+      setHourlyHeatmap(buckets.map(b => b.total > 0 ? Math.round((b.active / b.total) * 100) : 0))
     } catch { /* */ }
   }, [config])
 
@@ -188,11 +213,13 @@ export function HomePanel({
     loadPlan()
     loadWorkLimit()
     loadQaNotifs()
+    loadHourlyHeatmap()
     const qaInterval = setInterval(loadQaNotifs, 15000)
+    const heatmapInterval = setInterval(loadHourlyHeatmap, 60000)
     const unsub = window.electronAPI.onStatusUpdate((s) => { setStatus(s); setSnapshotAt(Date.now()) })
     const unsubPlan = window.electronAPI.onPlanUpdate((plan) => setPlanItems(plan.items ?? []))
     const unsubPerms = window.electronAPI.onPermissionsUpdate(setPermissions)
-    return () => { unsub(); unsubPlan(); unsubPerms(); clearInterval(qaInterval) }
+    return () => { unsub(); unsubPlan(); unsubPerms(); clearInterval(qaInterval); clearInterval(heatmapInterval) }
   }, [load, loadTasks, loadPlan, loadWorkLimit, loadQaNotifs])
 
   function openClockOutModal() {
@@ -312,6 +339,34 @@ export function HomePanel({
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, display: 'inline-block' }} />
           {statusLabel}
         </div>
+        {/* 24-hour activity heatmap (P3.19) — at-a-glance productivity strip */}
+        {hourlyHeatmap.some(v => v > 0) && (
+          <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+              Today's activity by hour
+            </div>
+            <div style={{ display: 'flex', gap: 2, height: 24, alignItems: 'flex-end' }}>
+              {hourlyHeatmap.map((pct, h) => {
+                const color = pct === 0 ? 'rgba(255,255,255,0.06)'
+                  : pct > 60 ? C.success
+                  : pct > 30 ? C.warning
+                  : C.danger
+                return (
+                  <div key={h}
+                    title={`${String(h).padStart(2, '0')}:00 — ${pct}% active`}
+                    style={{
+                      width: 8,
+                      height: pct === 0 ? 4 : `${Math.max(4, pct / 100 * 24)}px`,
+                      background: color,
+                      borderRadius: 2,
+                      transition: 'height 0.2s, background 0.2s',
+                    }}
+                  />
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Action Buttons */}
@@ -355,7 +410,23 @@ export function HomePanel({
             </button>
           )}
           {!permissions.accessibility && (
-            <button onClick={() => window.electronAPI.openAccessibilitySettings()}
+            <button onClick={() => {
+              window.electronAPI.openAccessibilitySettings()
+              // Re-check loop (P3.20). After the user clicks the button we
+              // poll permissions every 2s for up to 60s; the moment
+              // accessibility flips to true the activity engine kicks in
+              // automatically because the next status refresh detects it.
+              let attempts = 0
+              const iv = setInterval(async () => {
+                attempts++
+                try {
+                  const p = await window.electronAPI.checkPermissions()
+                  setPermissions(p)
+                  if (p.accessibility) clearInterval(iv)
+                } catch { /* ignore */ }
+                if (attempts >= 30) clearInterval(iv)
+              }, 2000)
+            }}
               style={{ display: 'block', background: 'none', border: 'none', fontSize: 12, color: C.accent, cursor: 'pointer', padding: '2px 0', fontWeight: 600 }}>
               ▸ Enable Accessibility →
             </button>

@@ -178,6 +178,41 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
         )}
       </div>
 
+      {/* Privacy / data export (P3.21) */}
+      <div style={{ ...card() }}>
+        <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>Privacy</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Download my data</div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+              Exports every activity record we hold for you (time logs, activity summaries,
+              screenshot metadata, manual time requests, daily plans, foul flags) as a single JSON file.
+            </div>
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                const res = await fetch(`${config.apiBase}/api/user/data-export`, {
+                  headers: { Authorization: `Bearer ${config.token}` },
+                })
+                if (!res.ok) { alert('Export failed'); return }
+                const blob = await res.blob()
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `bundy-data-${auth.userId}.json`
+                document.body.appendChild(a)
+                a.click()
+                a.remove()
+                URL.revokeObjectURL(url)
+              } catch { alert('Export failed') }
+            }}
+            style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.accent, fontWeight: 600, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>
+            Download
+          </button>
+        </div>
+      </div>
+
       {/* About / Updates */}
       <div style={{ ...card() }}>
         <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>About</div>

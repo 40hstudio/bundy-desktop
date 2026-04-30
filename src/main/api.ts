@@ -450,6 +450,8 @@ export async function sendHeartbeat(data: {
   totalSeconds: number
   topApps?: Record<string, number>
   topUrls?: Record<string, number>
+  /** Task in focus during this window — populates ActivitySummary.taskId. */
+  taskId?: string | null
 }): Promise<void> {
   try {
     await request('/api/activity/heartbeat', { method: 'POST', body: data })

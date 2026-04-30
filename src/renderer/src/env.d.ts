@@ -16,6 +16,8 @@ declare global {
       checkForUpdates: () => Promise<void>
       installUpdate: () => Promise<void>
       setBadgeCount: (count: number) => void
+      setInCall: (value: boolean) => void
+      setCurrentTask: (taskId: string | null) => void
       getVersion: () => Promise<string>
       getUpdateState: () => Promise<{ version: string | null; percent: number | null; downloaded: boolean }>
       onUpdateAvailable: (cb: (info: { version: string }) => void) => () => void

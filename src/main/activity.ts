@@ -198,6 +198,21 @@ function bumpActivity(): void {
   lastActivityTs = Date.now()
 }
 
+// While the user is in a LiveKit call, mouse + keyboard input legitimately
+// drops to near-zero (they're talking, listening, or sharing screen). The
+// activity engine has no way to know about this on its own, so the renderer
+// pushes call state through IPC and we treat every tick during a call as if
+// it had fresh keyboard + mouse activity. See P2.9.
+let inCall = false
+export function setInCall(value: boolean): void { inCall = value }
+
+// Currently-focused task (drawer open). When set, the next 10-min heartbeat
+// is tagged with this taskId so the daily rollup can populate Task.actualHours
+// without showing/comparing estimatedHours. See P2.10.
+let currentTaskId: string | null = null
+export function setCurrentTaskId(id: string | null): void { currentTaskId = id }
+export function getCurrentTaskId(): string | null { return currentTaskId }
+
 function bumpMouse(): void {
   lastMouseTs = Date.now()
   bumpActivity()
@@ -212,6 +227,12 @@ function startActiveTimer(): void {
   if (activeSecondsTick) return
   activeSecondsTick = setInterval(() => {
     const now = Date.now()
+    // Treat in-call seconds as fully active — calls suppress idle (P2.9).
+    if (inCall) {
+      lastActivityTs = now
+      lastMouseTs = now
+      lastKeyTs = now
+    }
     if (now - lastActivityTs < ACTIVITY_GRACE_MS) {
       activeSeconds++
     }
@@ -259,6 +280,9 @@ function flushHeartbeat(): void {
     totalSeconds,
     topApps,
     topUrls,
+    // Tag the window with whatever task drawer was open most recently
+    // so the daily rollup can populate Task.actualHours (P2.10).
+    taskId: currentTaskId,
   }
   void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
   mouseEvents = 0
@@ -357,6 +381,7 @@ export function stopActivity(): void {
       totalSeconds: Math.round((Date.now() - windowStart.getTime()) / 1000),
       topApps: { ...appSeconds },
       topUrls: { ...urlSeconds },
+      taskId: currentTaskId,
     }
     void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
     mouseEvents = 0

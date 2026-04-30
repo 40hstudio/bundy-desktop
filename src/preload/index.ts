@@ -150,6 +150,18 @@ const api = {
   setBadgeCount: (count: number): void =>
     ipcRenderer.send('set-badge-count', count),
 
+  // ─── Activity engine: in-call suppression ────────────────────────
+  // Set true on call start, false on call end. While true, the activity
+  // engine treats every tick as active so calls don't show as idle.
+  setInCall: (value: boolean): void =>
+    ipcRenderer.send('set-in-call', value),
+
+  // ─── Activity engine: current task in focus ─────────────────────
+  // Each 10-min heartbeat is tagged with the most-recent taskId so the
+  // daily rollup can populate Task.actualHours.
+  setCurrentTask: (taskId: string | null): void =>
+    ipcRenderer.send('set-current-task', taskId),
+
   // ─── Desktop notifications ────────────────────────────────────────
   showNotification: (title: string, body: string): Promise<void> =>
     ipcRenderer.invoke('show-notification', { title, body }),

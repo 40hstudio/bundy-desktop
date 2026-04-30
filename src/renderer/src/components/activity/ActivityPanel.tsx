@@ -33,7 +33,8 @@ interface TimelineSlot {
 function buildActivityTimeline(
   screenshots: ActivityScreenshot[],
   timeLogs: { action: string; timestamp: string }[],
-  activityWindows: ActivityWindow[]
+  activityWindows: ActivityWindow[],
+  slotMinutes: number = 10,
 ): TimelineSlot[] {
   const firstCheckIn = timeLogs.find(l => l.action === 'CHECK_IN')
   if (!firstCheckIn) return []
@@ -54,23 +55,28 @@ function buildActivityTimeline(
   }
   if (bStart) breaks.push({ start: bStart, end: null })
 
+  const slotMs = slotMinutes * 60_000
   const roundedStart = new Date(start)
   roundedStart.setSeconds(0, 0)
-  roundedStart.setMinutes(Math.floor(roundedStart.getMinutes() / 10) * 10)
+  // Align to whatever boundary fits the chosen slot size.
+  roundedStart.setMinutes(Math.floor(roundedStart.getMinutes() / slotMinutes) * slotMinutes)
 
+  // Activity windows are recorded at 10-min boundaries; for finer granularity
+  // (1m, 5m) we apply the same window stats to every sub-slot inside it.
   const slots: TimelineSlot[] = []
-  for (let t = roundedStart.getTime(); t <= end.getTime(); t += 10 * 60_000) {
+  for (let t = roundedStart.getTime(); t <= end.getTime(); t += slotMs) {
     const slotTime = new Date(t)
-    const slotEnd = t + 10 * 60_000
+    const slotEnd = t + slotMs
 
     const ss = screenshots.find(s => {
       const ct = new Date(s.capturedAt).getTime()
       return ct >= t && ct < slotEnd
     }) ?? null
 
+    // Find the 10-min window covering this slot's start.
     const win = activityWindows.find(w => {
       const wt = new Date(w.windowStart).getTime()
-      return Math.abs(wt - t) < 5 * 60_000
+      return t >= wt && t < wt + 10 * 60_000
     }) ?? null
 
     const isBreak = breaks.some(b => slotTime >= b.start && slotTime < (b.end ?? end))
@@ -102,6 +108,21 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
   const [appsExpanded, setAppsExpanded] = useState(false)
   const [urlsExpanded, setUrlsExpanded] = useState(false)
   const timelineRef = useRef<HTMLDivElement>(null)
+  // Range view (P3.16). 'day' = existing per-day timeline; 'week'/'month'
+  // show aggregate per-day stats from /api/user/activity-range.
+  const [rangeView, setRangeView] = useState<'day' | 'week' | 'month'>('day')
+  // Timeline zoom (P3.18). 10-min default mirrors the original behaviour;
+  // smaller granularities slice the same data finer.
+  const [timelineZoom, setTimelineZoom] = useState<1 | 5 | 10 | 30>(10)
+  const [rangeData, setRangeData] = useState<Array<{
+    date: string
+    totalSeconds: number
+    activeSeconds: number
+    mouseActiveSeconds: number
+    keyActiveSeconds: number
+    topApps: Array<{ name: string; seconds: number }>
+    topUrls: Array<{ name: string; seconds: number }>
+  }> | null>(null)
 
   const todayStr = (() => { const n = new Date(Date.now() + 7 * 3600_000); return n.toISOString().slice(0, 10) })()
   const isToday = selectedDate === todayStr
@@ -128,7 +149,7 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
     if (timelineRef.current) timelineRef.current.scrollLeft = timelineRef.current.scrollWidth
   }, [data])
 
-  const timeline = data ? buildActivityTimeline(data.screenshots, data.timeLogs, data.activity) : []
+  const timeline = data ? buildActivityTimeline(data.screenshots, data.timeLogs, data.activity, timelineZoom) : []
 
   const { workMs, breakMs } = (() => {
     if (!data) return { workMs: 0, breakMs: 0 }
@@ -157,8 +178,49 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
     return C.danger
   }
 
+  // Client-side overlap check (P3.17). Catches the obvious cases (request
+  // overlaps an existing CHECK_IN/BACK/BREAK/CLOCK_OUT log on the same day)
+  // before round-tripping to the server. The server still has the
+  // authoritative check.
+  function findOverlap(startISO: string, endISO: string): string | null {
+    if (!data?.timeLogs?.length) return null
+    const start = new Date(startISO).getTime()
+    const end = new Date(endISO).getTime()
+    if (!(end > start)) return 'End must be after start'
+    // Pair CHECK_IN/BACK with the next CLOCK_OUT/BREAK to form covered
+    // intervals; flag overlap.
+    const sorted = [...data.timeLogs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    let openAt: number | null = null
+    for (const log of sorted) {
+      const t = new Date(log.timestamp).getTime()
+      if (log.action === 'CHECK_IN' || log.action === 'BACK') {
+        openAt = t
+      } else if ((log.action === 'CLOCK_OUT' || log.action === 'BREAK') && openAt !== null) {
+        // [openAt, t] is a covered interval — does our new range overlap it?
+        if (start < t && end > openAt) {
+          return `Range overlaps an existing log block (${new Date(openAt).toLocaleTimeString()} – ${new Date(t).toLocaleTimeString()})`
+        }
+        openAt = null
+      }
+    }
+    // If session is still open at the end of the day, the open block runs
+    // until "now" — flag overlap with that too.
+    if (openAt !== null) {
+      const nowMs = Date.now()
+      if (start < nowMs && end > openAt) {
+        return `Range overlaps an open work block starting at ${new Date(openAt).toLocaleTimeString()}`
+      }
+    }
+    return null
+  }
+
   async function submitManualRequest() {
     if (!manualReqForm) return
+    const overlap = findOverlap(manualReqForm.startTime, manualReqForm.endTime)
+    if (overlap) {
+      alert(overlap)
+      return
+    }
     setManualSubmitting(true)
     try {
       const res = await fetch(`${config.apiBase}/api/bundy/manual-request`, {
@@ -182,6 +244,24 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
     const endTime = new Date(slot.slotTime.getTime() + 10 * 60_000).toISOString()
     setManualReqForm({ startTime, endTime, reason: '' })
   }
+
+  // Load range view (week / month) — fetched lazily when tab changes.
+  useEffect(() => {
+    if (rangeView === 'day') return
+    const days = rangeView === 'week' ? 7 : 30
+    const today = new Date(Date.now() + 7 * 3600_000)
+    const fmt = (d: Date) => d.toISOString().slice(0, 10)
+    const to = fmt(today)
+    const from = fmt(new Date(today.getTime() - (days - 1) * 86400000))
+    let cancelled = false
+    fetch(`${config.apiBase}/api/user/activity-range?from=${from}&to=${to}`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { days: typeof rangeData } | null) => { if (!cancelled && d) setRangeData(d.days) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [rangeView, config])
 
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, WebkitAppRegion: 'no-drag' }}>
@@ -216,12 +296,126 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
             }}>Today</button>
           )}
         </div>
-        <button onClick={loadData} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
-          <RefreshCw size={15} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Range view tabs (P3.16) */}
+          <div style={{ display: 'flex', gap: 2, background: C.bgInput, borderRadius: 6, padding: 2 }}>
+            {(['day', 'week', 'month'] as const).map(r => (
+              <button key={r} onClick={() => setRangeView(r)}
+                style={{
+                  padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                  fontSize: 10, fontWeight: 600, letterSpacing: 0.3,
+                  background: rangeView === r ? 'rgba(0, 122, 204, 0.15)' : 'transparent',
+                  color: rangeView === r ? C.accent : C.textMuted,
+                }}>
+                {r.charAt(0).toUpperCase() + r.slice(1)}
+              </button>
+            ))}
+          </div>
+          <button onClick={loadData} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted }}>
+            <RefreshCw size={15} />
+          </button>
+        </div>
       </div>
 
-      {loading ? (
+      {rangeView !== 'day' ? (
+        // Range aggregate view (P3.16). Shows per-day strip + week/month KPIs.
+        rangeData === null ? (
+          <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}><Loader size={24} /></div>
+        ) : rangeData.length === 0 ? (
+          <div style={{ ...card(), textAlign: 'center', color: C.textMuted, padding: 40 }}>
+            No activity recorded for this {rangeView}.
+          </div>
+        ) : (() => {
+          const totalSec = rangeData.reduce((s, d) => s + d.totalSeconds, 0)
+          const activeSec = rangeData.reduce((s, d) => s + d.activeSeconds, 0)
+          const avgPct = totalSec > 0 ? (activeSec / totalSec) * 100 : 0
+          // Top apps + URLs aggregated across the range.
+          const appAgg: Record<string, number> = {}
+          const urlAgg: Record<string, number> = {}
+          for (const d of rangeData) {
+            for (const a of d.topApps) appAgg[a.name] = (appAgg[a.name] ?? 0) + a.seconds
+            for (const u of d.topUrls) urlAgg[u.name] = (urlAgg[u.name] ?? 0) + u.seconds
+          }
+          const topAppsRange = Object.entries(appAgg).map(([name, seconds]) => ({ name, seconds })).sort((a, b) => b.seconds - a.seconds).slice(0, 8)
+          const topUrlsRange = Object.entries(urlAgg).map(([name, seconds]) => ({ name, seconds })).sort((a, b) => b.seconds - a.seconds).slice(0, 8)
+          const maxApp = topAppsRange[0]?.seconds || 1
+          const maxUrl = topUrlsRange[0]?.seconds || 1
+          const fmtH = (sec: number) => {
+            const h = Math.floor(sec / 3600)
+            const m = Math.floor((sec % 3600) / 60)
+            return h > 0 ? `${h}h ${m}m` : `${m}m`
+          }
+          return (
+            <>
+              {/* KPI cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                <div style={{ ...card(), padding: 14 }}>
+                  <div style={{ fontSize: 10, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6 }}>Tracked</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: C.text, marginTop: 4 }}>{fmtH(totalSec)}</div>
+                </div>
+                <div style={{ ...card(), padding: 14 }}>
+                  <div style={{ fontSize: 10, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6 }}>Active</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: C.success, marginTop: 4 }}>{fmtH(activeSec)}</div>
+                </div>
+                <div style={{ ...card(), padding: 14 }}>
+                  <div style={{ fontSize: 10, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6 }}>Avg productivity</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: avgPct > 60 ? C.success : avgPct > 30 ? C.warning : C.danger, marginTop: 4 }}>{avgPct.toFixed(0)}%</div>
+                </div>
+              </div>
+              {/* Per-day bar strip */}
+              <div style={{ ...card(), padding: 14 }}>
+                <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>Per-day activity</div>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 80 }}>
+                  {rangeData.map(d => {
+                    const pct = d.totalSeconds > 0 ? (d.activeSeconds / d.totalSeconds) * 100 : 0
+                    const color = pct > 60 ? C.success : pct > 30 ? C.warning : C.danger
+                    return (
+                      <div key={d.date} title={`${d.date}: ${fmtH(d.activeSeconds)} active / ${fmtH(d.totalSeconds)} tracked`}
+                        style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                        <div style={{ flex: 1, width: '100%', display: 'flex', alignItems: 'flex-end' }}>
+                          <div style={{ width: '100%', height: `${Math.max(2, (d.activeSeconds / Math.max(...rangeData.map(x => x.totalSeconds || 1))) * 100)}%`, background: color, borderRadius: 3 }} />
+                        </div>
+                        <span style={{ fontSize: 8, color: C.textMuted }}>{d.date.slice(5)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              {/* Top apps + URLs */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ ...card(), padding: 14 }}>
+                  <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>Top apps</div>
+                  {topAppsRange.length === 0 ? <div style={{ fontSize: 11, color: C.textMuted }}>No data</div> : topAppsRange.map(a => (
+                    <div key={a.name} style={{ marginBottom: 6 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                        <span style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                        <span style={{ color: C.textMuted, fontVariantNumeric: 'tabular-nums' }}>{fmtH(a.seconds)}</span>
+                      </div>
+                      <div style={{ height: 4, background: C.bgInput, borderRadius: 2, overflow: 'hidden', marginTop: 2 }}>
+                        <div style={{ width: `${(a.seconds / maxApp) * 100}%`, height: '100%', background: C.accent }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ ...card(), padding: 14 }}>
+                  <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>Top sites</div>
+                  {topUrlsRange.length === 0 ? <div style={{ fontSize: 11, color: C.textMuted }}>No data</div> : topUrlsRange.map(u => (
+                    <div key={u.name} style={{ marginBottom: 6 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                        <span style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name}</span>
+                        <span style={{ color: C.textMuted, fontVariantNumeric: 'tabular-nums' }}>{fmtH(u.seconds)}</span>
+                      </div>
+                      <div style={{ height: 4, background: C.bgInput, borderRadius: 2, overflow: 'hidden', marginTop: 2 }}>
+                        <div style={{ width: `${(u.seconds / maxUrl) * 100}%`, height: '100%', background: C.success }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )
+        })()
+      ) : loading ? (
         <div style={{ textAlign: 'center', color: C.textMuted, padding: 40 }}><Loader size={24} /></div>
       ) : !data || (data.timeLogs.length === 0 && data.activity.length === 0) ? (
         <div style={{ ...card(), textAlign: 'center', color: C.textMuted, padding: 40 }}>
@@ -261,7 +455,23 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
             <div style={{ ...card() }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Timeline</span>
-                <span style={{ fontSize: 11, color: C.textMuted }}>{timeline.length} slots</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* Zoom picker (P3.18) */}
+                  <div style={{ display: 'flex', gap: 2, background: C.bgInput, borderRadius: 6, padding: 2 }}>
+                    {([1, 5, 10, 30] as const).map(z => (
+                      <button key={z} onClick={() => setTimelineZoom(z)}
+                        title={`${z}-minute slots`}
+                        style={{
+                          padding: '3px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                          fontSize: 9, fontWeight: 600,
+                          background: timelineZoom === z ? 'rgba(0, 122, 204, 0.15)' : 'transparent',
+                          color: timelineZoom === z ? C.accent : C.textMuted,
+                          fontFamily: 'inherit',
+                        }}>{z}m</button>
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 11, color: C.textMuted }}>{timeline.length} slots</span>
+                </div>
               </div>
               <div ref={timelineRef} style={{ display: 'flex', gap: 3, overflowX: 'auto', paddingBottom: 8, scrollbarWidth: 'thin' }}>
                 {timeline.map((slot, i) => {

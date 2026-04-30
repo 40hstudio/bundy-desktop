@@ -150,6 +150,13 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
     return () => clearTimeout(t)
   }, [focusCommentId, loadingDetail, activeTab, comments.length])
 
+  // Push focus to the activity engine so the next heartbeat tags this task (P2.10).
+  // Cleared on unmount or task switch — main process treats null as "no task in focus".
+  useEffect(() => {
+    window.electronAPI?.setCurrentTask?.(viewTaskId)
+    return () => { window.electronAPI?.setCurrentTask?.(null) }
+  }, [viewTaskId])
+
   // Live updates from SSE: refresh silently when this task (or its root) changes.
   // Avoids the "drawer stays stale until close+reopen" UX bug.
   useEffect(() => {

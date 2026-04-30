@@ -37,18 +37,26 @@ export const useCallStore = create<CallState>((set) => ({
   isScreenSharing: false,
   connectionQuality: 'unknown',
 
-  enterCall: (id, type) => set({
-    callId: id, callType: type,
-    windowMode: 'normal',
-    isMuted: false, isVideoOn: type === 'video', isScreenSharing: false,
-    connectionQuality: 'unknown',
-  }),
-  leaveCall: () => set({
-    callId: null, callType: null,
-    windowMode: 'normal',
-    isMuted: false, isVideoOn: false, isScreenSharing: false,
-    connectionQuality: 'unknown',
-  }),
+  enterCall: (id, type) => {
+    // Tell the activity engine we're in a call so it doesn't count this as
+    // idle (P2.9). Use optional chaining — preload may not be ready in tests.
+    window.electronAPI?.setInCall?.(true)
+    set({
+      callId: id, callType: type,
+      windowMode: 'normal',
+      isMuted: false, isVideoOn: type === 'video', isScreenSharing: false,
+      connectionQuality: 'unknown',
+    })
+  },
+  leaveCall: () => {
+    window.electronAPI?.setInCall?.(false)
+    set({
+      callId: null, callType: null,
+      windowMode: 'normal',
+      isMuted: false, isVideoOn: false, isScreenSharing: false,
+      connectionQuality: 'unknown',
+    })
+  },
   setWindowMode: (windowMode) => set({ windowMode }),
   setMuted: (isMuted) => set({ isMuted }),
   setVideoOn: (isVideoOn) => set({ isVideoOn }),

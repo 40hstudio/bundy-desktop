@@ -153,6 +153,20 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   }
 })
 
+// Renderer pushes call state in/out so the activity engine can suppress
+// idle while the user is in a LiveKit call (P2.9).
+ipcMain.on('set-in-call', async (_event, value: boolean) => {
+  const { setInCall } = await import('./activity')
+  setInCall(!!value)
+})
+
+// Renderer pushes the currently-focused task so each heartbeat can be
+// tagged with taskId (P2.10). Null = no task in focus.
+ipcMain.on('set-current-task', async (_event, taskId: string | null) => {
+  const { setCurrentTaskId } = await import('./activity')
+  setCurrentTaskId(typeof taskId === 'string' ? taskId : null)
+})
+
 ipcMain.on('set-badge-count', (_event, count: number) => {
   if (app.setBadgeCount) app.setBadgeCount(count)
 })
