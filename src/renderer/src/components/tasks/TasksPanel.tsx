@@ -81,28 +81,6 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
     }
   }, [toggleSelection])
 
-  // Clear unread badge for a task when its drawer opens. Optimistic — the
-  // server call runs in the background; if it fails the badge will reappear
-  // on the next list refresh.
-  useEffect(() => {
-    if (!detailTaskId) return
-    const breakdown = unreadByTaskId[detailTaskId]
-    if (!breakdown || breakdown.total === 0) return
-    setUnreadByTaskId(prev => {
-      const next = { ...prev }
-      delete next[detailTaskId]
-      return next
-    })
-    apiFetch('/api/tasks/notifications', {
-      method: 'POST',
-      body: JSON.stringify({ taskId: detailTaskId }),
-    }).catch(() => { /* badge will refresh on next load */ })
-    // Also nudge the global unread counter.
-    const remaining = Object.values({ ...unreadByTaskId, [detailTaskId]: undefined })
-      .filter((b): b is UnreadBreakdown => !!b)
-      .reduce((sum, b) => sum + b.total, 0)
-    window.dispatchEvent(new CustomEvent('bundy-task-unread-update', { detail: { count: remaining } }))
-  }, [detailTaskId, unreadByTaskId, apiFetch])
   const [taskSearchQuery, setTaskSearchQuery] = useState('')
   const [unreadByTaskId, setUnreadByTaskId] = useState<Record<string, UnreadBreakdown>>({})
   const { views: savedViews, saveView, deleteView } = useSavedFilterViews()
@@ -169,6 +147,29 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
       void load({ silent: true })
     }
   }, [pendingRefetchReason, clearPending, load])
+
+  // Clear unread badge for a task when its drawer opens. Optimistic — the
+  // server call runs in the background; if it fails the badge will reappear
+  // on the next list refresh.
+  useEffect(() => {
+    if (!detailTaskId) return
+    const breakdown = unreadByTaskId[detailTaskId]
+    if (!breakdown || breakdown.total === 0) return
+    setUnreadByTaskId(prev => {
+      const next = { ...prev }
+      delete next[detailTaskId]
+      return next
+    })
+    apiFetch('/api/tasks/notifications', {
+      method: 'POST',
+      body: JSON.stringify({ taskId: detailTaskId }),
+    }).catch(() => { /* badge will refresh on next load */ })
+    // Also nudge the global unread counter.
+    const remaining = Object.values({ ...unreadByTaskId, [detailTaskId]: undefined })
+      .filter((b): b is UnreadBreakdown => !!b)
+      .reduce((sum, b) => sum + b.total, 0)
+    window.dispatchEvent(new CustomEvent('bundy-task-unread-update', { detail: { count: remaining } }))
+  }, [detailTaskId, unreadByTaskId, apiFetch])
 
   useEffect(() => {
     if (pendingTaskId) {
