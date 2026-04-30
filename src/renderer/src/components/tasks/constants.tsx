@@ -13,8 +13,8 @@ export const TASK_STATUS_COLORS: Record<string, string> = {
 export const TASK_STATUS_ICONS: Record<string, React.ReactNode> = {
   todo: <Circle size={13} />,
   'in-progress': <Play size={13} />,
+  review: <Play size={13} />,
   done: <Check size={13} />,
-  cancelled: <AlertCircle size={13} />,
   blocked: <AlertCircle size={13} />,
 }
 

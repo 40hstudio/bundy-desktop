@@ -48,7 +48,9 @@ export function simpleMarkdown(md: string): string {
 
 // ─── JSX React.ReactNode renderers ───────────────────────────────────────────
 
-const TASK_LINK_RE = /\/tasks\/([a-z0-9]+)$/i
+// Accept trailing query string (e.g. ?comment=xxx) and optional fragment so
+// shareable comment-deep-links open in-app instead of browser.
+const TASK_LINK_RE = /\/tasks\/([a-z0-9]+)(?:\?[^#\s]*)?(?:#[^\s]*)?$/i
 const REPORT_LINK_RE = /\/report\/([a-z0-9]+)\/([a-z0-9]+)(?:\/(folder|document|file)\/([a-z0-9]+))?$/i
 const FEEDBACK_LINK_RE = /\/report\/feedback\/([a-z0-9]+)(?:\?pin=([a-z0-9]+))?/i
 

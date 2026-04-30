@@ -12,28 +12,62 @@ import TaskDetailDrawer from './TaskDetailDrawer'
 import CreateTaskModal from './CreateTaskModal'
 import CreateProjectModal from './CreateProjectModal'
 import EditProjectModal from './EditProjectModal'
+import ManageSectionsModal from './ManageSectionsModal'
+import { useTasksStore } from '../../stores/tasksStore'
+import { useSavedFilterViews } from '../../hooks/useSavedFilterViews'
+import { Bookmark } from 'lucide-react'
 
 interface TaskNotif {
   id: string; readAt: string | null; taskId: string
   task: { id: string; parentTaskId: string | null }
 }
 
-export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskHandled }: {
-  config: ApiConfig; auth: Auth; pendingTaskId?: string | null; onPendingTaskHandled?: () => void
+export default function TasksPanel({ config, auth, pendingTaskId, pendingCommentId, onPendingTaskHandled }: {
+  config: ApiConfig; auth: Auth; pendingTaskId?: string | null; pendingCommentId?: string | null; onPendingTaskHandled?: () => void
 }) {
-  const [tasks, setTasks] = useState<Task[]>([])
+  // Tasks live in the global store so SSE-driven delta updates apply
+  // automatically (see stores/tasksStore.ts).
+  const tasks = useTasksStore(s => s.tasks)
+  const setStoreTasks = useTasksStore(s => s.setTasks)
+  const pendingRefetchReason = useTasksStore(s => s.pendingRefetchReason)
+  const clearPending = useTasksStore(s => s.clearPending)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | 'mine' | 'todo' | 'in-progress' | 'overdue'>('mine')
   const [projects, setProjects] = useState<TaskProject[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null)
+  const [detailFocusCommentId, setDetailFocusCommentId] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showCreateProject, setShowCreateProject] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'board'>('board')
   const [showProjectFilter, setShowProjectFilter] = useState(false)
   const [editProject, setEditProject] = useState<TaskProject | null>(null)
+  const [manageSectionsFor, setManageSectionsFor] = useState<TaskProject | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const patchTask = useTasksStore(s => s.patchTask)
+
+  const toggleSelection = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const handleTaskClick = useCallback((id: string, e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault()
+      toggleSelection(id)
+    } else {
+      setDetailTaskId(id)
+    }
+  }, [toggleSelection])
   const [taskSearchQuery, setTaskSearchQuery] = useState('')
   const [unreadByTaskId, setUnreadByTaskId] = useState<Record<string, number>>({})
+  const { views: savedViews, saveView, deleteView } = useSavedFilterViews()
+  const [showViewsMenu, setShowViewsMenu] = useState(false)
 
   const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
     const res = await fetch(`${config.apiBase}${path}`, {
@@ -44,8 +78,8 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
     return res.json()
   }, [config])
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts: { silent?: boolean } = {}) => {
+    if (!opts.silent) setLoading(true)
     try {
       const params = new URLSearchParams()
       if (filter === 'mine') params.set('assigneeId', 'me')
@@ -57,7 +91,7 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
         apiFetch(`/api/tasks?${params.toString()}`) as Promise<{ tasks: Task[] }>,
         apiFetch('/api/tasks/projects') as Promise<{ projects: TaskProject[] }>,
       ])
-      setTasks(taskData.tasks)
+      setStoreTasks(taskData.tasks, params.toString())
       setProjects(projData.projects)
 
       // Fetch unread task notifications and build per-task map
@@ -74,26 +108,31 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
         window.dispatchEvent(new CustomEvent('bundy-task-unread-update', { detail: { count: total } }))
       } catch { /* non-fatal */ }
     } catch { /* offline */ } finally {
-      setLoading(false)
+      if (!opts.silent) setLoading(false)
     }
-  }, [apiFetch, filter, selectedProjectId])
+  }, [apiFetch, filter, selectedProjectId, setStoreTasks])
 
   useEffect(() => {
-    load()
+    void load()
   }, [load])
 
-  // Auto-refresh on SSE status updates from main process
+  // When the SSE bridge marks the cache stale (remote create/delete), refresh
+  // silently — no loading spinner, no full-list flash. Remote `updated` events
+  // are already applied in-place by tasksStore.patchTask, so no refetch needed.
   useEffect(() => {
-    const unsub = window.electronAPI.onStatusUpdate(() => load())
-    return () => unsub()
-  }, [load])
+    if (pendingRefetchReason) {
+      clearPending()
+      void load({ silent: true })
+    }
+  }, [pendingRefetchReason, clearPending, load])
 
   useEffect(() => {
     if (pendingTaskId) {
       setDetailTaskId(pendingTaskId)
+      setDetailFocusCommentId(pendingCommentId ?? null)
       onPendingTaskHandled?.()
     }
-  }, [pendingTaskId, onPendingTaskHandled])
+  }, [pendingTaskId, pendingCommentId, onPendingTaskHandled])
 
   // Filter tasks by search query
   const filteredTasks = taskSearchQuery.trim()
@@ -172,11 +211,18 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
                     {p._count?.tasks != null && <span style={{ fontSize: 10, color: C.textMuted }}>{p._count.tasks}</span>}
                   </button>
                   {auth.role === 'admin' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEditProject(p); setShowProjectFilter(false) }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, flexShrink: 0, opacity: 0.5 }}
-                      title="Edit project"
-                    ><Edit2 size={10} /></button>
+                    <>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setManageSectionsFor(p); setShowProjectFilter(false) }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, flexShrink: 0, opacity: 0.5 }}
+                        title="Manage sections"
+                      ><Layers size={10} /></button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setEditProject(p); setShowProjectFilter(false) }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, flexShrink: 0, opacity: 0.5 }}
+                        title="Edit project"
+                      ><Edit2 size={10} /></button>
+                    </>
                   )}
                 </div>
               ))}
@@ -205,6 +251,67 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
             {f === 'in-progress' ? 'In Progress' : f === 'overdue' ? 'Overdue' : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
+
+        {/* Saved views — persists filter+project+search combos in localStorage */}
+        <div style={{ position: 'relative' }}>
+          <button onClick={() => setShowViewsMenu(v => !v)}
+            title="Saved views"
+            style={{
+              padding: '4px 8px', borderRadius: 8, border: 'none',
+              background: showViewsMenu ? C.bgHover : 'transparent',
+              color: C.textMuted, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
+            }}>
+            <Bookmark size={12} /> Views
+          </button>
+          {showViewsMenu && (
+            <div style={{
+              position: 'absolute', top: '100%', right: 0, marginTop: 4, minWidth: 220,
+              ...neu(), zIndex: 20, padding: 4, borderRadius: 8, maxHeight: 320, overflow: 'auto',
+            }}>
+              {savedViews.length === 0 && (
+                <div style={{ fontSize: 11, color: C.textMuted, padding: '8px 10px' }}>
+                  No saved views yet.
+                </div>
+              )}
+              {savedViews.map(v => (
+                <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button
+                    onClick={() => {
+                      setFilter(v.filter)
+                      setSelectedProjectId(v.projectId)
+                      setTaskSearchQuery(v.search)
+                      setShowViewsMenu(false)
+                    }}
+                    style={{
+                      flex: 1, textAlign: 'left', padding: '6px 10px', borderRadius: 6,
+                      border: 'none', cursor: 'pointer', fontSize: 12, color: C.text, background: 'transparent',
+                    }}
+                  >{v.name}</button>
+                  <button
+                    onClick={() => deleteView(v.id)}
+                    title="Delete view"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}
+                  ><X size={11} /></button>
+                </div>
+              ))}
+              <div style={{ borderTop: `1px solid ${C.separator}`, marginTop: 4, paddingTop: 4 }}>
+                <button
+                  onClick={() => {
+                    const name = window.prompt('Name this view:')
+                    if (!name?.trim()) return
+                    saveView({ name: name.trim(), filter, projectId: selectedProjectId, search: taskSearchQuery })
+                    setShowViewsMenu(false)
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left',
+                    padding: '7px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                    fontSize: 12, color: C.accent, background: 'transparent',
+                  }}
+                ><Plus size={12} /> Save current view</button>
+              </div>
+            </div>
+          )}
+        </div>
 
         <div style={{ flex: 1 }} />
 
@@ -293,8 +400,15 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
                       const unread = unreadByTaskId[task.id] ?? 0
                       return (
                         <div key={task.id}
-                          onClick={() => setDetailTaskId(task.id)}
-                          style={{ ...neu(), padding: '10px 12px', cursor: 'pointer', position: 'relative' }}
+                          onClick={(e) => handleTaskClick(task.id, e)}
+                          title={selectedIds.size > 0 ? '⌘/Ctrl-click to (de)select' : undefined}
+                          style={{
+                            ...neu(),
+                            padding: '10px 12px', cursor: 'pointer', position: 'relative',
+                            outline: selectedIds.has(task.id) ? `2px solid ${C.accent}` : 'none',
+                            opacity: task.status === 'done' ? 0.5 : 1,
+                            transition: 'opacity 0.15s ease',
+                          }}
                         >
                           {unread > 0 && (
                             <span style={{
@@ -374,16 +488,21 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
       {/* Overlays */}
       {detailTaskId && (
         <>
-          <div onClick={() => setDetailTaskId(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 48 }} />
+          <div onClick={() => { setDetailTaskId(null); setDetailFocusCommentId(null) }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 48 }} />
           <TaskDetailDrawer
             taskId={detailTaskId} config={config} auth={auth} projects={projects}
-            onClose={() => setDetailTaskId(null)}
+            focusCommentId={detailFocusCommentId}
+            onClose={() => { setDetailTaskId(null); setDetailFocusCommentId(null) }}
             onUpdated={(updated) => {
-              setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated } : t))
-              load()
+              patchTask(updated.id, updated)
+              void load({ silent: true })
             }}
-            onDeleted={(id) => { setTasks(prev => prev.filter(t => t.id !== id)); setDetailTaskId(null) }}
-            onRefresh={load}
+            onDeleted={(id) => {
+              useTasksStore.getState().removeTask(id)
+              setDetailTaskId(null)
+              setDetailFocusCommentId(null)
+            }}
+            onRefresh={() => void load({ silent: true })}
           />
         </>
       )}
@@ -392,7 +511,7 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
         <CreateTaskModal config={config} auth={auth} projects={projects}
           selectedProjectId={selectedProjectId}
           onClose={() => setShowCreate(false)}
-          onCreated={(task) => { setTasks(prev => [task, ...prev]); setShowCreate(false); load() }}
+          onCreated={() => { setShowCreate(false); void load({ silent: true }) }}
         />
       )}
 
@@ -411,7 +530,64 @@ export default function TasksPanel({ config, auth, pendingTaskId, onPendingTaskH
         />
       )}
 
+      {manageSectionsFor && (
+        <ManageSectionsModal
+          config={config}
+          project={manageSectionsFor}
+          onClose={() => setManageSectionsFor(null)}
+        />
+      )}
+
       {showProjectFilter && <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setShowProjectFilter(false)} />}
+
+      {selectedIds.size > 0 && (
+        <div
+          style={{
+            position: 'absolute', left: '50%', bottom: 18, transform: 'translateX(-50%)',
+            ...neu(), zIndex: 60, padding: '8px 12px', borderRadius: 12,
+            display: 'flex', alignItems: 'center', gap: 10,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+          }}
+        >
+          <span style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>
+            {selectedIds.size} selected
+          </span>
+          <select
+            value=""
+            disabled={bulkBusy}
+            onChange={async (e) => {
+              const status = e.target.value
+              if (!status) return
+              setBulkBusy(true)
+              try {
+                const ids = Array.from(selectedIds)
+                await Promise.allSettled(ids.map(async (id) => {
+                  await apiFetch(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+                  patchTask(id, { status })
+                }))
+                setSelectedIds(new Set())
+              } finally {
+                setBulkBusy(false)
+              }
+            }}
+            style={{ ...neu(true), padding: '4px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', cursor: 'pointer' }}
+          >
+            <option value="">Set status…</option>
+            <option value="todo">To Do</option>
+            <option value="in-progress">In Progress</option>
+            <option value="review">Review</option>
+            <option value="done">Done</option>
+            <option value="blocked">Blocked</option>
+          </select>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            style={{
+              fontSize: 11, padding: '4px 10px', borderRadius: 6, border: 'none',
+              background: 'transparent', color: C.textMuted, cursor: 'pointer',
+            }}
+          >Clear</button>
+        </div>
+      )}
     </div>
   )
 }

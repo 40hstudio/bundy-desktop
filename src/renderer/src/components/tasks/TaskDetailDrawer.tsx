@@ -26,9 +26,10 @@ import { TASK_STATUS_LABELS, TASK_STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLOR
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
 
-export default function TaskDetailDrawer({ taskId, config, auth, projects, onClose, onUpdated, onDeleted, onRefresh }: {
+export default function TaskDetailDrawer({ taskId, config, auth, projects, focusCommentId, onClose, onUpdated, onDeleted, onRefresh }: {
   taskId: string; config: ApiConfig; auth: Auth
   projects: TaskProject[]
+  focusCommentId?: string | null
   onClose: () => void
   onUpdated: (t: Task) => void
   onDeleted: (id: string) => void
@@ -84,7 +85,10 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
   useEffect(() => {
     setLoadingDetail(true)
     setLoadError(null)
-    setActiveTab('detail')
+    // focusCommentId === '' means "open discussion tab without scrolling"
+    // focusCommentId === '<id>' means "open discussion + scroll to comment"
+    // focusCommentId == null means "open at detail tab"
+    setActiveTab(focusCommentId !== null && focusCommentId !== undefined ? 'discussion' : 'detail')
     Promise.all([
       apiFetch(`/api/tasks/${viewTaskId}`),
       apiFetch('/api/users'),
@@ -108,7 +112,60 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
         setComments(taskData.task.comments ?? [])
       }
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
-  }, [viewTaskId, apiFetch])
+  }, [viewTaskId, apiFetch, focusCommentId])
+
+  // Scroll to and briefly highlight a deep-linked comment after data loads.
+  // Empty-string focusCommentId means "discussion tab only, no scroll".
+  useEffect(() => {
+    if (!focusCommentId || focusCommentId === '' || loadingDetail || activeTab !== 'discussion') return
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-comment-id="${focusCommentId}"]`) as HTMLElement | null
+      if (!el) return
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.style.transition = 'background 0.4s ease'
+      el.style.background = `${C.accent}22`
+      setTimeout(() => { el.style.background = '' }, 1800)
+    }, 120)
+    return () => clearTimeout(t)
+  }, [focusCommentId, loadingDetail, activeTab, comments.length])
+
+  // Live updates from SSE: refresh silently when this task (or its root) changes.
+  // Avoids the "drawer stays stale until close+reopen" UX bug.
+  useEffect(() => {
+    const rootId = detail?.parentTaskId ?? viewTaskId
+    function silentRefresh(reason: string): void {
+      void (async () => {
+        try {
+          const fresh = await apiFetch(`/api/tasks/${viewTaskId}`) as { task: Task }
+          setDetail(fresh.task)
+          setActivities(fresh.task.activities ?? [])
+          setAttachments(fresh.task.attachments ?? [])
+          if (reason === 'comment' || !fresh.task.parentTaskId) {
+            const cRoot = fresh.task.parentTaskId
+              ? await apiFetch(`/api/tasks/${fresh.task.parentTaskId}`) as { task: Task }
+              : { task: fresh.task }
+            setComments(cRoot.task.comments ?? [])
+          }
+        } catch { /* offline / dropped — drawer keeps existing state */ }
+      })()
+    }
+    function onTaskUpdated(e: Event): void {
+      const detail = (e as CustomEvent).detail as { taskId?: string; mainTaskId?: string } | undefined
+      if (detail?.taskId === viewTaskId || detail?.mainTaskId === rootId || detail?.taskId === rootId) {
+        silentRefresh('update')
+      }
+    }
+    function onTaskComment(e: Event): void {
+      const detail = (e as CustomEvent).detail as { mainTaskId?: string } | undefined
+      if (detail?.mainTaskId === rootId) silentRefresh('comment')
+    }
+    window.addEventListener('bundy-task-updated', onTaskUpdated)
+    window.addEventListener('bundy-task-comment-added', onTaskComment)
+    return () => {
+      window.removeEventListener('bundy-task-updated', onTaskUpdated)
+      window.removeEventListener('bundy-task-comment-added', onTaskComment)
+    }
+  }, [viewTaskId, detail?.parentTaskId, apiFetch])
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
     if (!detail) return
@@ -584,10 +641,30 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
                 <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
                   <Calendar size={10} /> Due Date
                 </div>
-                <input type="date" value={detail.dueDate ? new Date(detail.dueDate).toISOString().split('T')[0] : ''}
-                  onChange={e => patchTask({ dueDate: e.target.value || null }, 'dueDate')}
+                <input
+                  type="datetime-local"
+                  value={detail.dueDate
+                    ? new Date(new Date(detail.dueDate).getTime() - new Date().getTimezoneOffset() * 60000)
+                        .toISOString()
+                        .slice(0, 16)
+                    : ''}
+                  onChange={e => patchTask({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null }, 'dueDate')}
                   disabled={savingField === 'dueDate'}
                   style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Clock size={10} /> Estimate (hours)
+                </div>
+                <input type="number" min={0} step={0.25} placeholder="–"
+                  value={detail.estimatedHours ?? ''}
+                  onChange={e => {
+                    const v = e.target.value
+                    patchTask({ estimatedHours: v === '' ? null : Number(v) }, 'estimatedHours')
+                  }}
+                  disabled={savingField === 'estimatedHours'}
+                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit' }}
                 />
               </div>
               {/* Assignee — only for subtasks */}
@@ -1005,7 +1082,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
                 const taskLinkMatch = c.body?.match(/\[(?:Sub)?[Tt]ask: (.+?)\]\(\/tasks\/(\w+)\)/)
 
                 return (
-                  <div key={c.id}>
+                  <div key={c.id} data-comment-id={c.id}>
                     {/* Date separator */}
                     {showDateSep && (
                       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 0 6px', gap: 10 }}>
@@ -1425,7 +1502,6 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, onClo
             sendFn={addComment}
             sending={addingComment}
             onUpload={handleTaskUpload}
-            hideGifs
             hideSchedule
           />
         </div>

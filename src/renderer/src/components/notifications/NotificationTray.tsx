@@ -172,7 +172,15 @@ export default function NotificationTray() {
 
   const handleTaskClick = useCallback((item: TaskNotifDisplay) => {
     markTaskRead(item.id)
-    window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: item.taskId } }))
+    // discussion / mention / subtask notifications take the user to the
+    // discussion tab; assigned / status take them to the details tab.
+    const focusDiscussion =
+      item.type === 'task-discussion' ||
+      item.type === 'task-mention' ||
+      item.type === 'task-subtask'
+    window.dispatchEvent(new CustomEvent('bundy-open-task', {
+      detail: { taskId: item.taskId, focusDiscussion },
+    }))
     setOpen(false)
   }, [markTaskRead])
 

@@ -152,10 +152,28 @@ export default function AttachmentSlider({ attachments, contextLabel, onContextC
             </div>
           )}
 
-          <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
             <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>{currentAtt.name}</span>
             {attachments.length > 1 && (
               <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>{lightboxIndex! + 1} / {attachments.length}</span>
+            )}
+            {/* Source link — present when the strip carries a contextLabel
+                (e.g. attachments shown under a subtask group). Lets the user
+                jump from a lightbox-opened image straight to the subtask /
+                comment that produced it. */}
+            {contextLabel && onContextClick && (
+              <button
+                onClick={e => { e.stopPropagation(); closeLightbox(); onContextClick() }}
+                style={{
+                  color: C.accent, fontSize: 12, fontWeight: 600,
+                  background: C.accent + '22', border: `1px solid ${C.accent}55`,
+                  borderRadius: 6, padding: '4px 10px',
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  display: 'flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <ChevronRight size={12} /> Go to {contextLabel}
+              </button>
             )}
             <button
               onClick={e => { e.stopPropagation(); window.electronAPI.openExternal(`${apiBase}${currentAtt.url}`) }}

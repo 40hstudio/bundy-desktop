@@ -74,7 +74,7 @@ export default function CreateTaskModal({ config, auth, projects, selectedProjec
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <FormField label="Status">
           <Select value={status} onChange={e => setStatus(e.target.value)}>
-            {[['todo', 'To Do'], ['in_progress', 'In Progress'], ['review', 'In Review'], ['done', 'Done'], ['cancelled', 'Cancelled']].map(([v, l]) => (
+            {[['todo', 'To Do'], ['in-progress', 'In Progress'], ['review', 'In Review'], ['done', 'Done'], ['blocked', 'Blocked']].map(([v, l]) => (
               <option key={v} value={v}>{l}</option>
             ))}
           </Select>

@@ -301,6 +301,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null)
   const [acceptedCall, setAcceptedCall] = useState<IncomingCallPayload | null>(null)
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null)
+  const [pendingCommentId, setPendingCommentId] = useState<string | null>(null)
   const [pendingReport, setPendingReport] = useState<{ clientId: string; projectId: string; itemType?: string | null; itemId?: string | null } | null>(null)
   const [messageBadge, setMessageBadge] = useState(0)
   const [messageMention, setMessageMention] = useState(false)
@@ -388,8 +389,14 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       if (payload.sdp) answerSdpRef.current = payload.sdp
     }
     function onOpenTask(e: Event) {
-      const { taskId } = (e as CustomEvent<{ taskId: string }>).detail
-      if (taskId) { setPendingTaskId(taskId); setTab('tasks') }
+      const { taskId, commentId, focusDiscussion } = (e as CustomEvent<{ taskId: string; commentId?: string | null; focusDiscussion?: boolean }>).detail
+      if (taskId) {
+        setPendingTaskId(taskId)
+        // commentId or focusDiscussion → drawer opens at discussion tab.
+        // commentId additionally scrolls to that comment.
+        setPendingCommentId(commentId ?? (focusDiscussion ? '' : null))
+        setTab('tasks')
+      }
     }
     function onUnreadUpdate(e: Event) {
       const { count, mention } = (e as CustomEvent<{ count: number; mention?: boolean }>).detail
@@ -592,7 +599,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           {tab === 'tasks' && apiConfig && (
             <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <ErrorBoundary label="Tasks">
-                <TasksPanel config={apiConfig} auth={auth} pendingTaskId={pendingTaskId} onPendingTaskHandled={() => setPendingTaskId(null)} />
+                <TasksPanel config={apiConfig} auth={auth} pendingTaskId={pendingTaskId} pendingCommentId={pendingCommentId} onPendingTaskHandled={() => { setPendingTaskId(null); setPendingCommentId(null) }} />
               </ErrorBoundary>
             </div>
           )}

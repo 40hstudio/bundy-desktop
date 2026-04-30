@@ -55,6 +55,12 @@ export default function TaskDescriptionEditor({ value, onSave, apiBase, token, t
   useEffect(() => {
     if (!editor) return
     editor.setEditable(editing && !readOnly)
+    // Auto-focus when entering edit mode so the user doesn't need a second click.
+    if (editing && !readOnly) {
+      const t = setTimeout(() => editor.commands.focus('end'), 30)
+      return () => clearTimeout(t)
+    }
+    return undefined
   }, [editor, editing, readOnly])
 
   useEffect(() => {
@@ -77,6 +83,30 @@ export default function TaskDescriptionEditor({ value, onSave, apiBase, token, t
     editor?.commands.setContent(value || '', false)
     setEditing(false)
   }
+
+  // Save on blur: if the editor loses focus while dirty, commit the work.
+  // Prevents "I clicked outside and my notes vanished" complaints.
+  useEffect(() => {
+    if (!editor || !editing) return
+    function onBlur(): void {
+      // requestAnimationFrame so toolbar clicks (which steal focus briefly)
+      // don't prematurely commit + exit edit mode.
+      requestAnimationFrame(() => {
+        if (!editor) return
+        if (editor.isFocused) return
+        // The toolbar buttons live outside the editor view; only commit if
+        // focus has truly left the editor + its toolbar container.
+        const active = document.activeElement as HTMLElement | null
+        if (active && active.closest('[data-tiptap-toolbar="task-description"]')) return
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+        onSave(editor.getHTML())
+        setEditing(false)
+      })
+    }
+    const dom = editor.view.dom
+    dom.addEventListener('blur', onBlur)
+    return () => dom.removeEventListener('blur', onBlur)
+  }, [editor, editing, onSave])
 
   const { upload, tryUploadFromClipboard, uploading: imageUploading } = useImageUpload({
     endpoint: `/api/tasks/${taskId}/attachments`,
@@ -116,6 +146,15 @@ export default function TaskDescriptionEditor({ value, onSave, apiBase, token, t
         ) : (
           <div
             className="tiptap-content"
+            // Open <a> clicks in the default browser via Electron's openExternal
+            // instead of letting the renderer navigate / spawn a new window.
+            onClick={(e) => {
+              const target = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null
+              if (!target?.href) return
+              e.preventDefault()
+              e.stopPropagation()
+              window.electronAPI.openExternal(target.href).catch(() => {})
+            }}
             dangerouslySetInnerHTML={{ __html: sanitizeHtml(value!) }}
             style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}
           />
@@ -130,7 +169,7 @@ export default function TaskDescriptionEditor({ value, onSave, apiBase, token, t
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', padding: '4px 6px', background: C.bgInput, borderRadius: '8px 8px 0 0', border: `1px solid ${C.separator}`, borderBottom: 'none' }}>
+      <div data-tiptap-toolbar="task-description" style={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', padding: '4px 6px', background: C.bgInput, borderRadius: '8px 8px 0 0', border: `1px solid ${C.separator}`, borderBottom: 'none' }}>
         {[
           { icon: <Undo2 size={13} />, title: 'Undo', action: () => editor?.chain().focus().undo().run() },
           { icon: <Redo2 size={13} />, title: 'Redo', action: () => editor?.chain().focus().redo().run() },

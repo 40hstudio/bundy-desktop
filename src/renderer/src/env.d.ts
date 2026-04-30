@@ -1,4 +1,4 @@
-import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData } from '../../preload/index'
+import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData, SseTaskEvent } from '../../preload/index'
 
 declare global {
   interface Window {
@@ -25,6 +25,7 @@ declare global {
       onPermissionsUpdate: (cb: (perms: Permissions) => void) => () => void
       onPlanUpdate: (cb: (plan: DailyPlanData) => void) => () => void
       onTokenExpired: (cb: () => void) => () => void
+      onTaskEvent: (cb: (event: SseTaskEvent) => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
       openFullWindow: () => Promise<void>
       focusWindow: () => Promise<void>

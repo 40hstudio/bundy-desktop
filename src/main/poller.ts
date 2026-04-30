@@ -225,13 +225,24 @@ export function startPoller(): void {
   setOnRunningAppsChanged(triggerAppsHeartbeat)
   setOnActiveAppChanged(triggerAppsHeartbeat)
 
-  connectSSE(
-    () => void refreshStatus(),
-    async () => {
+  connectSSE({
+    onUpdate: () => void refreshStatus(),
+    onReconnect: async () => {
       await drainActionQueue()
       autoUpdater.checkForUpdates().catch(() => {})
     },
-  )
+    onTaskEvent: (event) => {
+      // Fan out to every open renderer window. Each renderer dispatches a
+      // CustomEvent that hooks/components listen for to update local state.
+      // Fanout to popup + full dashboard. Call-float window doesn't show tasks.
+      const allWindows = [popupWin, fullNativeWin].filter(
+        (w): w is NonNullable<typeof w> => w != null && !w.isDestroyed(),
+      )
+      for (const w of allWindows) {
+        w.webContents.send('task-event', event)
+      }
+    },
+  })
 }
 
 export function stopPoller(): void {

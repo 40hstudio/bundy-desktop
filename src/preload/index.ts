@@ -40,6 +40,11 @@ export interface DailyPlanData {
   items: PlanItemData[]
 }
 
+export type SseTaskEvent =
+  | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
+  | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
+  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string } }
+
 const api = {
   getStoredAuth: (): Promise<StoredAuth | null> => ipcRenderer.invoke('get-stored-auth'),
   login: (shortToken: string): Promise<StoredAuth> => ipcRenderer.invoke('login', shortToken),
@@ -98,6 +103,11 @@ const api = {
     const handler = (): void => cb()
     ipcRenderer.on('token-expired', handler)
     return () => ipcRenderer.removeListener('token-expired', handler)
+  },
+  onTaskEvent: (cb: (event: SseTaskEvent) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: SseTaskEvent): void => cb(event)
+    ipcRenderer.on('task-event', handler)
+    return () => ipcRenderer.removeListener('task-event', handler)
   },
   sendCrashReport: (note: string): Promise<void> =>
     ipcRenderer.invoke('send-crash-report', note),

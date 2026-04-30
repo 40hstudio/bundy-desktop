@@ -283,14 +283,19 @@ input {
 .tiptap-editor sup { font-size: 0.75em; }
 
 /* ── Links ─────────────────────────────────────────────────────────────── */
+/* Both the editor (.tiptap-editor) and the read-only display (.tiptap-content)
+   need readable links. The default --accent (#007acc) is too dark on the
+   #1c1c1c content surface; use a brighter shade here. */
 .tiptap-editor .tiptap-link,
-.tiptap-editor a {
-  color: var(--accent);
+.tiptap-editor a,
+.tiptap-content a {
+  color: #6db6ff;
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
 }
-.tiptap-editor a:hover { color: var(--accent-hover); }
+.tiptap-editor a:hover,
+.tiptap-content a:hover { color: #9ecbff; }
 
 /* ── Code ──────────────────────────────────────────────────────────────── */
 .tiptap-editor code {

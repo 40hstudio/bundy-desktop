@@ -324,7 +324,26 @@ export async function submitReportWithPlan(
 let sseAbort: AbortController | null = null
 let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void {
+export type SseTaskEvent =
+  | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
+  | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
+  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string } }
+
+export type ConnectSseOptions = {
+  /** Generic "something changed in bundy clock state" — used to refetch status. */
+  onUpdate: () => void
+  /** Called once after each successful reconnect (skips the very first connect). */
+  onReconnect?: () => void
+  /** Typed task SSE channel. Fires per event so the renderer can apply deltas. */
+  onTaskEvent?: (event: SseTaskEvent) => void
+}
+
+export function connectSSE(opts: ConnectSseOptions | (() => void), onReconnect?: () => void): void {
+  // Backwards-compat: older callers passed (onUpdate, onReconnect) positionally.
+  const options: ConnectSseOptions = typeof opts === 'function'
+    ? { onUpdate: opts, onReconnect }
+    : opts
+
   disconnectSSE()
 
   const token = store.get('desktopToken')
@@ -354,7 +373,7 @@ export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void
           return
         }
 
-        if (hasConnectedOnce && onReconnect) onReconnect()
+        if (hasConnectedOnce && options.onReconnect) options.onReconnect()
         hasConnectedOnce = true
 
         const reader = res.body.getReader()
@@ -376,10 +395,19 @@ export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void
               if (line.startsWith('event: ')) {
                 currentEvent = line.slice(7).trim()
               } else if (line.startsWith('data: ')) {
+                const dataStr = line.slice(6)
                 if (currentEvent === 'update') {
-                  onUpdate()
+                  options.onUpdate()
                 } else if (currentEvent === 'force-logout') {
                   if (_onTokenExpired) _onTokenExpired()
+                } else if (
+                  options.onTaskEvent &&
+                  (currentEvent === 'task-update' || currentEvent === 'task-comment' || currentEvent === 'task-notification')
+                ) {
+                  try {
+                    const data = JSON.parse(dataStr)
+                    options.onTaskEvent({ kind: currentEvent, data } as SseTaskEvent)
+                  } catch { /* malformed payload — drop */ }
                 }
                 currentEvent = ''
               } else if (line === '') {

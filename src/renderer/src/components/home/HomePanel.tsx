@@ -18,14 +18,15 @@ const ACTION_COLORS: Record<string, string> = {
 }
 
 const TASK_STATUS_COLORS: Record<string, string> = {
-  todo: C.textMuted, 'in-progress': C.accent, done: C.success, cancelled: C.danger,
+  todo: C.textMuted, 'in-progress': C.accent, review: '#1a8ad4', done: C.success, blocked: C.danger,
 }
 
 const TASK_STATUS_ICONS: Record<string, React.ReactNode> = {
   todo: <Circle size={13} />,
   'in-progress': <Play size={13} />,
+  review: <Play size={13} />,
   done: <Check size={13} />,
-  cancelled: <AlertCircle size={13} />,
+  blocked: <AlertCircle size={13} />,
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -199,7 +200,7 @@ export function HomePanel({
     setReportError('')
     setConfirmItems(planItems.map(i => ({ itemId: i.id, status: i.status, outcome: '' })))
     setTaskStatusUpdates({})
-    const openTasks = todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+    const openTasks = todayTasks.filter(t => t.status !== 'done')
     if (openTasks.length > 0) setClockOutStep('tasks')
     else if (planItems.length > 0) setClockOutStep('plan')
     else setClockOutStep('report')
@@ -739,7 +740,7 @@ export function HomePanel({
                         {task.project && <span style={{ fontSize: 10, color: task.project.color || C.textMuted, background: (task.project.color || C.accent) + '18', padding: '1px 6px', borderRadius: 4, marginLeft: 8 }}>{task.project.name}</span>}
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {(['todo', 'in-progress', 'done', 'cancelled'] as const).map(s => {
+                        {(['todo', 'in-progress', 'review', 'done', 'blocked'] as const).map(s => {
                           const cur = taskStatusUpdates[task.id] ?? task.status
                           return (
                             <button key={s}
@@ -820,12 +821,12 @@ export function HomePanel({
                 </div>
                 <div style={{ display: 'flex', gap: 10 }}>
                   <button onClick={() => {
-                    const openTasks = todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+                    const openTasks = todayTasks.filter(t => t.status !== 'done')
                     if (openTasks.length > 0) setClockOutStep('tasks')
                     else { setShowReportModal(false); setShowPreview(false) }
                   }}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
-                    {todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? '← Back' : 'Cancel'}
+                    {todayTasks.filter(t => t.status !== 'done').length > 0 ? '← Back' : 'Cancel'}
                   </button>
                   <button onClick={() => setClockOutStep('report')}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.accent }}>Next →</button>
@@ -900,9 +901,9 @@ export function HomePanel({
                 {reportError && <div style={{ fontSize: 12, color: C.danger }}>{reportError}</div>}
 
                 <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? setClockOutStep('tasks') : (setShowReportModal(false), setShowPreview(false)) }}
+                  <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : todayTasks.filter(t => t.status !== 'done').length > 0 ? setClockOutStep('tasks') : (setShowReportModal(false), setShowPreview(false)) }}
                     style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
-                    {planItems.length > 0 || todayTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length > 0 ? '← Back' : 'Cancel'}
+                    {planItems.length > 0 || todayTasks.filter(t => t.status !== 'done').length > 0 ? '← Back' : 'Cancel'}
                   </button>
                   <button
                     onClick={async () => {

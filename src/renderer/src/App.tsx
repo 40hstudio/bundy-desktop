@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import FullDashboard from './pages/FullDashboard'
 import FloatingCallOverlay from './pages/FloatingCallOverlay'
 import { ErrorBoundary } from './components/shared/ErrorBoundary'
+import { attachTasksSseListeners } from './stores/tasksStore'
 
 const SPLASH_MIN_MS = 5000
 
@@ -217,6 +218,24 @@ export default function App(): JSX.Element {
   useEffect(() => {
     return window.electronAPI.onTokenExpired(() => {
       setAuth(null)
+    })
+  }, [])
+
+  // Bridge SSE task events → window CustomEvents that panels and link cards
+  // already subscribe to. Keeps Phase-1 SSE consumers loose-coupled.
+  useEffect(() => {
+    attachTasksSseListeners()
+    return window.electronAPI.onTaskEvent((event) => {
+      if (event.kind === 'task-update') {
+        const { taskId, mainTaskId, kind, changes } = event.data
+        window.dispatchEvent(new CustomEvent('bundy-task-updated', {
+          detail: { taskId, mainTaskId, kind, changes },
+        }))
+      } else if (event.kind === 'task-comment') {
+        window.dispatchEvent(new CustomEvent('bundy-task-comment-added', { detail: event.data }))
+      } else if (event.kind === 'task-notification') {
+        window.dispatchEvent(new CustomEvent('bundy-task-notification', { detail: event.data }))
+      }
     })
   }, [])
 

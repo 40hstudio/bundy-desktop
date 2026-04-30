@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { CheckSquare, ExternalLink } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig } from '../../types'
+import { apiFetch } from '../../api/client'
 
 interface TaskMeta {
   title: string
@@ -10,33 +11,81 @@ interface TaskMeta {
   status: string
 }
 
-const taskMetaCache = new Map<string, TaskMeta | null>()
+interface CacheEntry {
+  meta: TaskMeta | null
+  fetchedAt: number
+}
 
-export function TaskLinkCard({ taskId, config }: { taskId: string; config: ApiConfig }) {
-  const [meta, setMeta] = useState<TaskMeta | null | undefined>(
-    taskMetaCache.has(taskId) ? taskMetaCache.get(taskId) : undefined
-  )
+// 60 s TTL — same task referenced multiple times in chat hits cache; stale-after-update
+// is bounded to 1 minute. Explicit invalidation via `invalidateTaskMetaCache(taskId)`
+// when the renderer learns of an update through the SSE task channel or local PATCH.
+const CACHE_TTL_MS = 60_000
+const taskMetaCache = new Map<string, CacheEntry>()
+
+/** Clear a specific task's cached metadata. Call after any mutation (PATCH, SSE delta). */
+export function invalidateTaskMetaCache(taskId?: string): void {
+  if (taskId) taskMetaCache.delete(taskId)
+  else taskMetaCache.clear()
+}
+
+function readCache(taskId: string): TaskMeta | null | undefined {
+  const entry = taskMetaCache.get(taskId)
+  if (!entry) return undefined
+  if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) {
+    taskMetaCache.delete(taskId)
+    return undefined
+  }
+  return entry.meta
+}
+
+export function TaskLinkCard({ taskId, commentId, config: _config }: { taskId: string; commentId?: string | null; config: ApiConfig }) {
+  const cached = readCache(taskId)
+  const [meta, setMeta] = useState<TaskMeta | null | undefined>(cached)
 
   useEffect(() => {
-    if (taskMetaCache.has(taskId)) return
-    fetch(`${config.apiBase}/api/tasks/${taskId}`, {
-      headers: { Authorization: `Bearer ${config.token}` },
-      signal: AbortSignal.timeout(6000),
-    })
-      .then(r => r.json())
-      .then((d: { task?: { title: string; status: string; project?: { name: string; color: string } | null } }) => {
-        if (!d.task) { taskMetaCache.set(taskId, null); setMeta(null); return }
+    if (readCache(taskId) !== undefined) return
+    let cancelled = false
+    apiFetch<{ task?: { title: string; status: string; project?: { name: string; color: string } | null } }>(
+      `/api/tasks/${taskId}`,
+      { timeoutMs: 6000 },
+    )
+      .then(d => {
+        if (cancelled) return
+        if (!d.task) {
+          taskMetaCache.set(taskId, { meta: null, fetchedAt: Date.now() })
+          setMeta(null)
+          return
+        }
         const m: TaskMeta = {
           title: d.task.title,
           projectName: d.task.project?.name ?? null,
           projectColor: d.task.project?.color ?? null,
           status: d.task.status,
         }
-        taskMetaCache.set(taskId, m)
+        taskMetaCache.set(taskId, { meta: m, fetchedAt: Date.now() })
         setMeta(m)
       })
-      .catch(() => { taskMetaCache.set(taskId, null); setMeta(null) })
-  }, [taskId, config])
+      .catch(() => {
+        if (cancelled) return
+        taskMetaCache.set(taskId, { meta: null, fetchedAt: Date.now() })
+        setMeta(null)
+      })
+    return () => { cancelled = true }
+  }, [taskId])
+
+  // Re-render this card if anyone calls invalidateTaskMetaCache for this taskId.
+  useEffect(() => {
+    function onTaskUpdated(e: Event): void {
+      const detail = (e as CustomEvent).detail as { taskId?: string } | undefined
+      if (detail?.taskId === taskId) {
+        // Wipe cache and re-trigger the fetch effect by zeroing local state.
+        taskMetaCache.delete(taskId)
+        setMeta(undefined)
+      }
+    }
+    window.addEventListener('bundy-task-updated', onTaskUpdated)
+    return () => window.removeEventListener('bundy-task-updated', onTaskUpdated)
+  }, [taskId])
 
   const title = meta?.title ?? 'Open Task'
   const subtitle = meta?.projectName ?? 'Task'
@@ -44,7 +93,7 @@ export function TaskLinkCard({ taskId, config }: { taskId: string; config: ApiCo
 
   return (
     <div
-      onClick={() => window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId } }))}
+      onClick={() => window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId, commentId } }))}
       style={{
         display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
         borderRadius: 8, border: `1px solid ${C.separator}`,

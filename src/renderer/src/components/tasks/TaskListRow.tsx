@@ -18,7 +18,8 @@ export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, un
         padding: '10px 4px',
         display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
         borderTop: showDivider ? `1px solid ${C.separator}` : 'none',
-        transition: 'background 0.12s', borderRadius: 4,
+        transition: 'background 0.12s, opacity 0.15s ease', borderRadius: 4,
+        opacity: isDone ? 0.5 : 1,
       }}
       onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
       onMouseLeave={e => { e.currentTarget.style.background = '' }}

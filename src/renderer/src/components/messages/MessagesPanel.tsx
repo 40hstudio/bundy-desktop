@@ -3031,7 +3031,15 @@ export function MessagesPanel({
                           return <FeedbackLinkCard key={`f${fi}`} linkId={m[1]} pinId={m[2] || null} fullUrl={matchedUrl} config={config} />
                         })}
                         {reportLinks.map((m, ri) => <ReportLinkCard key={`r${ri}`} clientId={m[1]} projectId={m[2]} itemType={m[3] || null} itemId={m[4] || null} config={config} />)}
-                        {taskLinks.map((m, ti) => <TaskLinkCard key={`t${ti}`} taskId={m[1]} config={config} />)}
+                        {taskLinks.map((m, ti) => {
+                  // Extract optional ?comment=xxx so the card can deep-link to a comment.
+                  let commentId: string | null = null
+                  try {
+                    const url = new URL(m[0].startsWith('http') ? m[0] : `https://x.example${m[0]}`)
+                    commentId = url.searchParams.get('comment')
+                  } catch { /* ignore parse failure */ }
+                  return <TaskLinkCard key={`t${ti}`} taskId={m[1]} commentId={commentId} config={config} />
+                })}
                         {grouped.length > 0 && (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                             {grouped.map(r => (
