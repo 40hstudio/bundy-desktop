@@ -77,7 +77,7 @@ export interface TaskComment {
   replies?: TaskComment[]
 }
 export interface TaskAttachment {
-  id: string; url: string; name: string; mimeType: string | null; createdAt: string
+  id: string; url: string; name: string; mimeType: string | null; size?: number | null; createdAt: string
   creator: { id: string; username: string; alias: string | null; avatarUrl: string | null }
 }
 export interface TaskActivityItem {
@@ -145,6 +145,10 @@ export interface TaskNotificationItem {
   createdAt: string
   readAt: string | null
   taskId: string
+  /** When set, click should deep-link to this comment in the discussion. */
+  commentId?: string | null
+  /** When set, the notification is about a specific subtask under taskId. */
+  subtaskId?: string | null
   task: { id: string; title: string; parentTaskId: string | null; project: { name: string } | null }
   actorId?: string | null
 }

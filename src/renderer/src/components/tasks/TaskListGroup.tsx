@@ -3,10 +3,11 @@ import { ChevronRight, Layers } from 'lucide-react'
 import { Task, Auth } from '../../types'
 import { C } from '../../theme'
 import TaskListRow from './TaskListRow'
+import type { UnreadBreakdown } from './TasksPanel'
 
 export default function TaskListGroup({ name, tasks, auth, onOpen, unreadByTaskId }: {
   name: string; tasks: Task[]; auth: Auth; onOpen: (id: string) => void
-  unreadByTaskId?: Record<string, number>
+  unreadByTaskId?: Record<string, UnreadBreakdown>
 }) {
   const [collapsed, setCollapsed] = useState(false)
 
@@ -27,7 +28,7 @@ export default function TaskListGroup({ name, tasks, auth, onOpen, unreadByTaskI
             <TaskListRow
               key={task.id} task={task} auth={auth} onOpen={() => onOpen(task.id)}
               showDivider={i > 0}
-              unreadCount={unreadByTaskId?.[task.id]}
+              unread={unreadByTaskId?.[task.id]}
             />
           ))}
         </div>

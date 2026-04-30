@@ -3,10 +3,12 @@ import { Task, Auth } from '../../types'
 import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_STATUS_ICONS, TASK_STATUS_LABELS, PRIORITY_COLORS } from './constants'
+import UnreadBadge from './UnreadBadge'
+import type { UnreadBreakdown } from './TasksPanel'
 
-export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, unreadCount }: {
+export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, unread }: {
   task: Task; auth: Auth; onOpen: () => void
-  showDivider?: boolean; unreadCount?: number
+  showDivider?: boolean; unread?: UnreadBreakdown
 }) {
   const isDone = task.status === 'done'
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
@@ -62,14 +64,8 @@ export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, un
           <MessageSquare size={10} /> {task._count.comments}
         </span>
       )}
-      {(unreadCount ?? 0) > 0 && (
-        <span style={{
-          minWidth: 16, height: 16, borderRadius: 8,
-          background: C.warning,
-          color: '#fff', fontSize: 9, fontWeight: 700,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: '0 4px', lineHeight: 1, flexShrink: 0,
-        }}>{unreadCount! > 99 ? '99+' : unreadCount}</span>
+      {unread && unread.total > 0 && (
+        <UnreadBadge breakdown={unread} />
       )}
       <span style={{ fontSize: 10, fontWeight: 600, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0 }}>
         {TASK_STATUS_LABELS[task.status] ?? task.status}

@@ -15,6 +15,8 @@ import SettingsPanel from '../components/settings/SettingsPanel'
 import ReportPanel from '../components/report/ReportPanel'
 import AdminPanel from '../components/admin/AdminPanel'
 import NotificationTray from '../components/notifications/NotificationTray'
+import NotificationBanner from '../components/notifications/NotificationBanner'
+import { useNotificationsStore } from '../stores/notificationsStore'
 import { IncomingCallOverlay } from '../components/messages/IncomingCallOverlay'
 import type { IncomingCallPayload } from '../components/messages/IncomingCallOverlay'
 import { ErrorBoundary } from '../components/shared/ErrorBoundary'
@@ -398,6 +400,37 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         setTab('tasks')
       }
     }
+
+    // Push incoming task SSE notifications onto the banner stack.
+    function onTaskBannerNotification(e: Event) {
+      const detail = (e as CustomEvent<{
+        taskId: string; type: string; message: string;
+        commentId?: string | null; subtaskId?: string | null;
+      }>).detail
+      const kindMap: Record<string, 'task-mention' | 'task-assigned' | 'task-discussion' | 'task-subtask' | 'task-status'> = {
+        mentioned: 'task-mention',
+        assigned: 'task-assigned',
+        discussion: 'task-discussion',
+        subtask_update: 'task-subtask',
+        status_change: 'task-status',
+      }
+      const kind = kindMap[detail.type] ?? 'task-discussion'
+      const focusDiscussion = kind === 'task-discussion' || kind === 'task-mention' || kind === 'task-subtask'
+      useNotificationsStore.getState().show({
+        kind,
+        message: detail.message,
+        onClick: () => {
+          window.dispatchEvent(new CustomEvent('bundy-open-task', {
+            detail: {
+              taskId: detail.subtaskId ?? detail.taskId,
+              commentId: detail.commentId ?? null,
+              focusDiscussion,
+            },
+          }))
+        },
+      })
+    }
+    window.addEventListener('bundy-task-notification', onTaskBannerNotification)
     function onUnreadUpdate(e: Event) {
       const { count, mention } = (e as CustomEvent<{ count: number; mention?: boolean }>).detail
       setMessageBadge(count)
@@ -457,6 +490,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       window.removeEventListener('bundy-call-ice', onIce)
       window.removeEventListener('bundy-call-answer', onAnswer)
       window.removeEventListener('bundy-open-task', onOpenTask)
+      window.removeEventListener('bundy-task-notification', onTaskBannerNotification)
       window.removeEventListener('bundy-unread-update', onUnreadUpdate)
       window.removeEventListener('bundy-task-unread-update', onTaskUnreadUpdate)
       window.removeEventListener('bundy-open-report', onOpenReport)
@@ -643,6 +677,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
           )}
         </div>
       </div>
+      <NotificationBanner />
     </div>
   )
 }

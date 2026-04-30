@@ -116,13 +116,19 @@ function ensureEditorStyles() {
 
 export function MessageInput({
   placeholder, config, channelId, onTyping, input, setInput, sendFn, sending,
-  onUpload, hideGifs, hideSchedule,
+  onUpload, onGifSelect, hideGifs, hideSchedule,
 }: {
   placeholder: string; config: ApiConfig; channelId: string
   onTyping: () => void; input: string; setInput: (v: string) => void
   sendFn: () => void; sending: boolean
   onSend?: (content: string) => void
   onUpload?: (file: File) => Promise<{ url: string; filename: string }>
+  /**
+   * If provided, sendGif calls this with the GIF URL instead of POSTing to
+   * the channel directly. Required when the parent owns the send pipeline
+   * (e.g. task discussion comments — there is no channelId).
+   */
+  onGifSelect?: (url: string) => Promise<void>
   hideGifs?: boolean
   hideSchedule?: boolean
 }) {
@@ -435,6 +441,11 @@ export function MessageInput({
   async function sendGif(gif: TenorGif) {
     setShowGifPicker(false)
     setGifQuery('')
+    if (onGifSelect) {
+      try { await onGifSelect(gif.gifUrl) } catch (err) { console.error('[MessageInput] onGifSelect failed:', err) }
+      return
+    }
+    if (!channelId) return
     await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },

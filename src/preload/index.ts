@@ -43,7 +43,7 @@ export interface DailyPlanData {
 export type SseTaskEvent =
   | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
   | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
-  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string } }
+  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string; commentId?: string | null; subtaskId?: string | null } }
 
 const api = {
   getStoredAuth: (): Promise<StoredAuth | null> => ipcRenderer.invoke('get-stored-auth'),

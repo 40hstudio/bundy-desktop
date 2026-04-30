@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Trash2, Check, Link, Edit2, AlignLeft, MessageSquare,
   Activity, ChevronRight, Loader, AlertCircle, Paperclip, FileText,
-  Calendar, Clock, GitBranch, Users,
+  Calendar, GitBranch, Users,
   Plus, CornerDownRight, Flag, Globe, ExternalLink, BarChart2,
   Smile, Quote, MessageCircle
 } from 'lucide-react'
@@ -56,6 +56,8 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
   const [activeTab, setActiveTab] = useState<'detail' | 'discussion' | 'activity'>('detail')
   const [attachments, setAttachments] = useState<TaskAttachment[]>([])
   const attachInputRef = useRef<HTMLInputElement>(null)
+  const discussionEndRef = useRef<HTMLDivElement>(null)
+  const lastCommentCountRef = useRef(0)
   const [uploadingAttach, setUploadingAttach] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const [lightboxName, setLightboxName] = useState<string>('')
@@ -113,6 +115,25 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
       }
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
   }, [viewTaskId, apiFetch, focusCommentId])
+
+  // Auto-scroll the discussion to the latest message when opening the tab,
+  // when comments first load, and when a new comment is added.
+  // Skipped if focusCommentId is set (deep-link scroll takes priority).
+  useEffect(() => {
+    if (loadingDetail) return
+    if (activeTab !== 'discussion') return
+    if (focusCommentId) return // deep-link scroll handles its own positioning
+    const newCount = comments.length
+    const isInitialOrAppended = newCount > 0 && (
+      lastCommentCountRef.current === 0 || newCount > lastCommentCountRef.current
+    )
+    lastCommentCountRef.current = newCount
+    if (!isInitialOrAppended) return
+    const t = setTimeout(() => {
+      discussionEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    }, 60)
+    return () => clearTimeout(t)
+  }, [activeTab, comments.length, focusCommentId, loadingDetail])
 
   // Scroll to and briefly highlight a deep-linked comment after data loads.
   // Empty-string focusCommentId means "discussion tab only, no scroll".
@@ -642,29 +663,11 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
                   <Calendar size={10} /> Due Date
                 </div>
                 <input
-                  type="datetime-local"
-                  value={detail.dueDate
-                    ? new Date(new Date(detail.dueDate).getTime() - new Date().getTimezoneOffset() * 60000)
-                        .toISOString()
-                        .slice(0, 16)
-                    : ''}
-                  onChange={e => patchTask({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null }, 'dueDate')}
+                  type="date"
+                  value={detail.dueDate ? new Date(detail.dueDate).toISOString().split('T')[0] : ''}
+                  onChange={e => patchTask({ dueDate: e.target.value || null }, 'dueDate')}
                   disabled={savingField === 'dueDate'}
                   style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', cursor: 'pointer', fontFamily: 'inherit' }}
-                />
-              </div>
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 3 }}>
-                  <Clock size={10} /> Estimate (hours)
-                </div>
-                <input type="number" min={0} step={0.25} placeholder="–"
-                  value={detail.estimatedHours ?? ''}
-                  onChange={e => {
-                    const v = e.target.value
-                    patchTask({ estimatedHours: v === '' ? null : Number(v) }, 'estimatedHours')
-                  }}
-                  disabled={savingField === 'estimatedHours'}
-                  style={{ ...neu(true), padding: '6px 8px', fontSize: 11, color: C.text, border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit' }}
                 />
               </div>
               {/* Assignee — only for subtasks */}
@@ -1446,6 +1449,8 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
                   </div>
                 )
               })}
+              {/* Sentinel for auto-scroll-to-latest on tab open + new message */}
+              <div ref={discussionEndRef} />
             </div>
           </div>
         )}
@@ -1502,6 +1507,25 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
             sendFn={addComment}
             sending={addingComment}
             onUpload={handleTaskUpload}
+            onGifSelect={async (url) => {
+              const parentId = replyTo?.id ?? null
+              let body = url
+              if (subtaskContext && !parentId) {
+                body = `> [Subtask: ${subtaskContext.title}](/tasks/${subtaskContext.id})\n\n${body}`
+                setSubtaskContext(null)
+              }
+              try {
+                const d = await apiFetch(`/api/tasks/${discussionTaskId}/comments`, {
+                  method: 'POST', body: JSON.stringify({ body, parentCommentId: parentId }),
+                }) as { comment: TaskComment }
+                if (parentId) setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
+                else setComments(prev => [...prev, d.comment])
+                setReplyTo(null)
+                onRefresh?.()
+              } catch (err) {
+                console.error('[TaskDetail] sendGif failed:', err)
+              }
+            }}
             hideSchedule
           />
         </div>

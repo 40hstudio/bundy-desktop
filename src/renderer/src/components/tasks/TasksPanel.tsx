@@ -13,13 +13,29 @@ import CreateTaskModal from './CreateTaskModal'
 import CreateProjectModal from './CreateProjectModal'
 import EditProjectModal from './EditProjectModal'
 import ManageSectionsModal from './ManageSectionsModal'
+import UnreadBadge from './UnreadBadge'
 import { useTasksStore } from '../../stores/tasksStore'
 import { useSavedFilterViews } from '../../hooks/useSavedFilterViews'
 import { Bookmark } from 'lucide-react'
 
 interface TaskNotif {
   id: string; readAt: string | null; taskId: string
+  type: 'assigned' | 'discussion' | 'status_change' | 'mentioned' | 'subtask_update'
   task: { id: string; parentTaskId: string | null }
+}
+
+/** Per-task unread breakdown. Keys map 1:1 to TaskNotif.type. */
+export type UnreadBreakdown = {
+  total: number
+  mentioned: number
+  assigned: number
+  subtask_update: number
+  discussion: number
+  status_change: number
+}
+
+const EMPTY_BREAKDOWN: UnreadBreakdown = {
+  total: 0, mentioned: 0, assigned: 0, subtask_update: 0, discussion: 0, status_change: 0,
 }
 
 export default function TasksPanel({ config, auth, pendingTaskId, pendingCommentId, onPendingTaskHandled }: {
@@ -64,8 +80,31 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
       setDetailTaskId(id)
     }
   }, [toggleSelection])
+
+  // Clear unread badge for a task when its drawer opens. Optimistic — the
+  // server call runs in the background; if it fails the badge will reappear
+  // on the next list refresh.
+  useEffect(() => {
+    if (!detailTaskId) return
+    const breakdown = unreadByTaskId[detailTaskId]
+    if (!breakdown || breakdown.total === 0) return
+    setUnreadByTaskId(prev => {
+      const next = { ...prev }
+      delete next[detailTaskId]
+      return next
+    })
+    apiFetch('/api/tasks/notifications', {
+      method: 'POST',
+      body: JSON.stringify({ taskId: detailTaskId }),
+    }).catch(() => { /* badge will refresh on next load */ })
+    // Also nudge the global unread counter.
+    const remaining = Object.values({ ...unreadByTaskId, [detailTaskId]: undefined })
+      .filter((b): b is UnreadBreakdown => !!b)
+      .reduce((sum, b) => sum + b.total, 0)
+    window.dispatchEvent(new CustomEvent('bundy-task-unread-update', { detail: { count: remaining } }))
+  }, [detailTaskId, unreadByTaskId, apiFetch])
   const [taskSearchQuery, setTaskSearchQuery] = useState('')
-  const [unreadByTaskId, setUnreadByTaskId] = useState<Record<string, number>>({})
+  const [unreadByTaskId, setUnreadByTaskId] = useState<Record<string, UnreadBreakdown>>({})
   const { views: savedViews, saveView, deleteView } = useSavedFilterViews()
   const [showViewsMenu, setShowViewsMenu] = useState(false)
 
@@ -94,14 +133,19 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
       setStoreTasks(taskData.tasks, params.toString())
       setProjects(projData.projects)
 
-      // Fetch unread task notifications and build per-task map
+      // Fetch unread task notifications and build a per-task type breakdown
+      // (mentioned / assigned / subtask_update / discussion / status_change).
+      // The badge UI reads the breakdown to pick a precise icon + tooltip.
       try {
         const notifData = await apiFetch('/api/tasks/notifications?unread=1') as { notifications: TaskNotif[] }
-        const map: Record<string, number> = {}
+        const map: Record<string, UnreadBreakdown> = {}
         let total = 0
         for (const n of (notifData.notifications ?? [])) {
           const rootId = n.task.parentTaskId ?? n.task.id
-          map[rootId] = (map[rootId] ?? 0) + 1
+          const cur = map[rootId] ?? { ...EMPTY_BREAKDOWN }
+          cur.total += 1
+          if (n.type in cur) (cur as Record<string, number>)[n.type] += 1
+          map[rootId] = cur
           total++
         }
         setUnreadByTaskId(map)
@@ -397,7 +441,7 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
                     minHeight: 80, overflow: 'auto',
                   }}>
                     {colTasks.map(task => {
-                      const unread = unreadByTaskId[task.id] ?? 0
+                      const unread = unreadByTaskId[task.id]
                       return (
                         <div key={task.id}
                           onClick={(e) => handleTaskClick(task.id, e)}
@@ -410,14 +454,10 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
                             transition: 'opacity 0.15s ease',
                           }}
                         >
-                          {unread > 0 && (
-                            <span style={{
-                              position: 'absolute', top: 6, right: 6,
-                              minWidth: 16, height: 16, borderRadius: 8,
-                              background: C.warning, color: '#fff', fontSize: 9, fontWeight: 700,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              padding: '0 4px', lineHeight: 1,
-                            }}>{unread > 99 ? '99+' : unread}</span>
+                          {unread && unread.total > 0 && (
+                            <span style={{ position: 'absolute', top: 6, right: 6 }}>
+                              <UnreadBadge breakdown={unread} compact />
+                            </span>
                           )}
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                             {task.project ? (

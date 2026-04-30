@@ -327,7 +327,7 @@ let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
 export type SseTaskEvent =
   | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
   | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
-  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string } }
+  | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string; commentId?: string | null; subtaskId?: string | null } }
 
 export type ConnectSseOptions = {
   /** Generic "something changed in bundy clock state" — used to refetch status. */

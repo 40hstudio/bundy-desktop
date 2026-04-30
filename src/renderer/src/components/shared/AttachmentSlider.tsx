@@ -1,7 +1,19 @@
 import { useState } from 'react'
-import { FileText, ChevronRight, ChevronLeft, X, Download, ExternalLink } from 'lucide-react'
+import { FileText, ChevronRight, ChevronLeft, X, Download, ExternalLink, FileWarning } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { TaskAttachment } from '../../types'
+
+/** Files larger than this are not previewed inline — show a "download to view"
+ * placeholder instead. Keeps the renderer (and the server it streams from)
+ * from loading 50 MB media into memory just to show a thumbnail. */
+const PREVIEW_SIZE_CAP = 15 * 1024 * 1024 // 15 MB
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
 
 interface Props {
   attachments: TaskAttachment[]
@@ -48,20 +60,38 @@ export default function AttachmentSlider({ attachments, contextLabel, onContextC
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
         {attachments.map((att, i) => {
           const isImg = att.mimeType?.startsWith('image/')
+          const isVideo = att.mimeType?.startsWith('video/')
+          // Treat null/undefined size (legacy rows) as preview-ok.
+          const tooLargeForPreview = (att.size ?? 0) > PREVIEW_SIZE_CAP
+          const canPreviewMedia = (isImg || isVideo) && !tooLargeForPreview
           return (
             <div key={att.id} style={{ position: 'relative', flexShrink: 0 }}>
-              {isImg ? (
+              {canPreviewMedia ? (
                 <div style={{ position: 'relative' }}>
-                  <img
-                    src={`${apiBase}${att.url}`}
-                    alt={att.name}
-                    onClick={() => openLightbox(i)}
-                    style={{
-                      width: 100, height: 80, objectFit: 'cover',
-                      borderRadius: 8, display: 'block', cursor: 'pointer',
-                      border: `1px solid ${C.separator}`,
-                    }}
-                  />
+                  {isImg ? (
+                    <img
+                      src={`${apiBase}${att.url}`}
+                      alt={att.name}
+                      onClick={() => openLightbox(i)}
+                      style={{
+                        width: 100, height: 80, objectFit: 'cover',
+                        borderRadius: 8, display: 'block', cursor: 'pointer',
+                        border: `1px solid ${C.separator}`,
+                      }}
+                    />
+                  ) : (
+                    <video
+                      src={`${apiBase}${att.url}`}
+                      onClick={() => openLightbox(i)}
+                      muted
+                      preload="metadata"
+                      style={{
+                        width: 100, height: 80, objectFit: 'cover',
+                        borderRadius: 8, display: 'block', cursor: 'pointer',
+                        border: `1px solid ${C.separator}`, background: '#000',
+                      }}
+                    />
+                  )}
                   <div style={{
                     position: 'absolute', bottom: 0, left: 0, right: 0,
                     background: 'linear-gradient(transparent, rgba(0,0,0,0.6))',
@@ -70,6 +100,23 @@ export default function AttachmentSlider({ attachments, contextLabel, onContextC
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>{att.name}</div>
                 </div>
+              ) : tooLargeForPreview ? (
+                // Media too big to preview safely — show download placeholder
+                <button
+                  onClick={() => window.electronAPI.openExternal(`${apiBase}${att.url}`)}
+                  title={`${att.name} — ${formatSize(att.size ?? 0)}`}
+                  style={{
+                    width: 140, height: 80, borderRadius: 8,
+                    border: `1px dashed ${C.separator}`, background: C.bgInput,
+                    cursor: 'pointer', display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'center', gap: 4, padding: 6,
+                    color: C.textMuted, fontFamily: 'inherit',
+                  }}
+                >
+                  <FileWarning size={20} color={C.warning} />
+                  <span style={{ fontSize: 10, color: C.text, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{att.name}</span>
+                  <span style={{ fontSize: 9 }}>{formatSize(att.size ?? 0)} — download to view</span>
+                </button>
               ) : (
                 <button
                   onClick={() => window.electronAPI.openExternal(`${apiBase}${att.url}`)}
@@ -145,10 +192,23 @@ export default function AttachmentSlider({ attachments, contextLabel, onContextC
               onClick={e => e.stopPropagation()}
               style={{ maxWidth: '90%', maxHeight: '80vh', objectFit: 'contain', borderRadius: 8, cursor: 'default' }}
             />
+          ) : currentAtt.mimeType?.startsWith('video/') && (currentAtt.size ?? 0) <= PREVIEW_SIZE_CAP ? (
+            <video
+              src={`${apiBase}${currentAtt.url}`}
+              controls autoPlay
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: '90%', maxHeight: '80vh', borderRadius: 8, background: '#000', cursor: 'default' }}
+            />
           ) : (
-            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-              <FileText size={48} color={C.accent} />
-              <span style={{ color: '#fff', fontSize: 14 }}>{currentAtt.name}</span>
+            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 32, background: 'rgba(255,255,255,0.04)', borderRadius: 12, border: `1px dashed rgba(255,255,255,0.15)` }}>
+              <FileWarning size={48} color={C.warning} />
+              <span style={{ color: '#fff', fontSize: 14, fontWeight: 600 }}>{currentAtt.name}</span>
+              {currentAtt.size != null && (
+                <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>{formatSize(currentAtt.size)}</span>
+              )}
+              <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, maxWidth: 360, textAlign: 'center' }}>
+                The media is too big to preview in-app. Download it first to see the content.
+              </span>
             </div>
           )}
 

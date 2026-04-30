@@ -23,6 +23,10 @@ interface TaskNotifDisplay {
   title: string
   body: string
   taskId: string
+  /** Deep-link target — comment to scroll to inside the discussion tab. */
+  commentId?: string | null
+  /** Deep-link target — child subtask to open instead of the parent task. */
+  subtaskId?: string | null
   timestamp: string
   read: boolean
 }
@@ -50,6 +54,8 @@ function toTaskDisplay(n: TaskNotificationItem): TaskNotifDisplay {
     title: n.task.title + projectLabel,
     body: n.message,
     taskId: n.task.parentTaskId ?? n.taskId,
+    commentId: n.commentId ?? null,
+    subtaskId: n.subtaskId ?? null,
     timestamp: n.createdAt,
     read: !!n.readAt,
   }
@@ -172,14 +178,23 @@ export default function NotificationTray() {
 
   const handleTaskClick = useCallback((item: TaskNotifDisplay) => {
     markTaskRead(item.id)
-    // discussion / mention / subtask notifications take the user to the
+    // discussion / mention / subtask-update notifications take the user to the
     // discussion tab; assigned / status take them to the details tab.
+    // commentId (e.g. someone reacted to your message) overrides the tab choice
+    // and scrolls to that exact comment.
+    // subtaskId (e.g. a subtask was assigned to you) opens the subtask drawer.
     const focusDiscussion =
       item.type === 'task-discussion' ||
       item.type === 'task-mention' ||
       item.type === 'task-subtask'
+    // If a subtask is named, open that subtask directly.
+    const targetTaskId = item.subtaskId ?? item.taskId
     window.dispatchEvent(new CustomEvent('bundy-open-task', {
-      detail: { taskId: item.taskId, focusDiscussion },
+      detail: {
+        taskId: targetTaskId,
+        commentId: item.commentId ?? null,
+        focusDiscussion,
+      },
     }))
     setOpen(false)
   }, [markTaskRead])
