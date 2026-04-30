@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Bell, MessageSquare, AtSign, CheckSquare, X, Check, Trash2 } from 'lucide-react'
+import { Bell, MessageSquare, AtSign, CheckSquare, X, Check, Trash2, GitBranch, Activity } from 'lucide-react'
 import { C } from '../../theme'
 import { Avatar } from '../shared/Avatar'
+import type { TaskNotificationItem } from '../../types'
 
 export interface NotificationItem {
   id: string
@@ -16,23 +17,84 @@ export interface NotificationItem {
   read: boolean
 }
 
-type FilterTab = 'all' | 'mentions' | 'messages'
+interface TaskNotifDisplay {
+  id: string
+  type: 'task-assigned' | 'task-status' | 'task-discussion' | 'task-mention' | 'task-subtask'
+  title: string
+  body: string
+  taskId: string
+  timestamp: string
+  read: boolean
+}
+
+type AnyNotif = NotificationItem | TaskNotifDisplay
+
+type FilterTab = 'all' | 'mentions' | 'messages' | 'tasks'
+
+function isTaskNotif(n: AnyNotif): n is TaskNotifDisplay {
+  return n.type.startsWith('task-')
+}
+
+function toTaskDisplay(n: TaskNotificationItem): TaskNotifDisplay {
+  const typeMap: Record<string, TaskNotifDisplay['type']> = {
+    assigned: 'task-assigned',
+    discussion: 'task-discussion',
+    status_change: 'task-status',
+    mentioned: 'task-mention',
+    subtask_update: 'task-subtask',
+  }
+  const projectLabel = n.task.project ? ` · ${n.task.project.name}` : ''
+  return {
+    id: n.id,
+    type: typeMap[n.type] ?? 'task-discussion',
+    title: n.task.title + projectLabel,
+    body: n.message,
+    taskId: n.task.parentTaskId ?? n.taskId,
+    timestamp: n.createdAt,
+    read: !!n.readAt,
+  }
+}
 
 export default function NotificationTray() {
   const [open, setOpen] = useState(false)
-  const [items, setItems] = useState<NotificationItem[]>([])
+  const [msgItems, setMsgItems] = useState<NotificationItem[]>([])
+  const [taskItems, setTaskItems] = useState<TaskNotifDisplay[]>([])
   const [filter, setFilter] = useState<FilterTab>('all')
   const [hovered, setHovered] = useState(false)
+  const [apiConfig, setApiConfig] = useState<{ apiBase: string; token: string } | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Listen for notification events from MessagesPanel
+  // Fetch api config once
+  useEffect(() => {
+    window.electronAPI.getApiConfig().then(setApiConfig).catch(() => {})
+  }, [])
+
+  const fetchTaskNotifs = useCallback(async () => {
+    if (!apiConfig) return
+    try {
+      const res = await fetch(`${apiConfig.apiBase}/api/tasks/notifications`, {
+        headers: { Authorization: `Bearer ${apiConfig.token}` },
+      })
+      if (!res.ok) return
+      const data = await res.json() as { notifications: TaskNotificationItem[] }
+      setTaskItems((data.notifications ?? []).map(toTaskDisplay))
+    } catch { /* offline */ }
+  }, [apiConfig])
+
+  // Initial fetch + re-fetch on SSE updates
+  useEffect(() => {
+    fetchTaskNotifs()
+    const unsub = window.electronAPI.onStatusUpdate(() => fetchTaskNotifs())
+    return () => unsub()
+  }, [fetchTaskNotifs])
+
+  // Listen for message notifications from MessagesPanel
   useEffect(() => {
     function onNotification(e: Event) {
       const detail = (e as CustomEvent<NotificationItem>).detail
-      setItems(prev => {
-        // Deduplicate by id
+      setMsgItems(prev => {
         if (prev.some(n => n.id === detail.id)) return prev
-        return [detail, ...prev].slice(0, 100) // keep last 100
+        return [detail, ...prev].slice(0, 100)
       })
     }
     window.addEventListener('bundy-notification', onNotification)
@@ -49,34 +111,70 @@ export default function NotificationTray() {
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  const unreadCount = items.filter(n => !n.read).length
-  const mentionCount = items.filter(n => n.type === 'mention' && !n.read).length
-  const messageCount = items.filter(n => (n.type === 'message' || n.type === 'thread-reply') && !n.read).length
+  // Refresh task notifs when panel opens
+  useEffect(() => {
+    if (open) fetchTaskNotifs()
+  }, [open, fetchTaskNotifs])
 
-  const filtered = items.filter(n => {
+  const allItems: AnyNotif[] = [
+    ...msgItems,
+    ...taskItems,
+  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+  const unreadMsgCount = msgItems.filter(n => !n.read).length
+  const mentionCount = msgItems.filter(n => n.type === 'mention' && !n.read).length
+  const unreadTaskCount = taskItems.filter(n => !n.read).length
+  const unreadCount = unreadMsgCount + unreadTaskCount
+
+  const filtered = allItems.filter(n => {
     if (filter === 'mentions') return n.type === 'mention'
     if (filter === 'messages') return n.type === 'message' || n.type === 'thread-reply'
+    if (filter === 'tasks') return isTaskNotif(n)
     return true
   })
 
   const markAllRead = useCallback(() => {
-    setItems(prev => prev.map(n => ({ ...n, read: true })))
+    setMsgItems(prev => prev.map(n => ({ ...n, read: true })))
+    if (!apiConfig) return
+    const unreadIds = taskItems.filter(n => !n.read).map(n => n.id)
+    if (unreadIds.length === 0) return
+    fetch(`${apiConfig.apiBase}/api/tasks/notifications`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiConfig.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: unreadIds }),
+    }).then(() => setTaskItems(prev => prev.map(n => ({ ...n, read: true })))).catch(() => {})
+  }, [apiConfig, taskItems])
+
+  const markMsgRead = useCallback((id: string) => {
+    setMsgItems(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
   }, [])
 
-  const markRead = useCallback((id: string) => {
-    setItems(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
-  }, [])
+  const markTaskRead = useCallback((id: string) => {
+    if (!apiConfig) return
+    fetch(`${apiConfig.apiBase}/api/tasks/notifications`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiConfig.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [id] }),
+    }).catch(() => {})
+    setTaskItems(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
+  }, [apiConfig])
 
   const clearAll = useCallback(() => {
-    setItems([])
+    setMsgItems([])
+    setTaskItems([])
   }, [])
 
-  const handleItemClick = useCallback((item: NotificationItem) => {
-    markRead(item.id)
-    // Dispatch event to navigate to the channel
+  const handleMsgClick = useCallback((item: NotificationItem) => {
+    markMsgRead(item.id)
     window.dispatchEvent(new CustomEvent('bundy-open-channel', { detail: { channelId: item.channelId } }))
     setOpen(false)
-  }, [markRead])
+  }, [markMsgRead])
+
+  const handleTaskClick = useCallback((item: TaskNotifDisplay) => {
+    markTaskRead(item.id)
+    window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: item.taskId } }))
+    setOpen(false)
+  }, [markTaskRead])
 
   function timeAgo(ts: string): string {
     const diff = Date.now() - new Date(ts).getTime()
@@ -89,10 +187,15 @@ export default function NotificationTray() {
     return `${days}d`
   }
 
-  const iconForType = (type: NotificationItem['type']) => {
+  const iconForType = (type: AnyNotif['type']) => {
     switch (type) {
       case 'mention': return <AtSign size={14} color={C.warning} />
       case 'thread-reply': return <MessageSquare size={14} color={C.accent} />
+      case 'task-assigned': return <CheckSquare size={14} color={C.accent} />
+      case 'task-status': return <Activity size={14} color={C.success} />
+      case 'task-discussion': return <MessageSquare size={14} color={C.warning} />
+      case 'task-mention': return <AtSign size={14} color={C.warning} />
+      case 'task-subtask': return <GitBranch size={14} color={C.textMuted} />
       default: return <MessageSquare size={14} color={C.textMuted} />
     }
   }
@@ -100,7 +203,8 @@ export default function NotificationTray() {
   const TABS: { id: FilterTab; label: string; badge?: number }[] = [
     { id: 'all', label: 'All', badge: unreadCount },
     { id: 'mentions', label: 'Mentions', badge: mentionCount },
-    { id: 'messages', label: 'Messages', badge: messageCount },
+    { id: 'messages', label: 'Messages', badge: unreadMsgCount },
+    { id: 'tasks', label: 'Tasks', badge: unreadTaskCount },
   ]
 
   return (
@@ -147,53 +251,32 @@ export default function NotificationTray() {
           zIndex: 9999, overflow: 'hidden',
         }}>
           {/* Header */}
-          <div style={{
-            padding: '14px 16px 0', display: 'flex', alignItems: 'center', gap: 10,
-          }}>
+          <div style={{ padding: '14px 16px 0', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 16, fontWeight: 700, color: C.text, flex: 1 }}>Inbox</span>
-            <button
-              onClick={markAllRead}
-              title="Mark all as read"
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 4,
-                color: C.textMuted, display: 'flex', alignItems: 'center', borderRadius: 4,
-              }}
-            >
+            <button onClick={markAllRead} title="Mark all as read"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: C.textMuted, display: 'flex', alignItems: 'center', borderRadius: 4 }}>
               <Check size={16} />
             </button>
-            <button
-              onClick={clearAll}
-              title="Clear all"
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 4,
-                color: C.textMuted, display: 'flex', alignItems: 'center', borderRadius: 4,
-              }}
-            >
+            <button onClick={clearAll} title="Clear all"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: C.textMuted, display: 'flex', alignItems: 'center', borderRadius: 4 }}>
               <Trash2 size={16} />
             </button>
           </div>
 
           {/* Tabs */}
-          <div style={{
-            display: 'flex', gap: 0, padding: '10px 16px 0',
-            borderBottom: `1px solid ${C.separator}`,
-          }}>
+          <div style={{ display: 'flex', gap: 0, padding: '10px 16px 0', borderBottom: `1px solid ${C.separator}` }}>
             {TABS.map(t => {
               const active = filter === t.id
               return (
-                <button
-                  key={t.id}
-                  onClick={() => setFilter(t.id)}
-                  style={{
-                    padding: '8px 14px', border: 'none', cursor: 'pointer',
-                    background: 'transparent',
-                    color: active ? C.accent : C.textMuted,
-                    fontSize: 13, fontWeight: active ? 600 : 400,
-                    borderBottom: `2px solid ${active ? C.accent : 'transparent'}`,
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    transition: 'all 0.15s ease',
-                  }}
-                >
+                <button key={t.id} onClick={() => setFilter(t.id)} style={{
+                  padding: '8px 14px', border: 'none', cursor: 'pointer',
+                  background: 'transparent',
+                  color: active ? C.accent : C.textMuted,
+                  fontSize: 13, fontWeight: active ? 600 : 400,
+                  borderBottom: `2px solid ${active ? C.accent : 'transparent'}`,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  transition: 'all 0.15s ease',
+                }}>
                   {t.label}
                   {(t.badge ?? 0) > 0 && (
                     <span style={{
@@ -203,9 +286,7 @@ export default function NotificationTray() {
                       fontSize: 10, fontWeight: 700,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       padding: '0 5px',
-                    }}>
-                      {t.badge}
-                    </span>
+                    }}>{t.badge}</span>
                   )}
                 </button>
               )
@@ -215,15 +296,19 @@ export default function NotificationTray() {
           {/* Notification list */}
           <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             {filtered.length === 0 ? (
-              <div style={{
-                padding: '40px 20px', textAlign: 'center', color: C.textMuted, fontSize: 13,
-              }}>
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: C.textMuted, fontSize: 13 }}>
                 <Bell size={28} strokeWidth={1} style={{ marginBottom: 8, opacity: 0.4 }} />
                 <div>No notifications yet</div>
               </div>
             ) : (
               filtered.map(item => (
-                <NotifRow key={item.id} item={item} onClick={() => handleItemClick(item)} iconForType={iconForType} timeAgo={timeAgo} />
+                <NotifRow
+                  key={item.id}
+                  item={item}
+                  onClick={() => isTaskNotif(item) ? handleTaskClick(item) : handleMsgClick(item as NotificationItem)}
+                  iconForType={iconForType}
+                  timeAgo={timeAgo}
+                />
               ))
             )}
           </div>
@@ -234,12 +319,21 @@ export default function NotificationTray() {
 }
 
 function NotifRow({ item, onClick, iconForType, timeAgo }: {
-  item: NotificationItem
+  item: AnyNotif
   onClick: () => void
-  iconForType: (type: NotificationItem['type']) => React.ReactNode
+  iconForType: (type: AnyNotif['type']) => React.ReactNode
   timeAgo: (ts: string) => string
 }) {
   const [hovered, setHovered] = useState(false)
+
+  const isTask = isTaskNotif(item)
+  const subtitle = isTask
+    ? item.body
+    : (item as NotificationItem).channelName
+      ? (item as NotificationItem).channelType === 'dm'
+        ? 'Direct Message'
+        : `${(item as NotificationItem).channelName} — ${(item as NotificationItem).channelType === 'group' ? 'Group' : 'Channel'}`
+      : ''
 
   return (
     <div
@@ -273,15 +367,11 @@ function NotifRow({ item, onClick, iconForType, timeAgo }: {
 
       {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        {item.channelName && (
+        {subtitle && (
           <div style={{
             fontSize: 11, color: C.accent, fontWeight: 600, marginBottom: 2,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {item.channelType === 'dm'
-              ? 'Direct Message'
-              : `${item.channelName} — ${item.channelType === 'group' ? 'Group' : 'Channel'}`}
-          </div>
+          }}>{subtitle}</div>
         )}
         <div style={{
           fontSize: 13, color: item.read ? C.textMuted : C.text, fontWeight: item.read ? 400 : 500,
@@ -291,12 +381,14 @@ function NotifRow({ item, onClick, iconForType, timeAgo }: {
         }}>
           {item.title}
         </div>
-        <div style={{
-          fontSize: 12, color: C.textMuted, marginTop: 2,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {item.body}
-        </div>
+        {!isTask && (item as NotificationItem).body && (
+          <div style={{
+            fontSize: 12, color: C.textMuted, marginTop: 2,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {(item as NotificationItem).body}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>
           {timeAgo(item.timestamp)}
         </div>

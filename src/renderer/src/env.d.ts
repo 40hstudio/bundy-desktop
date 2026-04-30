@@ -1,14 +1,13 @@
 import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData } from '../../preload/index'
 
 declare global {
-  const __DEMO_MODE__: boolean
   interface Window {
     electronAPI: {
       getStoredAuth: () => Promise<StoredAuth | null>
       login: (shortToken: string) => Promise<StoredAuth>
       logout: () => Promise<void>
       getStatus: () => Promise<BundyStatus>
-      doAction: (action: string, note?: string) => Promise<void>
+      doAction: (action: string, note?: string) => Promise<BundyStatus | void>
       submitReport: (content: string) => Promise<void>
       checkPermissions: () => Promise<Permissions>
       openAccessibilitySettings: () => Promise<void>

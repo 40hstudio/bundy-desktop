@@ -24,6 +24,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error(`[ErrorBoundary${this.props.label ? ` — ${this.props.label}` : ''}]`, error, info.componentStack)
+    // Report renderer crashes to the server via the main process
+    const note = `[Renderer${this.props.label ? ` — ${this.props.label}` : ''}] ${error.message}\n${error.stack ?? ''}\n${info.componentStack ?? ''}`
+    window.electronAPI?.sendCrashReport?.(note.slice(0, 4000))
   }
 
   render() {

@@ -1,446 +1,47 @@
+/**
+ * Main process entry point — thin orchestrator.
+ *
+ * Heavy logic lives in:
+ *   state.ts    — shared mutable state
+ *   tray.ts     — tray icon & timer
+ *   windows.ts  — popup, full, call-float windows
+ *   poller.ts   — polling, SSE, midnight timer, offline queue
+ *   api.ts      — HTTP client
+ *   activity.ts — keyboard/mouse/app monitoring
+ */
+
 import {
   app,
-  BrowserWindow,
   desktopCapturer,
   ipcMain,
   Menu,
-  nativeImage,
   Notification,
   powerMonitor,
-  screen,
   shell,
   systemPreferences,
-  Tray
+  Tray,
 } from 'electron'
-import { join } from 'path'
-import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
-import store from './store'
-import { exchangeToken, getBundyStatus, doAction, submitReport, sendDesktopHeartbeat, breakOnQuit, connectSSE, disconnectSSE, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, type BundyStatus } from './api'
-import { startScreenshots, stopScreenshots } from './screenshot'
-import { startActivity, stopActivity, getCurrentActivity } from './activity'
+import store, { getApiBase } from './store'
+import { exchangeToken, getBundyStatus, doAction, submitReport, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, breakOnQuit } from './api'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
 import { getToken, setToken, clearToken, migrateToken } from './secure-storage'
-import { formatMs } from './utils'
+import {
+  setTray,
+  popupWin, fullNativeWin,
+  callFloatWin, callFloatState, fullWindowIds,
+  cachedStatus, setCachedStatus,
+  pendingUpdateVersion, pendingDownloadPercent, updateDownloaded,
+  setPendingUpdateVersion, setPendingDownloadPercent, setUpdateDownloaded,
+} from './state'
+import { getTrayIcon, stopTrayTimer } from './tray'
+import { openFullWindow, flushUpdateState, openCallFloat } from './windows'
+import { startPoller, stopPoller, stopServices, pollAndPush, isNetworkError, enqueueAction, broadcastOnlineState, drainActionQueue } from './poller'
 
-let tray: Tray | null = null
-let popupWin: BrowserWindow | null = null
-let fullNativeWin: BrowserWindow | null = null
-let callFloatWin: BrowserWindow | null = null
-const callFloatState = new Map<number, Record<string, unknown>>()
-const fullWindowIds = new Set<number>()
-let statusPollerTimer: NodeJS.Timeout | null = null
-let pendingUpdateVersion: string | null = null
-let pendingDownloadPercent: number | null = null
-let updateDownloaded = false
-let trayTimerTick: NodeJS.Timeout | null = null
-let trayTimerState = { baseMs: 0, snapshotAt: 0, isTracking: false }
-let cachedStatus: BundyStatus | null = null
-
-function startTrayTimer(): void {
-  if (trayTimerTick) return
-  trayTimerTick = setInterval(() => {
-    if (!tray) return
-    if (!trayTimerState.isTracking) {
-      tray.setTitle('')
-      return
-    }
-    const live = trayTimerState.baseMs + (Date.now() - trayTimerState.snapshotAt)
-    tray.setTitle(formatMs(live))
-  }, 1_000)
-}
-
-function stopTrayTimer(): void {
-  if (trayTimerTick) {
-    clearInterval(trayTimerTick)
-    trayTimerTick = null
-  }
-  tray?.setTitle('')
-}
-
-// ─── Tray helpers ─────────────────────────────────────────────────────────────
-
-function getTrayIcon(isClockedIn: boolean): Electron.NativeImage {
-  const name = isClockedIn ? 'tray-active.png' : 'tray-icon.png'
-  const iconPath = is.dev
-    ? join(__dirname, '../../resources', name)
-    : join(process.resourcesPath, name)
-  const img = nativeImage.createFromPath(iconPath)
-  if (img.isEmpty()) {
-    console.error(`[tray] icon not found at: ${iconPath}`)
-  }
-  img.setTemplateImage(true)
-  return img
-}
-
-function updateTray(isClockedIn: boolean, isTracking: boolean): void {
-  if (!tray) return
-  tray.setImage(getTrayIcon(isClockedIn))
-  tray.setToolTip(
-    isTracking ? 'Bundy – Tracking' :
-    isClockedIn ? 'Bundy – On break' :
-    'Bundy – Not clocked in'
-  )
-}
-
-// ─── Popup window ─────────────────────────────────────────────────────────────
-
-function createPopup(): BrowserWindow {
-  const win = new BrowserWindow({
-    width: 320,
-    height: 480,
-    show: false,
-    frame: false,
-    resizable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    transparent: true,
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
-  })
-
-  win.on('blur', () => {
-    if (!win.webContents.isDevToolsOpened()) win.hide()
-  })
-
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
-  }
-
-  return win
-}
-
-function togglePopup(): void {
-  if (!tray) return
-  if (!popupWin || popupWin.isDestroyed()) {
-    popupWin = createPopup()
-  }
-
-  if (popupWin.isVisible()) {
-    popupWin.hide()
-    return
-  }
-
-  const bounds = tray.getBounds()
-  const { width: winW } = popupWin.getBounds()
-  popupWin.setPosition(
-    Math.round(bounds.x + bounds.width / 2 - winW / 2),
-    Math.round(bounds.y + bounds.height + 4),
-    false
-  )
-  popupWin.show()
-  // Flush any cached update state to the newly visible popup
-  popupWin.webContents.once('did-finish-load', () => {
-    flushUpdateState()
-  })
-  flushUpdateState()
-}
-
-function flushUpdateState(): void {
-  const targets = [popupWin, fullNativeWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
-  for (const target of targets) {
-    if (updateDownloaded) {
-      target.webContents.send('update-downloaded')
-    } else if (pendingUpdateVersion !== null) {
-      target.webContents.send('update-available', { version: pendingUpdateVersion })
-      if (pendingDownloadPercent !== null) {
-        target.webContents.send('download-progress', { percent: pendingDownloadPercent })
-      }
-    }
-  }
-}
-
-// ─── Monitoring services ───────────────────────────────────────────────────────
-// startScreenshots / startActivity are called from pollAndPush() only when
-// the user is clocked in. stopServices() is still called on explicit logout.
-
-function stopServices(): void {
-  stopScreenshots()
-  stopActivity()
-}
-
-// ─── Offline / action queue helpers ───────────────────────────────────────────
-
-function isNetworkError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false
-  const msg = err.message.toLowerCase()
-  return err instanceof TypeError || msg.includes('fetch') || msg.includes('network') || msg.includes('econnrefused') || msg.includes('enotfound')
-}
-
-function enqueueAction(action: string): void {
-  const pending = store.get('pendingActions')
-  store.set('pendingActions', [...pending, { action, timestamp: Date.now() }])
-}
-
-async function drainActionQueue(): Promise<void> {
-  const pending = store.get('pendingActions')
-  if (!pending.length) return
-  store.set('pendingActions', [])
-  broadcastOnlineState()
-  let synced = 0
-  for (const item of pending) {
-    try {
-      await doAction(item.action as 'clock-in' | 'clock-out' | 'break-start' | 'break-end')
-      synced++
-    } catch {
-      // Skip actions that fail (e.g. duplicate/invalid state) — don't re-queue
-    }
-  }
-  if (synced > 0 && popupWin && !popupWin.isDestroyed()) {
-    popupWin.webContents.send('sync-toast', { count: synced })
-  }
-}
-
-function broadcastOnlineState(): void {
-  if (!popupWin || popupWin.isDestroyed()) return
-  const pending = store.get('pendingActions')
-  popupWin.webContents.send('online-state', {
-    isOnline: isServerReachable(),
-    queuedCount: pending.length
-  })
-}
-
-// ─── Full-window mode ──────────────────────────────────────────────────────────
-
-// ─── Native full-window mode ───────────────────────────────────────────────────
-
-async function openFullWindow(): Promise<void> {
-  if (fullNativeWin && !fullNativeWin.isDestroyed()) {
-    if (!fullNativeWin.isVisible()) fullNativeWin.show()
-    fullNativeWin.focus()
-    return
-  }
-
-  fullNativeWin = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      autoplayPolicy: 'no-user-gesture-required',
-      ...(is.dev ? { webSecurity: false } : {})
-    }
-  })
-
-  // Allow microphone + camera for WebRTC calls
-  fullNativeWin.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(['media', 'microphone', 'camera', 'audioCapture', 'videoCapture'].includes(permission))
-  })
-
-  const wcId = fullNativeWin.webContents.id
-  fullWindowIds.add(wcId)
-
-  fullNativeWin.on('closed', () => {
-    fullWindowIds.delete(wcId)
-    fullNativeWin = null
-    // Hide dock icon when window closes (back to tray-only mode)
-    if (!popupWin || popupWin.isDestroyed() || !popupWin.isVisible()) {
-      app.dock?.hide()
-    }
-  })
-
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    await fullNativeWin.loadURL(process.env.ELECTRON_RENDERER_URL + '#full')
-  } else {
-    await fullNativeWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'full' })
-  }
-
-  fullNativeWin.webContents.once('did-finish-load', () => {
-    flushUpdateState()
-  })
-
-  // Enable DevTools via Cmd+Option+I in production builds too
-  fullNativeWin.webContents.on('before-input-event', (event, input) => {
-    if (input.meta && input.alt && input.key.toLowerCase() === 'i') {
-      fullNativeWin?.webContents.toggleDevTools()
-      event.preventDefault()
-    }
-  })
-
-  app.dock?.show()
-  fullNativeWin.show()
-  fullNativeWin.focus()
-}
-
-// ─── Status polling → push to renderer ────────────────────────────────────────
-
-/** Lightweight status refresh — no heartbeat POST. Used for SSE-triggered updates. */
-async function refreshStatus(): Promise<void> {
-  if (!getToken()) return
-  try {
-    const [status, plan] = await Promise.all([
-      getBundyStatus(),
-      getDailyPlan().catch(() => null)
-    ])
-    updateTray(status.isClockedIn, status.isTracking)
-
-    trayTimerState = { baseMs: status.elapsedMs, snapshotAt: Date.now(), isTracking: status.isTracking }
-    if (status.isTracking) {
-      startTrayTimer()
-    } else {
-      stopTrayTimer()
-    }
-
-    if (status.isTracking) {
-      startScreenshots()
-      await startActivity()
-    } else {
-      stopScreenshots()
-      stopActivity()
-    }
-
-    if (popupWin && !popupWin.isDestroyed()) {
-      popupWin.webContents.send('status-update', status)
-      if (plan) popupWin.webContents.send('plan-update', plan)
-      const screen = systemPreferences.getMediaAccessStatus('screen')
-      const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
-      popupWin.webContents.send('permissions-update', { screen, accessibility })
-    }
-  } catch {
-    // network error is non-fatal
-  }
-}
-
-async function pollAndPush(): Promise<void> {
-  if (!getToken()) return
-  try {
-    // Send heartbeat first so the web app knows desktop is online
-    // before we make any other request
-    const heartbeatResult = await sendDesktopHeartbeat(getCurrentActivity(), powerMonitor.getSystemIdleTime() > 300)
-    broadcastOnlineState()
-
-    // If the server auto-clocked-out at midnight, bring the app window to front
-    if (heartbeatResult.midnightClockOut) {
-      handleMidnightClockOut()
-    }
-
-    const status = await getBundyStatus()
-    cachedStatus = status
-    updateTray(status.isClockedIn, status.isTracking)
-
-    // Update tray title timer snapshot
-    trayTimerState = { baseMs: status.elapsedMs, snapshotAt: Date.now(), isTracking: status.isTracking }
-    if (status.isTracking) {
-      startTrayTimer()
-    } else {
-      stopTrayTimer()
-    }
-
-    // Start or stop monitoring based on active working state (not on break)
-    if (status.isTracking) {
-      startScreenshots()
-      await startActivity()
-    } else {
-      stopScreenshots()
-      stopActivity()
-    }
-
-    if (popupWin && !popupWin.isDestroyed()) {
-      popupWin.webContents.send('status-update', status)
-      // Push fresh permissions so the UI badge auto-updates without a reload
-      const screen = systemPreferences.getMediaAccessStatus('screen')
-      const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
-      popupWin.webContents.send('permissions-update', { screen, accessibility })
-    }
-  } catch {
-    // network error is non-fatal
-  }
-}
-
-/** Called when the server reports a midnight auto-clock-out. Bring app to front. */
-function handleMidnightClockOut(): void {
-  // Stop all monitoring
-  stopScreenshots()
-  stopActivity()
-
-  // Bring the full dashboard window to front
-  void openFullWindow()
-
-  // Send a notification
-  const notif = new Notification({
-    title: 'Bundy — Auto Clock-Out',
-    body: 'You have been automatically clocked out at midnight. Clock in again if you need overtime.',
-  })
-  notif.show()
-}
-
-// ── Local midnight timer (WIB = UTC+7) ─────────────────────────────────────
-let midnightTimer: NodeJS.Timeout | null = null
-
-function startMidnightTimer(): void {
-  if (midnightTimer) return
-  scheduleMidnightCheck()
-}
-
-function scheduleMidnightCheck(): void {
-  // Calculate ms until next midnight WIB (UTC+7)
-  const now = new Date()
-  const wibNow = new Date(now.getTime() + 7 * 3600_000)
-  const tomorrow = new Date(Date.UTC(wibNow.getUTCFullYear(), wibNow.getUTCMonth(), wibNow.getUTCDate() + 1))
-  // tomorrow is midnight WIB in UTC terms
-  const midnightUtc = new Date(tomorrow.getTime() - 7 * 3600_000)
-  const msUntilMidnight = midnightUtc.getTime() - now.getTime()
-
-  // Schedule check 2 seconds after midnight to let the server heartbeat handle it first
-  const delay = Math.max(msUntilMidnight + 2000, 1000)
-  midnightTimer = setTimeout(() => {
-    midnightTimer = null
-    // Trigger a poll which will detect the midnight clock-out via the server
-    void pollAndPush()
-    // Re-schedule for next midnight
-    scheduleMidnightCheck()
-  }, delay)
-}
-
-function stopMidnightTimer(): void {
-  if (midnightTimer) {
-    clearTimeout(midnightTimer)
-    midnightTimer = null
-  }
-}
-
-function startPoller(): void {
-  if (statusPollerTimer) return
-  // Fire heartbeat immediately so the server sees the desktop as online
-  // right away — before the heavier pollAndPush cycle completes.
-  sendDesktopHeartbeat(getCurrentActivity(), powerMonitor.getSystemIdleTime() > 300)
-  void pollAndPush()
-  statusPollerTimer = setInterval(() => void pollAndPush(), 30_000)
-  startMidnightTimer()
-
-  // Real-time sync: listen for SSE events so web actions update instantly
-  // onReconnect: SSE reconnects ~5s after server restart — drain queue then check for updates
-  connectSSE(
-    () => void refreshStatus(),
-    async () => {
-      await drainActionQueue()
-      autoUpdater.checkForUpdates().catch(() => {})
-    }
-  )
-}
-
-function stopPoller(): void {
-  disconnectSSE()
-  stopMidnightTimer()
-  if (statusPollerTimer) {
-    clearInterval(statusPollerTimer)
-    statusPollerTimer = null
-  }
-}
+// ─── IPC rate-limit guards ────────────────────────────────────────────────────
+let lastLoginCall = 0
+let lastDoActionCall = 0
+let lastSubmitReportCall = 0
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 
@@ -451,11 +52,14 @@ ipcMain.handle('get-stored-auth', () => {
     userId: store.get('userId'),
     username: store.get('username'),
     role: store.get('role'),
-    avatarUrl: store.get('avatarUrl') || null
+    avatarUrl: store.get('avatarUrl') || null,
   }
 })
 
 ipcMain.handle('login', async (_event, shortToken: string) => {
+  const now = Date.now()
+  if (now - lastLoginCall < 3000) throw new Error('Please wait before trying again')
+  lastLoginCall = now
   const os = await import('os')
   const deviceName = os.default.hostname()
   const result = await exchangeToken(shortToken, deviceName)
@@ -465,12 +69,19 @@ ipcMain.handle('login', async (_event, shortToken: string) => {
   store.set('role', result.role)
   store.set('avatarUrl', result.avatarUrl ?? '')
   startPoller()
-  // Open the full dashboard after login
   void openFullWindow()
   return result
 })
 
-ipcMain.handle('logout', () => {
+ipcMain.handle('logout', async () => {
+  try {
+    if (isServerReachable()) {
+      const status = await getBundyStatus()
+      if (status.isClockedIn && !status.onBreak) {
+        await doAction('break-start')
+      }
+    }
+  } catch { /* best-effort */ }
   stopPoller()
   stopTrayTimer()
   stopServices()
@@ -484,7 +95,7 @@ ipcMain.handle('logout', () => {
 ipcMain.handle('get-status', async () => {
   try {
     const s = await getBundyStatus()
-    cachedStatus = s
+    setCachedStatus(s)
     return s
   } catch (err: unknown) {
     if (cachedStatus) return cachedStatus
@@ -493,8 +104,10 @@ ipcMain.handle('get-status', async () => {
 })
 
 ipcMain.handle('do-action', async (_event, action: string, note?: string) => {
+  const now = Date.now()
+  if (now - lastDoActionCall < 2000) throw new Error('Please wait before trying again')
+  lastDoActionCall = now
   if (!isServerReachable()) {
-    // Server unreachable — queue the action to replay on reconnect
     enqueueAction(action)
     broadcastOnlineState()
     return
@@ -513,38 +126,34 @@ ipcMain.handle('do-action', async (_event, action: string, note?: string) => {
 })
 
 ipcMain.handle('submit-report', async (_event, content: string) => {
+  const now = Date.now()
+  if (now - lastSubmitReportCall < 5000) throw new Error('Please wait before submitting again')
+  lastSubmitReportCall = now
   await submitReport(content)
   await pollAndPush()
 })
 
 ipcMain.handle('check-permissions', async () => {
   const screen = systemPreferences.getMediaAccessStatus('screen')
-  // isTrustedAccessibilityClient(false) = check without triggering the system prompt
   const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
   return { screen, accessibility }
 })
 
 ipcMain.handle('open-accessibility-settings', async () => {
-  await shell.openExternal(
-    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
-  )
+  await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
 })
 
 ipcMain.handle('open-screen-recording-settings', async () => {
-  await shell.openExternal(
-    'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
-  )
+  await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
 })
 
 ipcMain.handle('open-external', async (_event, url: string) => {
-  // Only allow https and discord deep links
   if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('discord://'))) {
     await shell.openExternal(url)
   }
 })
 
 ipcMain.on('set-badge-count', (_event, count: number) => {
-  // macOS dock badge; no-op on unsupported platforms
   if (app.setBadgeCount) app.setBadgeCount(count)
 })
 
@@ -552,7 +161,6 @@ ipcMain.handle('show-notification', (_event, opts: { title: string; body: string
   if (Notification.isSupported()) {
     const notif = new Notification({ title: opts.title, body: opts.body })
     notif.on('click', () => {
-      // Bring app to front when notification is clicked
       const win = fullNativeWin ?? popupWin
       if (win) {
         if (win.isMinimized()) win.restore()
@@ -566,11 +174,9 @@ ipcMain.handle('show-notification', (_event, opts: { title: string; body: string
 
 ipcMain.handle('get-version', () => app.getVersion())
 
-ipcMain.handle('get-update-state', () => ({
-  version: pendingUpdateVersion,
-  percent: pendingDownloadPercent,
-  downloaded: updateDownloaded,
-}))
+ipcMain.handle('get-update-state', () => {
+  return { version: pendingUpdateVersion, percent: pendingDownloadPercent, downloaded: updateDownloaded }
+})
 
 ipcMain.handle('check-for-updates', () => {
   autoUpdater.checkForUpdates().catch(() => {})
@@ -595,73 +201,19 @@ ipcMain.handle('focus-window', () => {
 ipcMain.handle('get-screen-sources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
-    thumbnailSize: { width: 150, height: 150 },
+    thumbnailSize: { width: 320, height: 180 },
   })
-  return sources.map(s => ({
-    id: s.id, name: s.name,
-    thumbnail: s.thumbnail.toDataURL(),
-  }))
+  return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL() }))
 })
 
 ipcMain.handle('get-window-mode', (event) => {
   return fullWindowIds.has(event.sender.id) ? 'full' : 'popup'
 })
 
-// ─── Floating call window ──────────────────────────────────────────────────────
+// ─── Floating call window IPC ─────────────────────────────────────────────────
 
 ipcMain.handle('open-call-float', async (_event, state: Record<string, unknown>) => {
-  if (callFloatWin && !callFloatWin.isDestroyed()) {
-    callFloatWin.focus()
-    return
-  }
-
-  // Position at bottom-right of primary display
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
-
-  callFloatWin = new BrowserWindow({
-    width: 300,
-    height: 100,
-    x: sw - 316,
-    y: sh - 116,
-    show: false,
-    frame: false,
-    resizable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    transparent: true,
-    hasShadow: true,
-    backgroundColor: '#00000000',
-    roundedCorners: true,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      ...(is.dev ? { webSecurity: false } : {})
-    }
-  })
-
-  callFloatWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
-  callFloatWin.on('closed', () => {
-    if (callFloatWin) callFloatState.delete(callFloatWin.webContents.id)
-    callFloatWin = null
-    // Notify main window to restore in-app call UI
-    if (fullNativeWin && !fullNativeWin.isDestroyed()) {
-      fullNativeWin.webContents.send('call-float-action', { action: 'expand' })
-    }
-  })
-
-  // Store initial state BEFORE loading so it's available immediately
-  callFloatState.set(callFloatWin.webContents.id, state)
-
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    await callFloatWin.loadURL(process.env.ELECTRON_RENDERER_URL + '#call-float')
-  } else {
-    await callFloatWin.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'call-float' })
-  }
-
-  callFloatWin.show()
+  await openCallFloat(state)
 })
 
 ipcMain.handle('get-call-float-state', () => {
@@ -675,7 +227,6 @@ ipcMain.handle('close-call-float', () => {
   if (callFloatWin && !callFloatWin.isDestroyed()) {
     callFloatState.delete(callFloatWin.webContents.id)
     callFloatWin.destroy()
-    callFloatWin = null
   }
 })
 
@@ -685,11 +236,9 @@ ipcMain.handle('update-call-float', (_event, state: Record<string, unknown>) => 
   }
 })
 
-// Actions from floating window → forward to main window
 ipcMain.handle('call-float-action', (_event, action: Record<string, unknown>) => {
   if (callFloatWin && !callFloatWin.isDestroyed()) {
     callFloatWin.destroy()
-    callFloatWin = null
   }
   if (fullNativeWin && !fullNativeWin.isDestroyed()) {
     fullNativeWin.webContents.send('call-float-action', action)
@@ -702,27 +251,19 @@ ipcMain.handle('set-call-float-always-on-top', (_event, onTop: boolean) => {
   }
 })
 
+// ─── Daily plan & misc IPC ────────────────────────────────────────────────────
+
 ipcMain.handle('get-api-config', async () => {
-  const token = getToken()
-  const apiBase = store.get('apiBase') || 'https://bundy.40h.studio'
-  return { apiBase, token }
+  return { apiBase: getApiBase(), token: getToken() }
 })
 
 ipcMain.handle('send-crash-report', async (_event, note: string) => {
   await sendUserReport(note)
 })
 
-ipcMain.handle('get-daily-plan', async () => {
-  return getDailyPlan()
-})
-
-ipcMain.handle('ensure-daily-plan', async () => {
-  return ensureDailyPlan()
-})
-
-ipcMain.handle('get-projects', async () => {
-  return getProjects()
-})
+ipcMain.handle('get-daily-plan', async () => getDailyPlan())
+ipcMain.handle('ensure-daily-plan', async () => ensureDailyPlan())
+ipcMain.handle('get-projects', async () => getProjects())
 
 ipcMain.handle('add-plan-item', async (_event, projectName: string, details: string) => {
   return addPlanItem(projectName, details)
@@ -746,10 +287,8 @@ ipcMain.handle('submit-report-with-plan', async (_event, content: string, planIt
 app.whenReady().then(() => {
   app.dock?.hide()
 
-  // ── Migrate token from old electron-store field to OS keychain ────────────
   migrateToken()
 
-  // ── Token expiry handler — fires when server returns 401 ─────────────────
   setTokenExpiredHandler(() => {
     stopPoller()
     stopTrayTimer()
@@ -762,12 +301,12 @@ app.whenReady().then(() => {
       popupWin.webContents.send('token-expired')
     }
   })
-  // ── Online state change — drain queue when connection restored ───────────
+
   setOnlineStateChangeHandler((online) => {
     if (online) void drainActionQueue().then(() => void pollAndPush())
     broadcastOnlineState()
   })
-  // ── Crash reporter ──────────────────────────────────────────────────────────
+
   initCrashReporter()
 
   // ── Auto-updater ────────────────────────────────────────────────────────────
@@ -775,91 +314,73 @@ app.whenReady().then(() => {
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('update-available', (info) => {
-    pendingUpdateVersion = info.version
+    setPendingUpdateVersion(info.version)
     flushUpdateState()
   })
-
   autoUpdater.on('download-progress', (progress) => {
-    pendingDownloadPercent = Math.round(progress.percent)
+    setPendingDownloadPercent(Math.round(progress.percent))
     flushUpdateState()
   })
-
   autoUpdater.on('update-downloaded', () => {
-    updateDownloaded = true
-    pendingDownloadPercent = 100
+    setUpdateDownloaded(true)
+    setPendingDownloadPercent(100)
     flushUpdateState()
-    // Don't force-restart — let the user choose when to restart via the UI.
-    // The app will also install on next quit (autoInstallOnAppQuit = true).
   })
 
-  // Check on startup (delay 10s so the app is fully loaded first)
   setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 10_000)
-  // Fallback: check every 30 minutes (primary detection is via SSE reconnect)
   setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 30 * 60 * 1_000)
 
-  tray = new Tray(getTrayIcon(false))
-  tray.setToolTip('Bundy')
+  // ── Tray ────────────────────────────────────────────────────────────────────
+  const trayInstance = new Tray(getTrayIcon(false))
+  trayInstance.setToolTip('Bundy')
+  setTray(trayInstance)
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open Dashboard', click: () => void openFullWindow() },
     { type: 'separator' },
-    {
-      label: 'Open in Browser',
-      click: () => void shell.openExternal(store.get('apiBase') || 'https://bundy.40h.studio')
-    },
+    { label: 'Open in Browser', click: () => void shell.openExternal(getApiBase()) },
     { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() }
+    { label: 'Quit', click: () => app.quit() },
   ])
+  trayInstance.on('click', () => void openFullWindow())
+  trayInstance.on('right-click', () => trayInstance.popUpContextMenu(contextMenu))
 
-  tray.on('click', () => void openFullWindow())
-  tray.on('right-click', () => tray?.popUpContextMenu(contextMenu))
-
-  // Auto-start services if token already stored
+  // ── Auto-start if already logged in ─────────────────────────────────────────
   if (getToken()) {
     startPoller()
-    // Open the full dashboard as the primary interface on startup
     void openFullWindow()
 
-    // If we restarted after an automatic update, resume the user's session.
-    // The flag is only set when quitting via quitAndInstall — not on lid close
-    // or intentional quit (both of those call breakOnQuit() instead).
     if (store.get('restartForUpdate')) {
       store.set('restartForUpdate', false)
       setTimeout(async () => {
         try {
           const status = await getBundyStatus()
-          // Only resume if the user is clocked in but on break (paused for update)
           if (status.isClockedIn && !status.isTracking) {
             await doAction('break-end')
             await pollAndPush()
           }
-        } catch {
-          // non-fatal: network may not be up yet
-        }
+        } catch { /* non-fatal */ }
       }, 2_000)
     }
   }
 
-  // ── Lid close / screen lock → auto-break ────────────────────────────────────
+  // ── Lid close / screen lock / shutdown → auto-break ────────────────────────
   async function autoBreakOnSuspend(): Promise<void> {
     if (!getToken()) return
+    if (!cachedStatus?.isTracking) return
     try {
-      const status = await getBundyStatus()
-      if (status.isTracking) {
-        await doAction('break-start')
-        await pollAndPush()
-      }
+      await doAction('break-start')
     } catch {
-      // non-fatal: network may already be offline on lid close
+      enqueueAction('break-start')
     }
   }
-
   powerMonitor.on('suspend', () => void autoBreakOnSuspend())
   powerMonitor.on('lock-screen', () => void autoBreakOnSuspend())
+  powerMonitor.on('shutdown', () => void autoBreakOnSuspend())
 })
 
 app.on('window-all-closed', () => {
-  // Keep running in tray — don't quit when popup is closed
+  // Keep running in tray
 })
 
 let isQuitting = false
@@ -872,7 +393,6 @@ app.on('before-quit', (event) => {
   stopServices()
   const token = getToken()
   if (token && !store.get('restartForUpdate')) {
-    // Await the quit call (marks offline + auto-break) before actually exiting
     breakOnQuit().finally(() => app.exit(0))
   } else {
     app.exit(0)

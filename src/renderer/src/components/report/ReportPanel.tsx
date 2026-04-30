@@ -4,12 +4,13 @@ import {
   Plus, ChevronRight, ChevronDown, FolderOpen, Building2, Briefcase,
   MoreHorizontal, Trash2, Pencil, FileText, Upload, Folder, File,
   ArrowLeft, Loader, Download, User, Grid, List, Columns, Image,
-  Link2, X, Clock, RotateCcw, AlertCircle,
+  Link2, X, Clock, RotateCcw, AlertCircle, Globe,
 } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig, Auth } from '../../types'
 import { AuthImage } from '../messages/Attachments'
 import DocumentEditor from './DocumentEditor'
+import FeedbackViewer from './FeedbackViewer'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,13 @@ interface RFile {
   uploader: { id: string; username: string; alias: string | null; avatarUrl: string | null }
 }
 
+interface RLink {
+  id: string; url: string; title: string; folderId: string | null; order: number
+  createdAt: string; updatedAt: string
+  creator: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+  _count: { pins: number }
+}
+
 interface DocDetail {
   id: string; title: string; content: string; folderId: string | null; projectId: string
   createdAt: string; updatedAt: string
@@ -42,14 +50,15 @@ interface DocDetail {
 interface Selection { clientId: string; projectId: string }
 
 type ViewMode = 'icons' | 'list' | 'columns' | 'gallery'
-type DragItem = { type: 'folder' | 'document' | 'file'; id: string }
-type SelectableItem = { type: 'folder' | 'document' | 'file'; id: string; name: string }
+type DragItem = { type: 'folder' | 'document' | 'file' | 'link'; id: string }
+type SelectableItem = { type: 'folder' | 'document' | 'file' | 'link'; id: string; name: string }
 
 interface ColumnEntry {
   parentId: string | null
   folders: RFolder[]
   documents: RDocument[]
   files: RFile[]
+  links: RLink[]
   selectedId: string | null
 }
 
@@ -100,18 +109,22 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState('')
   const [menuId, setMenuId] = useState<string | null>(null)
-  const [ctxMenu, setCtxMenu] = useState<{ type: 'folder' | 'document' | 'file', id: string, x: number, y: number, name: string, item?: any } | null>(null)
+  const [ctxMenu, setCtxMenu] = useState<{ type: 'folder' | 'document' | 'file' | 'link', id: string, x: number, y: number, name: string, item?: any } | null>(null)
 
   // content state
   const [folders, setFolders] = useState<RFolder[]>([])
   const [documents, setDocuments] = useState<RDocument[]>([])
   const [files, setFiles] = useState<RFile[]>([])
+  const [links, setLinks] = useState<RLink[]>([])
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [folderPath, setFolderPath] = useState<{ id: string | null; name: string }[]>([])
   const [contentLoading, setContentLoading] = useState(false)
 
   // document editor
   const [openDoc, setOpenDoc] = useState<DocDetail | null>(null)
+  // feedback link viewer
+  const [openLinkId, setOpenLinkId] = useState<string | null>(null)
+  const [linkUrlInput, setLinkUrlInput] = useState<string | null>(null)
   const [docLoading, setDocLoading] = useState(false)
   const [docSaving, setDocSaving] = useState(false)
   const [docTitle, setDocTitle] = useState('')
@@ -197,6 +210,12 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   }, [apiFetch])
 
   useEffect(() => { loadClients() }, [loadClients])
+
+  // Poll for client/project updates every 5s so other users' changes appear quickly
+  useEffect(() => {
+    const id = setInterval(loadClients, 5000)
+    return () => clearInterval(id)
+  }, [loadClients])
 
   // ── Handle pending report deep-link ─────────────────────────────────────
 
@@ -297,6 +316,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       setFolders(data.folders)
       setDocuments(data.documents)
       setFiles(data.files)
+      setLinks(data.links || [])
     }
     setContentLoading(false)
   }, [apiFetch])
@@ -304,6 +324,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   useEffect(() => {
     if (selection) {
       setOpenDoc(null)
+      setOpenLinkId(null)
       setCurrentFolderId(null)
       setFolderPath([])
       loadContents(selection.projectId, null)
@@ -501,6 +522,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   async function openDocument(docId: string) {
     setDocLoading(true)
+    setOpenLinkId(null)
     const res = await apiFetch(`/api/report/documents/${docId}`)
     if (res.ok) {
       const { document: doc } = await res.json()
@@ -555,6 +577,51 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     setSubColumns(prev => prev.map(sc => ({ ...sc, documents: sc.documents.map(d => d.id === docId ? { ...d, title: trimmed } : d) })))
     setEditingId(null)
     await apiFetch(`/api/report/documents/${docId}`, {
+      method: 'PATCH', body: JSON.stringify({ title: trimmed }),
+    })
+  }
+
+  // ── Feedback link CRUD ──────────────────────────────────────────────────
+
+  function createLink() {
+    if (!selection) return
+    setLinkUrlInput('')
+  }
+
+  async function submitLinkUrl() {
+    if (!selection || !linkUrlInput?.trim()) return
+    const url = linkUrlInput.trim()
+    setLinkUrlInput(null)
+    const res = await apiFetch(`/api/report/projects/${selection.projectId}/contents`, {
+      method: 'POST', body: JSON.stringify({ type: 'link', url, folderId: currentFolderId }),
+    })
+    if (res.ok) {
+      const { link } = await res.json()
+      setLinks(prev => [...prev, { ...link, _count: { pins: 0 } }])
+    }
+  }
+
+  function openFeedbackLink(linkId: string) {
+    // Open feedback viewer in the system browser with auto-login
+    // Always use the public domain for browser URLs (config.apiBase may be localhost in dev)
+    const publicBase = 'https://bundy.40h.studio'
+    const bridgeUrl = `${publicBase}/api/auth/desktop-bridge?token=${encodeURIComponent(config.token)}&redirect=${encodeURIComponent(`/report/feedback/${linkId}`)}`
+    window.electronAPI.openExternal(bridgeUrl)
+  }
+
+  async function deleteLink(linkId: string) {
+    setLinks(prev => prev.filter(l => l.id !== linkId))
+    if (openLinkId === linkId) setOpenLinkId(null)
+    setMenuId(null)
+    setCtxMenu(null)
+    await apiFetch(`/api/report/links/${linkId}`, { method: 'DELETE' })
+  }
+
+  async function renameLink(linkId: string, title: string) {
+    const trimmed = title.trim() || 'Untitled'
+    setLinks(prev => prev.map(l => l.id === linkId ? { ...l, title: trimmed } : l))
+    setEditingId(null)
+    await apiFetch(`/api/report/links/${linkId}`, {
       method: 'PATCH', body: JSON.stringify({ title: trimmed }),
     })
   }
@@ -703,13 +770,13 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   // ── Share link ──────────────────────────────────────────────────────────
 
-  function buildSharePath(itemType: 'project' | 'folder' | 'document' | 'file', itemId?: string) {
+  function buildSharePath(itemType: 'project' | 'folder' | 'document' | 'file' | 'link', itemId?: string) {
     if (!selection) return ''
     if (itemType === 'project') return `/report/${selection.clientId}/${selection.projectId}`
     return `/report/${selection.clientId}/${selection.projectId}/${itemType}/${itemId}`
   }
 
-  async function copyShareLink(itemType: 'project' | 'folder' | 'document' | 'file', itemId?: string) {
+  async function copyShareLink(itemType: 'project' | 'folder' | 'document' | 'file' | 'link', itemId?: string) {
     const path = buildSharePath(itemType, itemId)
     if (!path) return
     const link = `${config.apiBase}${path}`
@@ -790,7 +857,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       itemEls.forEach(el => {
         const r = el.getBoundingClientRect()
         if (r.right > rx && r.left < rx + rw && r.bottom > ry && r.top < ry + rh) {
-          const type = el.getAttribute('data-sel-type') as 'folder' | 'document' | 'file'
+          const type = el.getAttribute('data-sel-type') as 'folder' | 'document' | 'file' | 'link'
           const id = el.getAttribute('data-sel-id')!
           const name = el.getAttribute('data-sel-name')!
           next.set(selKey(type, id), { type, id, name })
@@ -818,6 +885,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
             case 'folder': await deleteFolder(item.id); break
             case 'document': await deleteDocument(item.id); break
             case 'file': await deleteFile(item.id); break
+            case 'link': await deleteLink(item.id); break
           }
         }
         setSelectedItems(new Map())
@@ -839,8 +907,9 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     setSubColumns([]); setCol0Selected(null); setColPreview(null); setGalleryIdx(0)
   }, [selection?.projectId, currentFolderId])
 
-  async function handleColumnSelect(colIdx: number, type: 'folder' | 'document' | 'file', id: string, file?: RFile) {
+  async function handleColumnSelect(colIdx: number, type: 'folder' | 'document' | 'file' | 'link', id: string, file?: RFile) {
     if (type === 'document') { openDocument(id); return }
+    if (type === 'link') { openFeedbackLink(id); return }
 
     if (type === 'file') {
       if (colIdx === 0) { setCol0Selected(id); setSubColumns([]) }
@@ -857,7 +926,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     const res = await apiFetch(`/api/report/projects/${selection.projectId}/contents?folderId=${id}`)
     if (!res.ok) return
     const data = await res.json()
-    const entry: ColumnEntry = { parentId: id, folders: data.folders, documents: data.documents, files: data.files, selectedId: null }
+    const entry: ColumnEntry = { parentId: id, folders: data.folders, documents: data.documents, files: data.files, links: data.links || [], selectedId: null }
 
     if (colIdx === 0) {
       setCol0Selected(id)
@@ -1236,6 +1305,9 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
               </div>
             </div>
           </div>
+        ) : openLinkId ? (
+          /* ── Feedback Link Viewer ─────────────────────────────────────── */
+          <FeedbackViewer linkId={openLinkId} config={config} onBack={() => { setOpenLinkId(null); if (selection) loadContents(selection.projectId, currentFolderId) }} />
         ) : (
           /* ── Project Browser ──────────────────────────────────────────── */
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}
@@ -1313,6 +1385,11 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                 onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
                 <FileText size={14} /> <span>Document</span>
+              </button>
+              <button onClick={createLink} title="New Feedback Link" style={toolbarBtn}
+                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                <Globe size={14} /> <span>Link</span>
               </button>
               <button onClick={() => fileInputRef.current?.click()} title="Upload File" style={toolbarBtn}
                 onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
@@ -1435,6 +1512,43 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                 onRename={() => { setEditingId(doc.id); setEditingValue(doc.title); setMenuId(null) }}
                                 onDelete={() => { setMenuId(null); setConfirmDelete({ name: doc.title, action: () => deleteDocument(doc.id) }) }}
                                 onShare={() => copyShareLink('document', doc.id)}
+                                onClose={() => setMenuId(null)} />
+                            )}
+                          </div>
+                        ))}
+
+                        {links.map(link => (
+                          <div key={link.id} data-sel-type="link" data-sel-id={link.id} data-sel-name={link.title || link.url}
+                            onClick={e => handleItemClick(e, { type: 'link', id: link.id, name: link.title || link.url })}
+                            onDoubleClick={() => openFeedbackLink(link.id)}
+                            onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'link', id: link.id, x: e.clientX, y: e.clientY, name: link.title || link.url }); setMenuId(null) }}
+                            style={{
+                              width: 110, padding: '12px 8px', borderRadius: 8, textAlign: 'center', cursor: 'pointer', position: 'relative',
+                              background: isItemSelected('link', link.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
+                              border: isItemSelected('link', link.id) ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
+                              transition: 'background 0.1s',
+                            }}
+                            onMouseEnter={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = C.bgHover }}
+                            onMouseLeave={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = 'transparent' }}>
+                            <Globe size={36} style={{ color: '#a78bfa', marginBottom: 6 }} />
+                            {editingId === link.id ? (
+                              <InlineInput value={editingValue} onChange={setEditingValue}
+                                onConfirm={() => renameLink(link.id, editingValue)} onCancel={() => setEditingId(null)} />
+                            ) : (
+                              <div style={{ fontSize: 11, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{link.title || new URL(link.url).hostname}</div>
+                            )}
+                            <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>{link._count.pins} pin{link._count.pins !== 1 ? 's' : ''}</div>
+                            <button onClick={e => { e.stopPropagation(); setMenuId(menuId === link.id ? null : link.id) }}
+                              style={{ ...iconBtnTiny, position: 'absolute', top: 4, right: 4, opacity: 0 }}
+                              onMouseEnter={e => { e.currentTarget.style.opacity = '1' }}
+                              onMouseLeave={e => { e.currentTarget.style.opacity = '0' }}>
+                              <MoreHorizontal size={12} />
+                            </button>
+                            {menuId === link.id && (
+                              <ContextMenu
+                                onRename={() => { setEditingId(link.id); setEditingValue(link.title || link.url); setMenuId(null) }}
+                                onDelete={() => { setMenuId(null); setConfirmDelete({ name: link.title || link.url, action: () => deleteLink(link.id) }) }}
+                                onShare={() => copyShareLink('link', link.id)}
                                 onClose={() => setMenuId(null)} />
                             )}
                           </div>
@@ -1568,6 +1682,43 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                         </div>
                       ))}
 
+                      {links.map(link => (
+                        <div key={link.id} data-sel-type="link" data-sel-id={link.id} data-sel-name={link.title || link.url}
+                          onClick={e => handleItemClick(e, { type: 'link', id: link.id, name: link.title || link.url })}
+                          onDoubleClick={() => openFeedbackLink(link.id)}
+                          onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'link', id: link.id, x: e.clientX, y: e.clientY, name: link.title || link.url }); setMenuId(null) }}
+                          style={{ ...rowStyle, position: 'relative', background: isItemSelected('link', link.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent' }}
+                          onMouseEnter={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = C.bgHover }}
+                          onMouseLeave={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = 'transparent' }}>
+                          <Globe size={16} style={{ color: '#a78bfa', flexShrink: 0 }} />
+                          {editingId === link.id ? (
+                            <InlineInput value={editingValue} onChange={setEditingValue}
+                              onConfirm={() => renameLink(link.id, editingValue)} onCancel={() => setEditingId(null)} />
+                          ) : (
+                            <span onClick={() => openFeedbackLink(link.id)}
+                              style={{ flex: 1, fontSize: 13, color: C.text, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {link.title || new URL(link.url).hostname}
+                            </span>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                            <span style={{ fontSize: 10, color: C.textMuted }}>{link._count.pins} pin{link._count.pins !== 1 ? 's' : ''}</span>
+                            <button onClick={e => { e.stopPropagation(); setMenuId(menuId === link.id ? null : link.id) }}
+                              style={iconBtnSmall}
+                              onMouseEnter={e => { e.currentTarget.style.color = C.text }}
+                              onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}>
+                              <MoreHorizontal size={14} />
+                            </button>
+                          </div>
+                          {menuId === link.id && (
+                            <ContextMenu
+                              onRename={() => { setEditingId(link.id); setEditingValue(link.title || link.url); setMenuId(null) }}
+                              onDelete={() => { setMenuId(null); setConfirmDelete({ name: link.title || link.url, action: () => deleteLink(link.id) }) }}
+                              onShare={() => copyShareLink('link', link.id)}
+                              onClose={() => setMenuId(null)} />
+                          )}
+                        </div>
+                      ))}
+
                       {files.map(file => (
                         <div key={file.id} data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                           draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
@@ -1609,8 +1760,8 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                   {/* ── COLUMNS VIEW (Finder-style) ───────────────────── */}
                   {viewMode === 'columns' && (() => {
                     const allCols = [
-                      { folders, documents, files, selectedId: col0Selected },
-                      ...subColumns.map(sc => ({ folders: sc.folders, documents: sc.documents, files: sc.files, selectedId: sc.selectedId })),
+                      { folders, documents, files, links, selectedId: col0Selected },
+                      ...subColumns.map(sc => ({ folders: sc.folders, documents: sc.documents, files: sc.files, links: sc.links || [], selectedId: sc.selectedId })),
                     ]
                     return (
                       <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
@@ -1723,6 +1874,31 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   </div>
                                 )
                               })}
+                              {(col.links || []).map(link => {
+                                const isSel = col.selectedId === link.id
+                                const mSel = isItemSelected('link', link.id)
+                                return (
+                                  <div key={link.id}
+                                    data-sel-type="link" data-sel-id={link.id} data-sel-name={link.title || link.url}
+                                    onClick={e => { if (handleItemClick(e, { type: 'link', id: link.id, name: link.title || link.url })) return; handleColumnSelect(colIdx, 'link', link.id) }}
+                                    onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'link', id: link.id, x: e.clientX, y: e.clientY, name: link.title || link.url }); setMenuId(null) }}
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
+                                      cursor: 'pointer', fontSize: 12,
+                                      background: mSel ? 'rgba(59, 130, 246, 0.18)' : isSel ? C.accent : 'transparent',
+                                      color: isSel && !mSel ? '#fff' : C.text,
+                                      outline: mSel ? `1px solid ${C.accent}` : 'none',
+                                      outlineOffset: -2,
+                                      borderRadius: mSel ? 4 : 0,
+                                      transition: 'background 0.1s',
+                                    }}
+                                    onMouseEnter={e => { if (!isSel && !mSel) e.currentTarget.style.background = C.bgHover }}
+                                    onMouseLeave={e => { if (!isSel && !mSel) e.currentTarget.style.background = 'transparent' }}>
+                                    <Globe size={14} style={{ color: isSel ? '#fff' : '#a78bfa', flexShrink: 0 }} />
+                                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{link.title || new URL(link.url).hostname}</span>
+                                  </div>
+                                )
+                              })}
                               {col.files.map(file => {
                                 const isSel = col.selectedId === file.id
                                 const mSel = isItemSelected('file', file.id)
@@ -1756,7 +1932,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   </div>
                                 )
                               })}
-                              {col.folders.length === 0 && col.documents.length === 0 && col.files.length === 0 && (
+                              {col.folders.length === 0 && col.documents.length === 0 && col.files.length === 0 && (col.links || []).length === 0 && (
                                 <div style={{ padding: '16px 8px', textAlign: 'center', color: C.textMuted, fontSize: 11 }}>Empty</div>
                               )}
                             </div>
@@ -1816,10 +1992,11 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
                   {/* ── GALLERY VIEW (Finder-style preview + filmstrip) ── */}
                   {viewMode === 'gallery' && (() => {
-                    type GItem = { kind: 'folder'; data: RFolder } | { kind: 'document'; data: RDocument } | { kind: 'file'; data: RFile }
+                    type GItem = { kind: 'folder'; data: RFolder } | { kind: 'document'; data: RDocument } | { kind: 'file'; data: RFile } | { kind: 'link'; data: RLink }
                     const items: GItem[] = [
                       ...folders.map(f => ({ kind: 'folder' as const, data: f })),
                       ...documents.map(d => ({ kind: 'document' as const, data: d })),
+                      ...links.map(l => ({ kind: 'link' as const, data: l })),
                       ...files.map(f => ({ kind: 'file' as const, data: f })),
                     ]
                     const safeIdx = items.length > 0 ? Math.min(galleryIdx, items.length - 1) : -1
@@ -1887,6 +2064,16 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   </div>
                                 )
                               )}
+                              {sel && sel.kind === 'link' && (
+                                <div style={{ textAlign: 'center', cursor: 'pointer' }}
+                                  onDoubleClick={() => openFeedbackLink(sel.data.id)}>
+                                  <Globe size={80} style={{ color: '#a78bfa', opacity: 0.7 }} />
+                                  <div style={{ fontSize: 14, color: C.text, marginTop: 8, fontWeight: 500 }}>{(sel.data as RLink).title || new URL((sel.data as RLink).url).hostname}</div>
+                                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+                                    {(sel.data as RLink)._count.pins} pin{(sel.data as RLink)._count.pins !== 1 ? 's' : ''} · Double-click to open
+                                  </div>
+                                </div>
+                              )}
                             </div>
 
                             {/* Filmstrip thumbnails */}
@@ -1904,11 +2091,12 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                     onDoubleClick={() => {
                                       if (item.kind === 'folder') navigateToFolder(item.data.id, (item.data as RFolder).name)
                                       else if (item.kind === 'document') openDocument(item.data.id)
+                                      else if (item.kind === 'link') openFeedbackLink(item.data.id)
                                       else if (item.kind === 'file' && isImageFile(item.data as RFile)) setLightboxFile(item.data as RFile)
                                     }}
                                     onContextMenu={e => {
                                       e.preventDefault(); e.stopPropagation()
-                                      const name = item.kind === 'folder' ? (item.data as RFolder).name : item.kind === 'document' ? (item.data as RDocument).title : (item.data as RFile).name
+                                      const name = item.kind === 'folder' ? (item.data as RFolder).name : item.kind === 'document' ? (item.data as RDocument).title : item.kind === 'link' ? ((item.data as RLink).title || (item.data as RLink).url) : (item.data as RFile).name
                                       setCtxMenu({ type: item.kind, id: item.data.id, x: e.clientX, y: e.clientY, name, item: item.kind === 'file' ? item.data : undefined })
                                       setMenuId(null)
                                     }}
@@ -1928,6 +2116,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                     }}>
                                     {item.kind === 'folder' && <Folder size={24} style={{ color: C.accent }} />}
                                     {item.kind === 'document' && <FileText size={24} style={{ color: C.accent }} />}
+                                    {item.kind === 'link' && <Globe size={24} style={{ color: '#a78bfa' }} />}
                                     {item.kind === 'file' && (
                                       isImageFile(item.data as RFile) ? (
                                         <AuthImage src={`${config.apiBase}${(item.data as RFile).url}`} config={config}
@@ -2111,6 +2300,26 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                 </button>
                 <div style={{ height: 1, background: C.separator, margin: '4px 0' }} />
                 <button onClick={() => { const id = ctxMenu.id, name = ctxMenu.name; setCtxMenu(null); setConfirmDelete({ name, action: () => deleteFile(id) }) }} style={{ ...menuItemStyle, color: C.danger }}
+                  onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                  <Trash2 size={13} /> Delete
+                </button>
+              </>
+            )}
+            {ctxMenu.type === 'link' && (
+              <>
+                <button onClick={() => { openFeedbackLink(ctxMenu.id); setCtxMenu(null) }} style={menuItemStyle}
+                  onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                  <Globe size={13} /> Open
+                </button>
+                <button onClick={() => { setEditingId(ctxMenu.id); setEditingValue(ctxMenu.name); setCtxMenu(null) }} style={menuItemStyle}
+                  onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                  <Pencil size={13} /> Rename
+                </button>
+                <div style={{ height: 1, background: C.separator, margin: '4px 0' }} />
+                <button onClick={() => { const id = ctxMenu.id, name = ctxMenu.name; setCtxMenu(null); setConfirmDelete({ name, action: () => deleteLink(id) }) }} style={{ ...menuItemStyle, color: C.danger }}
                   onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
                   <Trash2 size={13} /> Delete
@@ -2426,6 +2635,59 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       )}
 
       {/* ── Confirm Delete Dialog ─────────────────────────────────── */}
+      {linkUrlInput !== null && createPortal(
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 250, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+            onClick={() => setLinkUrlInput(null)} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 251,
+            background: C.bgFloating, borderRadius: 12, padding: '24px 28px', minWidth: 380, maxWidth: 460,
+            boxShadow: C.shadowHigh, border: `1px solid ${C.separator}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(167,139,250,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Globe size={18} style={{ color: '#a78bfa' }} />
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Add Feedback Link</div>
+            </div>
+            <input
+              autoFocus
+              value={linkUrlInput}
+              onChange={e => setLinkUrlInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submitLinkUrl(); if (e.key === 'Escape') setLinkUrlInput(null) }}
+              placeholder="https://example.com"
+              style={{
+                width: '100%', padding: '10px 12px', borderRadius: 8, border: `1px solid ${C.separator}`,
+                background: C.bgHover, color: C.text, fontSize: 13, outline: 'none', boxSizing: 'border-box',
+                marginBottom: 20,
+              }}
+              onFocus={e => { e.currentTarget.style.borderColor = C.accent }}
+              onBlur={e => { e.currentTarget.style.borderColor = C.separator }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button onClick={() => setLinkUrlInput(null)} style={{
+                padding: '7px 16px', borderRadius: 8, border: `1px solid ${C.separator}`, background: 'transparent',
+                color: C.text, fontSize: 13, cursor: 'pointer', fontWeight: 500,
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                Cancel
+              </button>
+              <button onClick={submitLinkUrl} disabled={!linkUrlInput?.trim()} style={{
+                padding: '7px 16px', borderRadius: 8, border: 'none', background: !linkUrlInput?.trim() ? C.bgHover : C.accent,
+                color: '#fff', fontSize: 13, cursor: !linkUrlInput?.trim() ? 'default' : 'pointer', fontWeight: 500,
+                opacity: !linkUrlInput?.trim() ? 0.5 : 1,
+              }}
+                onMouseEnter={e => { if (linkUrlInput?.trim()) e.currentTarget.style.opacity = '0.85' }}
+                onMouseLeave={e => { if (linkUrlInput?.trim()) e.currentTarget.style.opacity = '1' }}>
+                Add Link
+              </button>
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
+
       {confirmDelete && createPortal(
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 250, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}

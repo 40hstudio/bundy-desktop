@@ -1,15 +1,16 @@
 import React, { useState } from 'react'
-import { Hash, Phone, X } from 'lucide-react'
+import { Hash, Phone, Volume2, X } from 'lucide-react'
 import { C } from '../../theme'
 import type { Conversation } from '../../types'
 import { Avatar } from '../shared/Avatar'
 
 export function ConvRow({
-  conv, selected, typingUsers, hasActiveCall, isMentioned,
+  conv, selected, typingUsers, hasActiveCall, isMentioned, partnerInVc, onJoinVc,
   onClick, onClose, getPresence, getTrackerStatus,
 }: {
   conv: Conversation; selected: boolean
   typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean
+  partnerInVc?: string | null; onJoinVc?: () => void
   onClick: () => void; onClose?: () => void
   getPresence?: (userId: string) => 'active' | 'recent' | 'away'
   getTrackerStatus?: (userId: string) => string | null
@@ -91,8 +92,21 @@ export function ConvRow({
           )}
         </div>
 
-        {hasActiveCall && (
-          <Phone size={13} color={C.success} style={{ flexShrink: 0, animation: 'pulse 2s infinite' }} />
+        {hasActiveCall && !partnerInVc && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+            <Phone size={13} color={C.success} style={{ animation: 'pulse 2s infinite' }} />
+            <span style={{ fontSize: 9, color: C.success, fontWeight: 600 }}>On call</span>
+          </span>
+        )}
+        {partnerInVc && (
+          <button
+            onClick={e => { e.stopPropagation(); onJoinVc?.() }}
+            title={`Join ${partnerInVc}`}
+            style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', padding: '1px 4px', borderRadius: 4 }}
+          >
+            <Volume2 size={13} color={C.success} style={{ animation: 'pulse 2s infinite' }} />
+            <span style={{ fontSize: 9, color: C.success, fontWeight: 600, maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{partnerInVc}</span>
+          </button>
         )}
         {hasUnread && !selected && (
           <div style={{

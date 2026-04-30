@@ -9,9 +9,7 @@ import type { ApiConfig, UserInfo } from '../../types'
 import { Avatar } from '../shared/Avatar'
 import { EmojiPicker } from './EmojiPicker'
 
-// ─── Tenor GIF API (v2, free tier) ───────────────────────────────────────────
-const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ' // Google/Tenor public API key
-const TENOR_CLIENT = 'bundy_desktop'
+// ─── Tenor GIF search (proxied through server) ──────────────────────────────
 const TENOR_LIMIT = 30
 
 interface TenorGif {
@@ -23,11 +21,12 @@ interface TenorGif {
   height: number
 }
 
-async function searchTenorGifs(query: string): Promise<TenorGif[]> {
-  const endpoint = query.trim()
-    ? `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=${TENOR_KEY}&client_key=${TENOR_CLIENT}&limit=${TENOR_LIMIT}&media_filter=gif,tinygif`
-    : `https://tenor.googleapis.com/v2/featured?key=${TENOR_KEY}&client_key=${TENOR_CLIENT}&limit=${TENOR_LIMIT}&media_filter=gif,tinygif`
-  const res = await fetch(endpoint)
+async function searchTenorGifs(query: string, apiBase: string, token: string): Promise<TenorGif[]> {
+  const q = query.trim()
+  const endpoint = `${apiBase}/api/tenor?q=${encodeURIComponent(q)}&limit=${TENOR_LIMIT}`
+  const res = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
   if (!res.ok) return []
   const data = await res.json()
   return (data.results ?? []).map((r: any) => ({
@@ -61,6 +60,10 @@ function convertNode(node: Node): string {
   // Handle mention badges
   if (el.classList.contains('bundy-mention-badge') && el.dataset.username) {
     return `@${el.dataset.username} `
+  }
+  // Handle upload chips (image/file attachments)
+  if (el.classList.contains('bundy-upload-chip') && el.dataset.md) {
+    return el.dataset.md
   }
   switch (tag) {
     case 'strong': case 'b': return inner ? `**${inner}**` : ''
@@ -113,15 +116,20 @@ function ensureEditorStyles() {
 
 export function MessageInput({
   placeholder, config, channelId, onTyping, input, setInput, sendFn, sending,
+  onUpload, hideGifs, hideSchedule,
 }: {
   placeholder: string; config: ApiConfig; channelId: string
   onTyping: () => void; input: string; setInput: (v: string) => void
   sendFn: () => void; sending: boolean
   onSend?: (content: string) => void
+  onUpload?: (file: File) => Promise<{ url: string; filename: string }>
+  hideGifs?: boolean
+  hideSchedule?: boolean
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const [hasContent, setHasContent] = useState(false)
   const [showFormatBar, setShowFormatBar] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
@@ -174,7 +182,7 @@ export function MessageInput({
     if (gifSearchTimer.current) clearTimeout(gifSearchTimer.current)
     setLoadingGifs(true)
     gifSearchTimer.current = setTimeout(() => {
-      searchTenorGifs(gifQuery).then(setGifs).catch(() => setGifs([])).finally(() => setLoadingGifs(false))
+      searchTenorGifs(gifQuery, config.apiBase, config.token).then(setGifs).catch(() => setGifs([])).finally(() => setLoadingGifs(false))
     }, gifQuery ? 400 : 0)
     return () => { if (gifSearchTimer.current) clearTimeout(gifSearchTimer.current) }
   }, [gifQuery, showGifPicker])
@@ -233,10 +241,14 @@ export function MessageInput({
     const match = textBefore.match(/@(\w*)$/)
     if (match) {
       const q = match[1].toLowerCase()
-      const results = allUsers.filter(u =>
+      // Special broadcast mentions
+      const broadcastItems: UserInfo[] = []
+      if ('all'.startsWith(q)) broadcastItems.push({ id: 'all', username: 'all', alias: 'all', avatarUrl: null } as UserInfo)
+      if ('here'.startsWith(q)) broadcastItems.push({ id: 'here', username: 'here', alias: 'here', avatarUrl: null } as UserInfo)
+      const userResults = allUsers.filter(u =>
         (u.alias?.toLowerCase().includes(q) || u.username.toLowerCase().includes(q))
       ).slice(0, 6)
-      setMentionResults(results)
+      setMentionResults([...broadcastItems, ...userResults])
       setMentionIndex(0)
     } else {
       setMentionResults([])
@@ -369,6 +381,16 @@ export function MessageInput({
   }
 
   function handlePaste(e: React.ClipboardEvent) {
+    // Handle pasted images
+    const items = e.clipboardData.items
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        e.preventDefault()
+        const file = items[i].getAsFile()
+        if (file) uploadFileBlob(file)
+        return
+      }
+    }
     e.preventDefault()
     const text = e.clipboardData.getData('text/plain')
     document.execCommand('insertText', false, text)
@@ -421,25 +443,53 @@ export function MessageInput({
   }
 
   async function uploadFileBlob(file: File) {
-    if (!channelId) return
+    if (!channelId && !onUpload) return
     setUploading(true)
     try {
-      const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`${config.apiBase}/api/channels/${channelId}/attachments`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}` },
-        body: form,
-      })
-      if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
-      const { url, filename } = await res.json() as { url: string; filename: string }
-      const content = `[📎 ${filename}](${config.apiBase}${url})`
-      await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      })
-    } catch { /* ignore */ } finally { setUploading(false) }
+      let url: string, filename: string
+      if (onUpload) {
+        const result = await onUpload(file)
+        url = result.url
+        filename = result.filename
+      } else {
+        const form = new FormData()
+        form.append('file', file)
+        const res = await fetch(`${config.apiBase}/api/channels/${channelId}/attachments`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.token}` },
+          body: form,
+        })
+        if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+        const data = await res.json() as { url: string; filename: string }
+        url = data.url
+        filename = data.filename
+      }
+      const fullUrl = `${config.apiBase}${url}`
+      const isImage = /\.(jpe?g|png|gif|webp|avif|svg)$/i.test(filename)
+      const md = isImage
+        ? `![${filename}](${fullUrl})`
+        : `[📎 ${filename}](${fullUrl})`
+      // Insert styled chip into contentEditable, with data-md for htmlToMarkdown
+      const chipHtml = isImage
+        ? `<span class="bundy-upload-chip" data-md="${md.replace(/"/g, '&quot;')}" contenteditable="false" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;background:rgba(0,122,204,0.12);color:${C.accent};font-size:13px;font-weight:500;cursor:default;vertical-align:baseline">🖼 ${filename.replace(/</g, '&lt;')}</span>`
+        : `<span class="bundy-upload-chip" data-md="${md.replace(/"/g, '&quot;')}" contenteditable="false" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;background:rgba(0,122,204,0.12);color:${C.accent};font-size:13px;font-weight:500;cursor:default;vertical-align:baseline">📎 ${filename.replace(/</g, '&lt;')}</span>`
+      if (editorRef.current) {
+        editorRef.current.focus()
+        const existing = editorRef.current.innerHTML
+        if (existing && existing !== '<br>') {
+          editorRef.current.innerHTML = existing + '<br>' + chipHtml
+        } else {
+          editorRef.current.innerHTML = chipHtml
+        }
+        syncToParent()
+      } else {
+        setInput(prev => prev ? `${prev}\n${md}` : md)
+      }
+    } catch (err) {
+      console.error('[Upload] failed:', err)
+      setUploadError('Upload failed — please try again')
+      setTimeout(() => setUploadError(null), 4000)
+    } finally { setUploading(false) }
   }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -535,21 +585,32 @@ export function MessageInput({
           boxShadow: C.shadowHigh, overflow: 'hidden', zIndex: 50,
         }}>
           <div style={{ padding: '8px 12px 4px', fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Members</div>
-          {mentionResults.map((u, i) => (
-            <button key={u.id} onClick={() => insertMention(u)}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                background: i === mentionIndex ? C.bgHover : 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
-                transition: 'background 0.1s',
-              }}
-              onMouseEnter={() => setMentionIndex(i)}>
-              <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={28} />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{u.alias ?? u.username}</span>
-                <span style={{ fontSize: 11, color: C.textMuted }}>@{u.username}</span>
-              </div>
-            </button>
-          ))}
+          {mentionResults.map((u, i) => {
+            const isBroadcast = u.id === 'all' || u.id === 'here'
+            return (
+              <button key={u.id} onClick={() => insertMention(u)}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                  background: i === mentionIndex ? C.bgHover : 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={() => setMentionIndex(i)}>
+                {isBroadcast ? (
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: `${C.accent}20`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <AtSign size={14} color={C.accent} />
+                  </div>
+                ) : (
+                  <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={28} />
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>@{u.username}</span>
+                  {isBroadcast && (
+                    <span style={{ fontSize: 11, color: C.textMuted }}>{u.id === 'all' ? 'Notify everyone in this channel' : 'Notify online members'}</span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -682,7 +743,7 @@ export function MessageInput({
           boxShadow: C.shadowHigh, overflow: 'hidden', zIndex: 55, minWidth: 180,
         }}>
           {[
-            { icon: <Image size={16} />, label: 'GIF', action: () => { setShowMoreMenu(false); setShowGifPicker(true); setGifQuery('') } },
+            ...(!hideGifs ? [{ icon: <Image size={16} />, label: 'GIF', action: () => { setShowMoreMenu(false); setShowGifPicker(true); setGifQuery('') } }] : []),
             { icon: <Video size={16} />, label: 'Video clip', action: () => setShowMoreMenu(false) },
             { icon: <Mic size={16} />, label: 'Audio clip', action: () => setShowMoreMenu(false) },
           ].map((item, i) => (
@@ -711,6 +772,12 @@ export function MessageInput({
         {dragOver && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 122, 204, 0.08)', zIndex: 30, pointerEvents: 'none' }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: C.accent }}>Drop file to upload</span>
+          </div>
+        )}
+
+        {uploadError && (
+          <div style={{ padding: '6px 12px', fontSize: 12, color: '#ff4444', background: 'rgba(255,68,68,0.08)', borderBottom: `1px solid rgba(255,68,68,0.15)` }}>
+            {uploadError}
           </div>
         )}
 
@@ -814,7 +881,7 @@ export function MessageInput({
               disabled={!input.trim() || sending || uploading}
               title="Send message"
               style={{
-                width: 32, height: 32, borderRadius: '6px 0 0 6px', border: 'none',
+                width: 32, height: 32, borderRadius: hideSchedule ? 6 : '6px 0 0 6px', border: 'none',
                 background: input.trim() ? C.accent : 'transparent',
                 color: input.trim() ? '#fff' : C.textMuted,
                 cursor: input.trim() ? 'pointer' : 'default',
@@ -823,18 +890,22 @@ export function MessageInput({
               }}>
               {sending ? <Loader size={16} /> : <Send size={16} />}
             </button>
-            <div style={{ width: 1, height: 20, background: input.trim() ? 'rgba(255,255,255,0.2)' : C.separator }} />
-            <button title="Schedule message" onClick={() => { if (input.trim()) setShowScheduleMenu(s => !s) }}
-              style={{
-                width: 24, height: 32, borderRadius: '0 6px 6px 0', border: 'none',
-                background: input.trim() ? C.accent : 'transparent',
-                color: input.trim() ? '#fff' : C.textMuted,
-                cursor: input.trim() ? 'pointer' : 'default',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'background 0.15s, color 0.15s',
-              }}>
-              <ChevronDown size={14} />
-            </button>
+            {!hideSchedule && (
+              <>
+                <div style={{ width: 1, height: 20, background: input.trim() ? 'rgba(255,255,255,0.2)' : C.separator }} />
+                <button title="Schedule message" onClick={() => { if (input.trim()) setShowScheduleMenu(s => !s) }}
+                  style={{
+                    width: 24, height: 32, borderRadius: '0 6px 6px 0', border: 'none',
+                    background: input.trim() ? C.accent : 'transparent',
+                    color: input.trim() ? '#fff' : C.textMuted,
+                    cursor: input.trim() ? 'pointer' : 'default',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'background 0.15s, color 0.15s',
+                  }}>
+                  <ChevronDown size={14} />
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

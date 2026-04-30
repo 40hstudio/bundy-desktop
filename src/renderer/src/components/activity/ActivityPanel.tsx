@@ -4,8 +4,6 @@ import { ApiConfig } from '../../types'
 import { C, card } from '../../theme'
 import { formatMs, formatTime } from '../../utils/format'
 
-const DEMO_MODE = false
-
 interface ActivityScreenshot {
   id: string; url: string; capturedAt: string; displayIndex: number
   topApp: string | null; mouseActivePct: number | null; keyActivePct: number | null; activityPct: number | null
@@ -123,57 +121,6 @@ export default function ActivityPanel({ config }: { config: ApiConfig }) {
   }, [config, selectedDate])
 
   useEffect(() => {
-    if (DEMO_MODE) {
-      const base = new Date()
-      base.setHours(8, 0, 0, 0)
-      const t = (h: number, m: number) => { const d = new Date(base); d.setHours(h, m, 0, 0); return d.toISOString() }
-      const mkScreenshot = (idx: number, hour: number, min: number, app: string, actPct: number): ActivityScreenshot => ({
-        id: `ss${idx}`, url: '', capturedAt: t(hour, min), displayIndex: idx,
-        topApp: app, mouseActivePct: actPct + Math.floor(Math.random() * 10), keyActivePct: Math.max(0, actPct - 10), activityPct: actPct,
-      })
-      const mkWindow = (hour: number, min: number, mouse: number, key: number): ActivityWindow => ({
-        windowStart: t(hour, min), mouseEvents: mouse, keyEvents: key,
-        activeSeconds: 480, mouseActiveSeconds: Math.round(480 * mouse / 100), keyActiveSeconds: Math.round(480 * key / 100), totalSeconds: 600,
-      })
-      setData({
-        screenshots: [
-          mkScreenshot(0, 8, 10, 'VS Code', 85), mkScreenshot(1, 8, 20, 'VS Code', 78),
-          mkScreenshot(2, 8, 30, 'Chrome', 65), mkScreenshot(3, 8, 40, 'VS Code', 90),
-          mkScreenshot(4, 8, 50, 'Terminal', 72), mkScreenshot(5, 9, 0, 'VS Code', 88),
-          mkScreenshot(6, 9, 10, 'Figma', 55), mkScreenshot(7, 9, 20, 'VS Code', 82),
-          mkScreenshot(8, 9, 30, 'Chrome', 60), mkScreenshot(9, 9, 40, 'Slack', 45),
-          mkScreenshot(10, 10, 0, 'VS Code', 92), mkScreenshot(11, 10, 10, 'VS Code', 87),
-          mkScreenshot(12, 10, 40, 'VS Code', 80), mkScreenshot(13, 10, 50, 'Chrome', 58),
-          mkScreenshot(14, 11, 0, 'VS Code', 91), mkScreenshot(15, 11, 10, 'Terminal', 75),
-        ],
-        activity: [
-          mkWindow(8, 10, 80, 70), mkWindow(8, 20, 75, 65), mkWindow(8, 30, 60, 50),
-          mkWindow(8, 40, 88, 82), mkWindow(8, 50, 70, 60), mkWindow(9, 0, 85, 78),
-          mkWindow(9, 10, 50, 40), mkWindow(9, 20, 80, 72), mkWindow(9, 30, 55, 48),
-          mkWindow(9, 40, 42, 35), mkWindow(10, 0, 90, 85), mkWindow(10, 10, 85, 80),
-          mkWindow(10, 40, 78, 70), mkWindow(10, 50, 55, 45), mkWindow(11, 0, 88, 82),
-          mkWindow(11, 10, 72, 65),
-        ],
-        topApps: [
-          { name: 'VS Code', seconds: 12600 }, { name: 'Chrome', seconds: 3600 },
-          { name: 'Terminal', seconds: 2400 }, { name: 'Figma', seconds: 1800 },
-          { name: 'Slack', seconds: 1200 }, { name: 'Finder', seconds: 600 },
-        ],
-        topUrls: [
-          { name: 'github.com', seconds: 2400 }, { name: 'stackoverflow.com', seconds: 1200 },
-          { name: 'localhost:3000', seconds: 3600 }, { name: 'figma.com', seconds: 1800 },
-        ],
-        timeLogs: [
-          { action: 'CHECK_IN', timestamp: t(8, 0) },
-          { action: 'BREAK', timestamp: t(10, 20) },
-          { action: 'BACK', timestamp: t(10, 35) },
-        ],
-        manualRequests: [],
-        stats: { activityPercent: 74, mousePercent: 68, keyPercent: 62, mouseEvents: 14520, keyEvents: 8340, totalTrackedMinutes: 195 },
-      })
-      setLoading(false)
-      return
-    }
     loadData()
   }, [loadData])
 

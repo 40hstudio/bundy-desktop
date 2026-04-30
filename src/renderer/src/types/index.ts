@@ -54,6 +54,10 @@ export interface Task {
   sectionId?: string | null
   order?: number
   parentTaskId?: string | null
+  stagingUrl?: string | null
+  productionUrl?: string | null
+  stagingLinkId?: string | null
+  productionLinkId?: string | null
   project: { id: string; name: string; color: string } | null
   section: { id: string; name: string } | null
   assignee: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
@@ -66,9 +70,10 @@ export interface Task {
   _count: { comments: number; subtasks: number }
 }
 export interface TaskComment {
-  id: string; body: string; createdAt: string; attachmentUrl: string | null; attachmentName: string | null
+  id: string; body: string; createdAt: string; editedAt: string | null; attachmentUrl: string | null; attachmentName: string | null
   parentCommentId: string | null
   user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+  reactions?: { id: string; emoji: string; userId: string; user: { id: string; username: string; alias: string | null } }[]
   replies?: TaskComment[]
 }
 export interface TaskAttachment {
@@ -132,3 +137,14 @@ export interface TimelineSlot {
 
 export type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'report' | 'settings'
 export interface NavItem { id: Tab; icon: (active: boolean) => React.ReactNode; label: string }
+
+export interface TaskNotificationItem {
+  id: string
+  type: 'assigned' | 'discussion' | 'status_change' | 'mentioned' | 'subtask_update'
+  message: string
+  createdAt: string
+  readAt: string | null
+  taskId: string
+  task: { id: string; title: string; parentTaskId: string | null; project: { name: string } | null }
+  actorId?: string | null
+}

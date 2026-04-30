@@ -6,7 +6,7 @@
  */
 
 import { app } from 'electron'
-import store from './store'
+import { request } from './api'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 
@@ -20,15 +20,6 @@ interface CrashEntry {
   stack?: string
   context?: string
   timestamp: string
-}
-
-function baseUrl(): string {
-  return store.get('apiBase') || 'https://bundy.40h.studio'
-}
-
-function authHeader(): Record<string, string> {
-  const token = store.get('desktopToken')
-  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 function loadBuffer(): CrashEntry[] {
@@ -81,14 +72,9 @@ async function flushReports(): Promise<void> {
 
   for (const entry of buf) {
     try {
-      const res = await fetch(`${baseUrl()}/api/desktop/crash-report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader() },
-        body: JSON.stringify(entry),
-      })
-      if (!res.ok) remaining.push(entry) // keep for retry
+      await request('/api/desktop/crash-report', { method: 'POST', body: entry, silent: true })
     } catch {
-      remaining.push(entry) // network error — retry later
+      remaining.push(entry) // network or HTTP error — retry later
     }
   }
 
@@ -97,15 +83,14 @@ async function flushReports(): Promise<void> {
 
 /** Send a user-initiated report (with optional note). */
 export async function sendUserReport(note: string): Promise<void> {
-  await fetch(`${baseUrl()}/api/desktop/crash-report`, {
+  await request('/api/desktop/crash-report', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({
+    body: {
       appVersion: app.getVersion(),
       os: getOsInfo(),
       error: 'User-submitted report',
       userNote: note,
-    }),
+    },
   })
 }
 

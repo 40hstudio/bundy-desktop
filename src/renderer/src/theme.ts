@@ -107,3 +107,54 @@ export function card(): React.CSSProperties {
 export function neu(inset = false): React.CSSProperties {
   return inset ? insetField() : panel()
 }
+
+// ─── Reusable style fragments ────────────────────────────────────────────────
+//
+// Use these when building modals/popovers/buttons by hand. Most code should
+// reach for the shared primitives in `components/shared/` first; these are
+// the lower-level pieces those primitives are built from.
+
+/** Standard form field style — same shape used by the shared <Input> primitive. */
+export const fieldStyle: React.CSSProperties = {
+  ...insetField(),
+  padding: '7px 10px',
+  fontSize: 12,
+  color: C.text,
+  border: 'none',
+  outline: 'none',
+  width: '100%',
+  fontFamily: 'inherit',
+}
+
+/** Modal overlay backdrop. zIndex defaults to 80 — override if stacking. */
+export const modalOverlay: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0,0,0,0.4)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 80,
+}
+
+/** Base button shape — variants apply colour + border on top of this. */
+export const buttonBase: React.CSSProperties = {
+  padding: '7px 16px',
+  borderRadius: 8,
+  fontSize: 12,
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  fontFamily: 'inherit',
+}
+
+/** Borderless icon-only close button (used in modal headers). */
+export const closeButton: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  color: C.textMuted,
+  padding: 0,
+  display: 'flex',
+}

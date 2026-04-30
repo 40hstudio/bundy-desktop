@@ -200,7 +200,7 @@ export function CallControls({
 
       {/* Video + device picker */}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-        <button onClick={onToggleVideo} style={btnStyle(videoOff && videoActive)} title={videoActive ? (videoOff ? 'Turn on camera' : 'Turn off camera') : 'Start video'}>
+        <button onClick={screenSharing ? undefined : onToggleVideo} style={{ ...btnStyle(videoOff && videoActive), opacity: screenSharing ? 0.4 : 1, cursor: screenSharing ? 'not-allowed' : 'pointer' }} title={screenSharing ? 'Camera unavailable while sharing' : videoActive ? (videoOff ? 'Turn on camera' : 'Turn off camera') : 'Start video'}>
           {videoActive && !videoOff ? <Video size={iconSize} /> : <VideoOff size={iconSize} />}
         </button>
         {!isMini && onSwitchVideoInput && (

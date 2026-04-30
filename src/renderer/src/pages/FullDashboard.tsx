@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Home, CheckSquare, Bell, FileText, Settings,
+  Home, CheckSquare, Bell, FileText, Settings, Shield,
   WifiOff, Loader, Headphones, ChevronRight, Smile,
 } from 'lucide-react'
 import { C } from '../theme'
@@ -13,6 +13,7 @@ import TasksPanel from '../components/tasks/TasksPanel'
 import ActivityPanel from '../components/activity/ActivityPanel'
 import SettingsPanel from '../components/settings/SettingsPanel'
 import ReportPanel from '../components/report/ReportPanel'
+import AdminPanel from '../components/admin/AdminPanel'
 import NotificationTray from '../components/notifications/NotificationTray'
 import { IncomingCallOverlay } from '../components/messages/IncomingCallOverlay'
 import type { IncomingCallPayload } from '../components/messages/IncomingCallOverlay'
@@ -27,29 +28,31 @@ declare module 'react' {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'report' | 'settings'
+type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'report' | 'admin' | 'settings'
 interface NavItem { id: Tab; icon: (active: boolean) => React.ReactNode; label: string }
 interface Props { auth: Auth; onLogout: () => void }
 
 const SIDEBAR_W = 72
 
-const NAV: NavItem[] = [
+const BASE_NAV: NavItem[] = [
   { id: 'home', icon: (a) => <Home size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Home' },
   { id: 'messages', icon: (a) => <Headphones size={20} strokeWidth={a ? 2 : 1.5} />, label: 'DMs' },
   { id: 'tasks', icon: (a) => <CheckSquare size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Tasks' },
   { id: 'activity', icon: (a) => <Bell size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Activity' },
   { id: 'report', icon: (a) => <FileText size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Report' },
 ]
+const ADMIN_NAV: NavItem = { id: 'admin', icon: (a) => <Shield size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Admin' }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
-function Sidebar({ tab, setTab, auth, onLogout, selfPresence, avatarUrl, alias, messageBadge, messageMention, updateBadge }: {
+function Sidebar({ tab, setTab, auth, onLogout, selfPresence, avatarUrl, alias, messageBadge, messageMention, taskBadge, updateBadge }: {
   tab: Tab; setTab: (t: Tab) => void
   auth: Auth; onLogout: () => void; selfPresence: 'active' | 'idle' | 'offline'
   avatarUrl?: string | null; alias?: string | null
-  messageBadge?: number; messageMention?: boolean; updateBadge?: boolean
+  messageBadge?: number; messageMention?: boolean; taskBadge?: number; updateBadge?: boolean
 }) {
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
+  const NAV = auth.role === 'admin' ? [...BASE_NAV, ADMIN_NAV] : BASE_NAV
 
   return (
     <nav style={{
@@ -70,7 +73,7 @@ function Sidebar({ tab, setTab, auth, onLogout, selfPresence, avatarUrl, alias, 
         {NAV.map(item => {
           const active = tab === item.id
           const hovered = hoveredTab === item.id
-          const hasBadge = item.id === 'messages' && (messageBadge ?? 0) > 0
+          const hasBadge = (item.id === 'messages' && (messageBadge ?? 0) > 0) || (item.id === 'tasks' && (taskBadge ?? 0) > 0)
           return (
             <button
               key={item.id}
@@ -97,13 +100,15 @@ function Sidebar({ tab, setTab, auth, onLogout, selfPresence, avatarUrl, alias, 
                   <span style={{
                     position: 'absolute', top: -6, right: -10,
                     minWidth: 16, height: 16, borderRadius: 8,
-                    background: messageMention ? C.warning : C.danger,
+                    background: (item.id === 'messages' && messageMention) ? C.warning : C.danger,
                     color: '#fff', fontSize: 9, fontWeight: 700,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     padding: '0 4px', lineHeight: 1,
                     border: `2px solid ${C.bgTertiary}`,
                   }}>
-                    {messageMention ? '@' : (messageBadge! > 99 ? '99+' : messageBadge)}
+                    {item.id === 'messages'
+                      ? (messageMention ? '@' : (messageBadge! > 99 ? '99+' : messageBadge))
+                      : (taskBadge! > 99 ? '99+' : taskBadge)}
                   </span>
                 )}
               </div>
@@ -299,6 +304,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [pendingReport, setPendingReport] = useState<{ clientId: string; projectId: string; itemType?: string | null; itemId?: string | null } | null>(null)
   const [messageBadge, setMessageBadge] = useState(0)
   const [messageMention, setMessageMention] = useState(false)
+  const [taskBadge, setTaskBadge] = useState(0)
   const [updateBadge, setUpdateBadge] = useState(false)
   const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null)
   const [userAlias, setUserAlias] = useState<string | null>(null)
@@ -328,6 +334,17 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
     }
   }, [isOnline])
 
+  // Re-fetch status when window regains focus (e.g. user switches back from another app)
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible') {
+        window.electronAPI.getStatus().catch(() => {})
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [])
+
   // Fetch user profile for avatar and alias
   useEffect(() => {
     if (!apiConfig) return
@@ -343,6 +360,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
 
   const iceBufferRef = useRef<RTCIceCandidateInit[]>([])
   const answerSdpRef = useRef<string | null>(null)
+  const [pendingInvite, setPendingInvite] = useState<{ from: string; fromName: string; channelId: string; channelName: string } | null>(null)
 
   useEffect(() => {
     const unsub = window.electronAPI.onOnlineState((state) => setIsOnline(state.isOnline))
@@ -378,11 +396,16 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
       setMessageBadge(count)
       setMessageMention(!!mention)
     }
+    function onTaskUnreadUpdate(e: Event) {
+      const { count } = (e as CustomEvent<{ count: number }>).detail
+      setTaskBadge(count)
+    }
     window.addEventListener('bundy-incoming-call', onIncoming)
     window.addEventListener('bundy-call-ice', onIce)
     window.addEventListener('bundy-call-answer', onAnswer)
     window.addEventListener('bundy-open-task', onOpenTask)
     window.addEventListener('bundy-unread-update', onUnreadUpdate)
+    window.addEventListener('bundy-task-unread-update', onTaskUnreadUpdate)
 
     function onOpenReport(e: Event) {
       const detail = (e as CustomEvent<{ clientId: string; projectId: string; itemType?: string | null; itemId?: string | null }>).detail
@@ -395,14 +418,44 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
     }
     window.addEventListener('bundy-open-channel', onOpenChannel)
 
+    function onVcInviteBanner(e: Event) {
+      const payload = (e as CustomEvent<{ from: string; fromName: string; channelId: string; channelName: string }>).detail
+      setPendingInvite(payload)
+      // Play incoming call sound
+      const audio = new Audio('sounds/incoming-call.mp3')
+      audio.loop = true; audio.volume = 0.5
+      audio.play().catch(() => {})
+      const stopAudio = () => { audio.pause(); audio.src = '' }
+      // Stop sound when invite is dismissed, accepted, or after 30s
+      const cleanup = () => {
+        stopAudio()
+        window.removeEventListener('bundy-vc-joined', cleanup)
+      }
+      window.addEventListener('bundy-vc-joined', cleanup, { once: true })
+      setTimeout(() => {
+        setPendingInvite(prev => prev?.from === payload.from ? null : prev)
+        cleanup()
+      }, 30000)
+      // Store cleanup so Dismiss/Join can stop it
+      ;(window as any).__inviteAudioCleanup = cleanup
+      window.electronAPI?.focusWindow?.()
+    }
+    window.addEventListener('bundy-vc-invite-banner', onVcInviteBanner)
+
+    function onVcJoined() { setPendingInvite(null) }
+    window.addEventListener('bundy-vc-joined', onVcJoined)
+
     return () => {
       window.removeEventListener('bundy-incoming-call', onIncoming)
       window.removeEventListener('bundy-call-ice', onIce)
       window.removeEventListener('bundy-call-answer', onAnswer)
       window.removeEventListener('bundy-open-task', onOpenTask)
       window.removeEventListener('bundy-unread-update', onUnreadUpdate)
+      window.removeEventListener('bundy-task-unread-update', onTaskUnreadUpdate)
       window.removeEventListener('bundy-open-report', onOpenReport)
       window.removeEventListener('bundy-open-channel', onOpenChannel)
+      window.removeEventListener('bundy-vc-invite-banner', onVcInviteBanner)
+      window.removeEventListener('bundy-vc-joined', onVcJoined)
     }
   }, [])
 
@@ -422,6 +475,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
         alias={userAlias}
         messageBadge={messageBadge}
         messageMention={messageMention}
+        taskBadge={taskBadge}
         updateBadge={updateBadge}
       />
 
@@ -449,6 +503,34 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             setIncomingCall(null)
           }}
         />
+      )}
+
+      {/* Global VC invite banner — visible on all tabs */}
+      {pendingInvite && (
+        <div style={{
+          position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 10002,
+          background: C.bgSecondary, borderRadius: 12, padding: '12px 20px',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', gap: 12,
+          border: `1px solid ${C.separator}`, minWidth: 320,
+        }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, color: '#fff', fontSize: 14 }}>📞 {pendingInvite.fromName} invited you</div>
+            <div style={{ color: C.textMuted, fontSize: 12, marginTop: 2 }}>Join {pendingInvite.channelName}</div>
+          </div>
+          <button onClick={() => {
+            ;(window as any).__inviteAudioCleanup?.()
+            window.dispatchEvent(new CustomEvent('bundy-join-conference', { detail: { channelId: pendingInvite.channelId, channelName: pendingInvite.channelName } }))
+            setTab('messages')
+            setPendingInvite(null)
+          }}
+            style={{ background: '#43B581', border: 'none', borderRadius: 8, color: '#fff', padding: '6px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+            Join
+          </button>
+          <button onClick={() => { ;(window as any).__inviteAudioCleanup?.(); setPendingInvite(null) }}
+            style={{ background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 8, color: '#9ca3af', padding: '6px 12px', cursor: 'pointer', fontSize: 13 }}>
+            Dismiss
+          </button>
+        </div>
       )}
 
       <div style={{
@@ -531,6 +613,14 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             </div>
           )}
 
+          {tab === 'admin' && apiConfig && auth.role === 'admin' && (
+            <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              <ErrorBoundary label="Admin">
+                <AdminPanel config={apiConfig} auth={auth} />
+              </ErrorBoundary>
+            </div>
+          )}
+
           {tab === 'settings' && apiConfig && (
             <div style={{ position: 'absolute', top: isOnline ? 0 : 36, left: 0, right: 0, bottom: 0, overflowY: 'auto', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <ErrorBoundary label="Settings">
@@ -539,7 +629,7 @@ export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
             </div>
           )}
 
-          {(tab === 'tasks' || tab === 'activity' || tab === 'report' || tab === 'settings') && !apiConfig && (
+          {(tab === 'tasks' || tab === 'activity' || tab === 'report' || tab === 'admin' || tab === 'settings') && !apiConfig && (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted }}>
               <Loader size={24} />
             </div>

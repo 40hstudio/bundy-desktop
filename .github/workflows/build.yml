@@ -14,6 +14,8 @@ on:
 jobs:
   build-mac:
     runs-on: macos-14  # Apple Silicon runner
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: bundy-desktop
@@ -34,10 +36,17 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Package DMG (unsigned — no Apple Developer account required)
-        run: npx electron-builder --mac dmg --x64 --arm64
+      - name: Publish (DMG + ZIP + latest-mac.yml → GitHub Release)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npx electron-builder --mac --x64 --arm64 --publish always
         env:
-          # Skip code-signing so anyone can build without an Apple Developer ID
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package DMG (non-tag builds only)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        run: npx electron-builder --mac --x64 --arm64
+        env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Upload DMG artifacts
@@ -46,12 +55,3 @@ jobs:
           name: Bundy-mac-dmg
           path: bundy-desktop/dist/*.dmg
           retention-days: 30
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: bundy-desktop/dist/*.dmg
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

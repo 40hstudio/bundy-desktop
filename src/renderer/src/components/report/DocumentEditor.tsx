@@ -20,6 +20,7 @@ import HorizontalRule from '@tiptap/extension-horizontal-rule'
 import FontFamily from '@tiptap/extension-font-family'
 import { FontSize } from './FontSizeExtension'
 import { useCallback, useRef, useEffect, useState } from 'react'
+import { useImageUpload } from '../../hooks/useImageUpload'
 import {
   Bold, Italic, Underline as UnderlineIcon, Strikethrough, Code,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
@@ -77,31 +78,17 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
   const [showHighlightMenu, setShowHighlightMenu] = useState(false)
   const [showTableMenu, setShowTableMenu] = useState(false)
   const [showImageMenu, setShowImageMenu] = useState(false)
-  const [imageUploading, setImageUploading] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
 
-  // Upload image helper for paste/drop (used inside editorProps, needs stable ref)
-  const uploadImageRef = useRef<(file: File) => Promise<string | null>>(async () => null)
-  uploadImageRef.current = async (file: File) => {
-    if (!apiBase || !token) return null
-    const form = new FormData()
-    form.append('file', file)
-    const res = await fetch(`${apiBase}/api/report/documents/upload-image`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return `${apiBase}${data.url}`
-  }
+  const editorRefForUpload = useRef<ReturnType<typeof useEditor>>(null)
+  const { upload: uploadImage, tryUploadFromClipboard, uploading: imageUploading } = useImageUpload({
+    endpoint: '/api/report/documents/upload-image',
+    onUploaded: (url) => editorRefForUpload.current?.chain().focus().setImage({ src: url }).run(),
+    onError: (err) => console.error('[DocumentEditor] image upload failed:', err),
+  })
 
-  const handleDroppedImage = useCallback(async (file: File) => {
-    const url = await uploadImageRef.current(file)
-    if (url && editorRef.current) {
-      editorRef.current.chain().focus().setImage({ src: url }).run()
-    }
-  }, [])
+  const handleDroppedImage = useCallback((file: File) => { void uploadImage(file) }, [uploadImage])
+  void apiBase; void token // kept for prop compat — apiFetch reads from configStore
 
   const editorRef = useRef<ReturnType<typeof useEditor>>(null)
 
@@ -150,17 +137,10 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
         }
         return false
       },
-      handlePaste: (view, event) => {
-        const items = event.clipboardData?.items
-        if (items) {
-          for (const item of Array.from(items)) {
-            if (item.type.startsWith('image/')) {
-              event.preventDefault()
-              const file = item.getAsFile()
-              if (file) handleDroppedImage(file)
-              return true
-            }
-          }
+      handlePaste: (_view, event) => {
+        if (tryUploadFromClipboard(event.clipboardData?.items ?? null)) {
+          event.preventDefault()
+          return true
         }
         return false
       },
@@ -168,6 +148,7 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
   })
 
   editorRef.current = editor
+  editorRefForUpload.current = editor
 
   // Close menus on click outside
   useEffect(() => {
@@ -197,27 +178,10 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
   }, [editor])
 
   const addImageFromFile = useCallback(async (file: File) => {
-    if (!editor || !apiBase || !token) return
-    setImageUploading(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`${apiBase}/api/report/documents/upload-image`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      })
-      if (!res.ok) throw new Error('Upload failed')
-      const data = await res.json()
-      const imgUrl = `${apiBase}${data.url}`
-      editor.chain().focus().setImage({ src: imgUrl }).run()
-    } catch (err) {
-      console.error('Image upload failed:', err)
-    } finally {
-      setImageUploading(false)
-      setShowImageMenu(false)
-    }
-  }, [editor, apiBase, token])
+    if (!editor) return
+    await uploadImage(file)
+    setShowImageMenu(false)
+  }, [editor, uploadImage])
 
   const insertTable = useCallback(() => {
     if (!editor) return

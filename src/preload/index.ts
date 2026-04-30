@@ -45,7 +45,7 @@ const api = {
   login: (shortToken: string): Promise<StoredAuth> => ipcRenderer.invoke('login', shortToken),
   logout: (): Promise<void> => ipcRenderer.invoke('logout'),
   getStatus: (): Promise<BundyStatus> => ipcRenderer.invoke('get-status'),
-  doAction: (action: string, note?: string): Promise<void> =>
+  doAction: (action: string, note?: string): Promise<BundyStatus | void> =>
     ipcRenderer.invoke('do-action', action, note),
   submitReport: (content: string): Promise<void> =>
     ipcRenderer.invoke('submit-report', content),

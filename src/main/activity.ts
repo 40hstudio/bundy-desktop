@@ -1,4 +1,6 @@
 import { sendHeartbeat } from './api'
+import { queueActivitySummary } from './sync'
+import { scheduleAtBoundary, trySendOrQueue } from './scheduler'
 import { systemPreferences } from 'electron'
 import { execFile as _execFile } from 'child_process'
 import { promisify } from 'util'
@@ -49,7 +51,7 @@ async function getBrowserUrlOsascript(appName: string): Promise<string | undefin
 
 const WINDOW_MS = 10 * 60 * 1000   // 10-minute windows
 const ACTIVITY_GRACE_MS = 30_000   // 30s inactivity before "inactive"
-const APP_POLL_MS = 5_000           // poll active window every 5s
+const APP_POLL_MS = 2_000           // poll active window every 2s
 
 let mouseEvents = 0
 let keyEvents = 0
@@ -60,7 +62,7 @@ let lastActivityTs = Date.now()
 let lastMouseTs = 0
 let lastKeyTs = 0
 let activeSecondsTick: NodeJS.Timeout | null = null
-let heartbeatTimer: NodeJS.Timeout | null = null
+let stopHeartbeat: (() => void) | null = null
 let appPollTimer: NodeJS.Timeout | null = null
 let windowStart: Date = new Date()
 
@@ -73,10 +75,50 @@ let liveApp: string | null = null
 let liveUrl: string | null = null
 let lastNonBundyApp: string | null = null
 let lastNonBundyUrl: string | null = null
+let liveRunningApps: string[] = []
+let prevRunningAppsKey = ''
+
+// Callback fired when running apps list changes
+let onRunningAppsChangedCb: (() => void) | null = null
+export function setOnRunningAppsChanged(cb: () => void): void {
+  onRunningAppsChangedCb = cb
+}
+
+let onActiveAppChangedCb: (() => void) | null = null
+export function setOnActiveAppChanged(cb: () => void): void {
+  onActiveAppChangedCb = cb
+}
+
+// Apps to always filter out from running apps list (system/background noise)
+const SYSTEM_NOISE = new Set([
+  'Finder', 'SystemUIServer', 'Control Center', 'Dock', 'loginwindow',
+  'WindowServer', 'Spotlight', 'NotificationCenter', 'sharingd',
+  'universalaccessd', 'CoreLocationAgent', 'AirPlayUIAgent',
+  'WiFiAgent', 'bluetoothd', 'cfprefsd', 'distnoted',
+  'Bundy', 'Electron', 'Bundy Desktop',
+])
+
+async function fetchRunningApps(): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'osascript',
+      ['-e', 'tell application "System Events" to get name of every process whose background only is false'],
+      { timeout: 3000 }
+    )
+    if (!stdout.trim()) return []
+    return stdout
+      .trim()
+      .split(', ')
+      .map(s => s.trim())
+      .filter(s => s.length > 0 && !SYSTEM_NOISE.has(s))
+  } catch {
+    return []
+  }
+}
 
 /** Get the current live activity for presence broadcasting. */
-export function getCurrentActivity(): { app: string | null; url: string | null } {
-  return { app: liveApp, url: liveUrl }
+export function getCurrentActivity(): { app: string | null; url: string | null; runningApps: string[] } {
+  return { app: liveApp, url: liveUrl, runningApps: liveRunningApps }
 }
 
 // Cache the uiohook instance so stopActivity() can call .stop() synchronously
@@ -100,6 +142,15 @@ async function getActiveWindowFn(): Promise<ActiveWindowFn> {
 
 async function pollActiveWindow(): Promise<void> {
   try {
+    // Refresh running apps list (every poll cycle = every 5s)
+    const newApps = await fetchRunningApps()
+    const newKey = newApps.join(',')
+    if (newKey !== prevRunningAppsKey) {
+      prevRunningAppsKey = newKey
+      liveRunningApps = newApps
+      onRunningAppsChangedCb?.()
+    }
+
     // Only track the active window when user has recent input activity
     // to avoid logging the idle screen/screensaver as "used app"
     const now = Date.now()
@@ -125,6 +176,8 @@ async function pollActiveWindow(): Promise<void> {
       }
 
       // Update live activity — skip Bundy itself, use previous app
+      const prevApp = liveApp
+      const prevUrl = liveUrl
       if (BUNDY_APP_NAMES.includes(app.toLowerCase())) {
         liveApp = lastNonBundyApp
         liveUrl = lastNonBundyUrl
@@ -133,6 +186,9 @@ async function pollActiveWindow(): Promise<void> {
         liveUrl = domain
         lastNonBundyApp = app
         lastNonBundyUrl = domain
+      }
+      if (liveApp !== prevApp || liveUrl !== prevUrl) {
+        onActiveAppChangedCb?.()
       }
     }
   } catch { /* silently ignore */ }
@@ -187,19 +243,13 @@ function alignedWindowStart(): Date {
   return now
 }
 
-function msUntilNextBoundary(): number {
-  const now = Date.now()
-  const msIntoWindow = now % WINDOW_MS
-  return WINDOW_MS - msIntoWindow
-}
-
 function flushHeartbeat(): void {
   const now = Date.now()
   const totalSeconds = Math.round((now - windowStart.getTime()) / 1000)
   if (totalSeconds <= 0) return
   const topApps = { ...appSeconds }
   const topUrls = { ...urlSeconds }
-  void sendHeartbeat({
+  const data = {
     windowStart: windowStart.toISOString(),
     mouseEvents,
     keyEvents,
@@ -209,7 +259,8 @@ function flushHeartbeat(): void {
     totalSeconds,
     topApps,
     topUrls,
-  })
+  }
+  void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
   mouseEvents = 0
   keyEvents = 0
   activeSeconds = 0
@@ -221,19 +272,15 @@ function flushHeartbeat(): void {
 }
 
 function scheduleHeartbeat(): void {
-  if (heartbeatTimer) return
-  // Fire at the next 10-minute boundary, then every 10 minutes
-  const delay = msUntilNextBoundary()
-  heartbeatTimer = setTimeout(() => {
-    flushHeartbeat()
-    heartbeatTimer = null
-    // Now start a repeating interval aligned to boundaries
-    scheduleHeartbeat()
-  }, delay)
+  if (stopHeartbeat) return
+  stopHeartbeat = scheduleAtBoundary({
+    intervalMs: WINDOW_MS,
+    fn: flushHeartbeat,
+  })
 }
 
-export async function startActivity(): Promise<void> {
-  if (started) return
+export async function startActivity(): Promise<{ accessibilityDenied?: boolean }> {
+  if (started) return {}
 
   // Check Accessibility permission WITHOUT prompting.
   // IMPORTANT: We must NOT import uiohook-napi before this check.
@@ -243,7 +290,7 @@ export async function startActivity(): Promise<void> {
   const trusted = systemPreferences.isTrustedAccessibilityClient(false)
   if (!trusted) {
     console.warn('[activity] Accessibility not granted – skipping uiohook')
-    return
+    return { accessibilityDenied: true }
   }
 
   // Mark started BEFORE the async import so concurrent calls from pollAndPush
@@ -277,6 +324,8 @@ export async function startActivity(): Promise<void> {
   // Start app/URL polling
   void pollActiveWindow()
   appPollTimer = setInterval(() => void pollActiveWindow(), APP_POLL_MS)
+
+  return {}
 }
 
 export function stopActivity(): void {
@@ -288,10 +337,8 @@ export function stopActivity(): void {
 
   stopActiveTimer()
 
-  if (heartbeatTimer) {
-    clearTimeout(heartbeatTimer)
-    heartbeatTimer = null
-  }
+  stopHeartbeat?.()
+  stopHeartbeat = null
 
   if (appPollTimer) {
     clearInterval(appPollTimer)
@@ -300,7 +347,7 @@ export function stopActivity(): void {
 
   // Flush partial window if there was any activity
   if (mouseEvents + keyEvents > 0 || Object.keys(appSeconds).length > 0) {
-    void sendHeartbeat({
+    const data = {
       windowStart: windowStart.toISOString(),
       mouseEvents,
       keyEvents,
@@ -310,7 +357,8 @@ export function stopActivity(): void {
       totalSeconds: Math.round((Date.now() - windowStart.getTime()) / 1000),
       topApps: { ...appSeconds },
       topUrls: { ...urlSeconds },
-    })
+    }
+    void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
     mouseEvents = 0
     keyEvents = 0
     activeSeconds = 0

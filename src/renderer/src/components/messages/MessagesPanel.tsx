@@ -5,7 +5,7 @@ import {
   Loader, Phone, Video, Pin, Settings2, MessageCircle, ChevronRight,
   Smile, CornerDownRight, Trash2, ChevronUp, Send, X,
   FolderOpen, Paperclip, ExternalLink, Download, Check, CheckCheck,
-  Clock, Calendar, Volume2, MicOff, PhoneOff, Monitor, Mic, Headphones, HeadphoneOff,
+  Clock, Calendar, Volume2, MicOff, PhoneOff, Monitor, Mic, Headphones, HeadphoneOff, Eye, Quote,
 } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { ApiConfig, Auth, Conversation, ChatMessage, ThreadActivity, UserInfo } from '../../types'
@@ -17,43 +17,18 @@ import { MessageInput } from './MessageInput'
 import { OgPreview } from './OgPreview'
 import { InlineAttachment, AuthImage } from './Attachments'
 import { EmojiPicker } from './EmojiPicker'
-import { renderMessageContent, extractUrls, isImageUrl, REPORT_LINK_RE, TASK_LINK_RE } from '../../utils/markdown'
+import { renderMessageContent, extractUrls, isImageUrl, REPORT_LINK_RE, TASK_LINK_RE, FEEDBACK_LINK_RE } from '../../utils/markdown'
 import { formatTime, timeAgo } from '../../utils/format'
 import { ReportLinkCard } from './ReportLinkCard'
 import { TaskLinkCard } from './TaskLinkCard'
+import { FeedbackLinkCard } from './FeedbackLinkCard'
 import CallWidget from '../calls/CallWidget'
-import ConferenceWidget from '../calls/ConferenceWidget'
 import VoiceChannelView from '../calls/VoiceChannelView'
 import type { IncomingCallPayload } from './IncomingCallOverlay'
 
-const DEMO_MODE = false
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
 
-// ─── Demo data helpers (kept here so DEMO_MODE works) ─────────────────────────
-
 const ogClientCache = new Map<string, { title: string | null; description: string | null; image: string | null; siteName: string | null } | null>()
-
-function buildDemoChannels(): Conversation[] {
-  return [
-    { id: 'ch1', type: 'channel', name: '#general', members: [], unread: 3, lastTime: new Date(Date.now() - 300_000).toISOString() },
-    { id: 'ch2', type: 'channel', name: '#engineering', members: [], unread: 0, lastTime: new Date(Date.now() - 900_000).toISOString() },
-    { id: 'ch3', type: 'channel', name: '#design', members: [], unread: 1, lastTime: new Date(Date.now() - 1800_000).toISOString() },
-    { id: 'ch6', type: 'channel', name: '#random', members: [], unread: 0, lastTime: new Date(Date.now() - 120_000).toISOString() },
-    { id: 'ch4', type: 'dm', name: 'Sarah Chen', avatar: null, partnerId: 'u3', members: [{ userId: 'u3', user: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null, userStatus: 'online' } }], unread: 0, lastTime: new Date(Date.now() - 600_000).toISOString() },
-    { id: 'ch7', type: 'dm', name: 'Mike Torres', avatar: null, partnerId: 'u4', members: [{ userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Mike Torres', avatarUrl: null, userStatus: 'online' } }], unread: 0, lastTime: new Date(Date.now() - 1200_000).toISOString() },
-    { id: 'ch5', type: 'group', name: 'Marc, Robert Siemens', members: [{ userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Marc', avatarUrl: null } }, { userId: 'u5', user: { id: 'u5', username: 'alex.k', alias: 'Robert Siemens', avatarUrl: null } }], unread: 2, lastTime: new Date(Date.now() - 3600_000).toISOString() },
-  ]
-}
-
-function buildDemoMessages(): ChatMessage[] {
-  const _yesterday = Date.now() - 86400_000
-  const _today = Date.now()
-  return [
-    { id: 'm1', content: 'Hey team 👋 Quick update on the Q4 roadmap.', createdAt: new Date(_yesterday + 3600_000 * 9).toISOString(), editedAt: null, sender: { id: 'u3', username: 'sarah.chen', alias: 'Sarah Chen', avatarUrl: null }, reactions: [{ emoji: '👍', userId: 'u4', user: { id: 'u4', username: 'mike.t', alias: 'Mike Torres' } }], replyCount: 3 },
-    { id: 'm6', content: 'Good morning! Sprint review starts at 10 AM.', createdAt: new Date(_today - 3600_000 * 3).toISOString(), editedAt: null, sender: { id: 'u6', username: 'lisa.m', alias: 'Lisa Martinez', avatarUrl: null }, reactions: [] },
-    { id: 'm9', content: 'Deployed v2.3.1 to production. All health checks passing ✅', createdAt: new Date(_today - 3600_000).toISOString(), editedAt: null, sender: { id: 'u5', username: 'alex.k', alias: 'Alex Kim', avatarUrl: null }, reactions: [{ emoji: '🚀', userId: 'u2', user: { id: 'u2', username: 'john.doe', alias: 'John' } }] },
-  ]
-}
 
 // ─── Thread Item (used in Threads view) ───────────────────────────────────────
 
@@ -196,6 +171,18 @@ export function MessagesPanel({
   const channelsRef = useRef<Conversation[]>([])
   channelsRef.current = channels
 
+  // Standalone VC fetch helper — defined early so it can be used by any useEffect
+  const fetchVoiceChannels = useCallback(async () => {
+    try {
+      const res = await fetch(`${config.apiBase}/api/voice-channels`, {
+        headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) return
+      const data = await res.json() as { voiceChannels: VoiceChannelInfo[] }
+      setVoiceChannels(data.voiceChannels)
+    } catch {}
+  }, [config.apiBase, config.token])
+
   // Build username → alias map from all channel members for mention display
   const usersMap = useMemo(() => {
     const map: Record<string, string> = {}
@@ -331,7 +318,13 @@ export function MessagesPanel({
   const [myConference, setMyConference] = useState<{
     channelId: string; channelName: string
     participants: Array<{ id: string; name: string; avatar: string | null }>
+    joinSeq?: number
   } | null>(null)
+
+  // Guard: timestamp of the last VC join — used to ignore stale conference-ended SSE events
+  const conferenceJoinedAtRef = useRef(0)
+  const myConferenceRef = useRef(myConference)
+  myConferenceRef.current = myConference
 
   // Users currently in 1:1 calls
   const [usersInCall, setUsersInCall] = useState<Set<string>>(new Set())
@@ -347,9 +340,10 @@ export function MessagesPanel({
   const [showVcCreate, setShowVcCreate] = useState(false)
   const [vcSaving, setVcSaving] = useState(false)
   const [vcDeleteConfirm, setVcDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
+  // Call switching — no longer needs a state (direct switch now)
   // Voice channel chat
   const [selectedVc, setSelectedVc] = useState<VoiceChannelInfo | null>(null)
-  type VcMsg = { id: string; content: string; createdAt: string; sender: { id: string; username: string; alias: string | null; avatarUrl: string | null } }
+  type VcMsg = { id: string; content: string; createdAt: string; sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }; system?: boolean }
   const [vcMessages, setVcMessages] = useState<VcMsg[]>([])
   const [vcInput, setVcInput] = useState('')
   const [vcSending, setVcSending] = useState(false)
@@ -361,9 +355,14 @@ export function MessagesPanel({
   const [vcUserStates, setVcUserStates] = useState<Map<string, { muted: boolean; deafened: boolean }>>(new Map())
   // Track when each VC became active (first participant joined)
   const [vcActiveTimers, setVcActiveTimers] = useState<Map<string, number>>(new Map())
+  // Track unread VC message counts per voice channel id
+  const [vcUnreadCounts, setVcUnreadCounts] = useState<Map<string, number>>(new Map())
   const [, forceVcTimerTick] = useState(0)
   // Track own VC state from VoiceChannelView via custom events
   const [vcLocalState, setVcLocalState] = useState<{ muted: boolean; deafened: boolean; screenSharing: boolean }>({ muted: false, deafened: false, screenSharing: false })
+  // Floating bar speaker video preview
+  const [vcPreview, setVcPreview] = useState<{ stream: MediaStream; name: string } | null>(null)
+  const vcPreviewVideoRef = useRef<HTMLVideoElement>(null)
 
   const selectConv = (c: Conversation | null) => { if (c) { setShowThreadsView(false); setShowScheduledView(false); setSelectedVc(null); setShowConvSearch(false); setConvSearchQuery(''); setConvSearchResults([]) }; setSelected(c) }
 
@@ -385,6 +384,8 @@ export function MessagesPanel({
     const onActiveConfs = (e: Event) => {
       const payload = (e as CustomEvent<Record<string, Array<{ id: string; name: string; avatar: string | null }>>>).detail
       setActiveConferences(payload)
+      // Re-fetch voice channels on SSE reconnect to restore the list after server restart
+      fetchVoiceChannels()
     }
     const onConfJoined = (e: Event) => {
       const payload = (e as CustomEvent<{ channelId: string; userId: string; userName: string; avatar: string | null }>).detail
@@ -404,14 +405,17 @@ export function MessagesPanel({
     }
     const onConfEnded = (e: Event) => {
       const payload = (e as CustomEvent<{ channelId: string }>).detail
+      // Guard: ignore stale conference-ended events that arrive within 5s of joining
+      // This prevents a race where a delayed leave from a failed init kills the new session
+      const mc = myConferenceRef.current
+      if (mc?.channelId === payload.channelId && Date.now() - conferenceJoinedAtRef.current < 5000) return
       setActiveConferences(prev => { const { [payload.channelId]: _, ...rest } = prev; return rest })
       setMyConference(prev => prev?.channelId === payload.channelId ? null : prev)
     }
     const onConfInvite = (e: Event) => {
       const payload = (e as CustomEvent<{ from: string; fromName: string; channelId: string; channelName: string }>).detail
-      if (Notification.permission === 'granted') {
-        new Notification(`📞 Call invite from ${payload.fromName}`, { body: `Join #${payload.channelName}` })
-      }
+      window.dispatchEvent(new CustomEvent('bundy-vc-invite-banner', { detail: payload }))
+      window.electronAPI?.showNotification?.(`Call invite from ${payload.fromName}`, `Join ${payload.channelName}`)
     }
     const onCallActivity = (e: Event) => {
       const { userId, inCall } = (e as CustomEvent<{ userId: string; inCall: boolean }>).detail
@@ -435,7 +439,7 @@ export function MessagesPanel({
       window.removeEventListener('bundy-conference-invite', onConfInvite)
       window.removeEventListener('bundy-call-activity', onCallActivity)
     }
-  }, [])
+  }, [fetchVoiceChannels])
 
   // Track mute/deafen per user in VCs and VC active timers
   useEffect(() => {
@@ -650,7 +654,6 @@ export function MessagesPanel({
   isVisibleRef.current = isVisible
 
   useEffect(() => {
-    if (DEMO_MODE) return
     let dead = false
     let ctrl = new AbortController()
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -917,8 +920,14 @@ export function MessagesPanel({
                 window.dispatchEvent(new CustomEvent('bundy-conference-ice', { detail: payload }))
               } else if (ev === 'conference-mute') {
                 window.dispatchEvent(new CustomEvent('bundy-conference-mute', { detail: payload }))
+              } else if (ev === 'conference-speaking') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-speaking', { detail: payload }))
               } else if (ev === 'conference-deafen') {
                 window.dispatchEvent(new CustomEvent('bundy-conference-deafen', { detail: payload }))
+              } else if (ev === 'conference-video') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-video', { detail: payload }))
+              } else if (ev === 'conference-screen-share') {
+                window.dispatchEvent(new CustomEvent('bundy-conference-screen-share', { detail: payload }))
               } else if (ev === 'conference-invite') {
                 window.dispatchEvent(new CustomEvent('bundy-conference-invite', { detail: payload }))
               } else if (ev === 'call-reaction') {
@@ -931,6 +940,20 @@ export function MessagesPanel({
                 window.dispatchEvent(new CustomEvent('bundy-call-activity', { detail: payload }))
               } else if (ev === 'vc-message') {
                 window.dispatchEvent(new CustomEvent('bundy-vc-message', { detail: payload }))
+                // Increment unread count if VC chat is not currently open for this channel
+                if (payload.sender?.id && payload.sender.id !== auth.userId) {
+                  const vcId = payload.voiceChannelId
+                  setVcUnreadCounts(prev => {
+                    const next = new Map(prev)
+                    next.set(vcId, (next.get(vcId) ?? 0) + 1)
+                    return next
+                  })
+                }
+                // Desktop notification for VC messages from other users
+                if (payload.sender?.id && payload.sender.id !== auth.userId) {
+                  const senderName = payload.sender.alias ?? payload.sender.username
+                  window.electronAPI?.showNotification?.('Voice Channel', `${senderName}: ${payload.content}`)
+                }
               } else if (ev === 'user-activity') {
                 window.dispatchEvent(new CustomEvent('bundy-user-activity', { detail: payload }))
                 // Track idle status for presence
@@ -1008,25 +1031,12 @@ export function MessagesPanel({
 
   // Initial load
   useEffect(() => {
-    if (DEMO_MODE) {
-      const demoChannels = buildDemoChannels()
-      setChannels(demoChannels)
-      setSelected(demoChannels[0])
-      setMessages(buildDemoMessages())
-      ogClientCache.set('https://github.com/electron/electron', {
-        title: 'electron/electron: Build cross-platform desktop apps with JavaScript, HTML, and CSS',
-        description: 'Build cross-platform desktop apps with JavaScript, HTML, and CSS.',
-        image: 'https://opengraph.githubassets.com/1/electron/electron',
-        siteName: 'GitHub',
-      })
-      return
-    }
     loadChannels()
   }, [loadChannels])
 
   // Thread activities (loaded when threads view opens)
   useEffect(() => {
-    if (!showThreadsView || DEMO_MODE) return
+    if (!showThreadsView) return
     apiFetch('/api/threads').then((data: any) => {
       setThreadActivities(data.threads ?? [])
     }).catch(() => {})
@@ -1034,7 +1044,6 @@ export function MessagesPanel({
 
   // Load scheduled messages count on mount + when view opens
   useEffect(() => {
-    if (DEMO_MODE) return
     apiFetch('/api/scheduled-messages').then((data: any) => {
       setScheduledMessages(data.messages ?? [])
     }).catch(() => {})
@@ -1049,7 +1058,6 @@ export function MessagesPanel({
 
   // Periodic refresh of user profile info + tracker status
   useEffect(() => {
-    if (DEMO_MODE) return
     function refreshUserInfo() {
       apiFetch('/api/users').then((data: { users: any[] }) => {
         const userMap: Record<string, any> = {}
@@ -1092,7 +1100,7 @@ export function MessagesPanel({
     justSwitchedRef.current = true
     setNewMsgCount(0)
     isNearBottomRef.current = true
-    if (!DEMO_MODE) loadMessages(selected)
+    loadMessages(selected)
     setThreadParent(null); setThreadMessages([]); setShowPinned(false); setEmojiPickerMsgId(null); setFullEmojiPickerMsgId(null)
     if (pendingThreadRef.current) {
       const pending = pendingThreadRef.current
@@ -1113,7 +1121,7 @@ export function MessagesPanel({
 
   // Mark active channel as read when user switches back to messages tab
   useEffect(() => {
-    if (!isVisible || !selected || DEMO_MODE) return
+    if (!isVisible || !selected) return
     setChannels(prev => prev.map(c => c.id === selected.id ? { ...c, unread: 0 } : c))
     setMentionedChannels(prev => { const next = new Set(prev); next.delete(selected.id); return next })
     fetch(`${config.apiBase}/api/channels/${selected.id}/read`, {
@@ -1407,21 +1415,30 @@ export function MessagesPanel({
       const data = await res.json()
       if (!data.ok) return
       setMyConference({ channelId, channelName, participants: data.participants ?? [] })
+      if (!channelId.startsWith('vc_')) setSelected(null)
+      window.dispatchEvent(new CustomEvent('bundy-vc-joined'))
     } catch {}
   }
 
+  // Listen for global join-conference events (from invite banner in FullDashboard)
+  useEffect(() => {
+    const onJoin = (e: Event) => {
+      const { channelId, channelName } = (e as CustomEvent<{ channelId: string; channelName: string }>).detail
+      joinConference(channelId, channelName)
+    }
+    window.addEventListener('bundy-join-conference', onJoin)
+    return () => window.removeEventListener('bundy-join-conference', onJoin)
+  }, [config])
+
   // ─── Voice Channels ────────────────────────────────────────────────────────
-  const loadVoiceChannels = useCallback(async () => {
-    try {
-      const data = await apiFetch('/api/voice-channels') as { voiceChannels: VoiceChannelInfo[] }
-      setVoiceChannels(data.voiceChannels)
-    } catch {}
-  }, [apiFetch])
+  // (fetchVoiceChannels is defined at the top of the component)
 
   // Load voice channels on mount and ensure personal channels exist
   useEffect(() => {
-    apiFetch('/api/voice-channels/ensure-personal', { method: 'POST' }).then(() => loadVoiceChannels())
-  }, [loadVoiceChannels]) // eslint-disable-line react-hooks/exhaustive-deps
+    apiFetch('/api/voice-channels/ensure-personal', { method: 'POST' })
+      .catch(() => {}) // Don't block VC loading if ensure-personal fails
+      .then(() => fetchVoiceChannels())
+  }, [fetchVoiceChannels]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Update voice channel participants when activeConferences changes
   useEffect(() => {
@@ -1453,23 +1470,24 @@ export function MessagesPanel({
       setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false)
       return
     }
-    // If in a different VC, disconnect first then auto-join new one
-    if (myConference && myConference.channelId.startsWith('vc_')) {
+    // If in any call (VC or DM), disconnect first then join new VC directly — no confirmation
+    if (myConference) {
       window.dispatchEvent(new CustomEvent('bundy-vc-disconnect'))
       // Force clear state synchronously so we can proceed to join immediately
-      flushSync(() => { setMyConference(null); setVcLocalState({ muted: false, deafened: false, screenSharing: false }) })
+      flushSync(() => { setMyConference(null); setVcLocalState({ muted: false, deafened: false, screenSharing: false }); setVcPreview(null) })
       // Small delay for WebRTC cleanup
       await new Promise(r => setTimeout(r, 200))
     }
-    if (myConference) return // still in a non-VC call
     try {
       const res = await apiFetch('/api/voice-channels', {
         method: 'POST',
         body: JSON.stringify({ action: 'join', voiceChannelId: vc.id }),
       })
-      const data = res as { ok: boolean; channelId: string; participants: Array<{ id: string; name: string; avatar: string | null }> }
+      const data = res as { ok: boolean; channelId: string; participants: Array<{ id: string; name: string; avatar: string | null }>; joinSeq?: number }
       if (!data.ok) return
-      setMyConference({ channelId: data.channelId, channelName: vc.name, participants: data.participants ?? [] })
+      conferenceJoinedAtRef.current = Date.now()
+      setMyConference({ channelId: data.channelId, channelName: vc.name, participants: data.participants ?? [], joinSeq: data.joinSeq })
+      window.dispatchEvent(new CustomEvent('bundy-vc-joined'))
     } catch {}
   }
 
@@ -1529,6 +1547,7 @@ export function MessagesPanel({
     setSelected(null)
     setShowThreadsView(false)
     setShowScheduledView(false)
+    setVcUnreadCounts(prev => { const next = new Map(prev); next.delete(vc.id); return next })
     loadVcMessages(vc.id)
   }
 
@@ -1539,6 +1558,8 @@ export function MessagesPanel({
       if (msg.voiceChannelId === selectedVc?.id) {
         setVcMessages(prev => [...prev, { id: msg.id, content: msg.content, createdAt: msg.createdAt, sender: msg.sender }])
         setTimeout(() => vcMsgEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+        // Clear unread since user is viewing this VC chat
+        setVcUnreadCounts(prev => { const next = new Map(prev); next.delete(selectedVc!.id); return next })
       }
     }
     window.addEventListener('bundy-vc-message', onVcMsg)
@@ -1554,6 +1575,85 @@ export function MessagesPanel({
     window.addEventListener('bundy-vc-state-update', onState)
     return () => window.removeEventListener('bundy-vc-state-update', onState)
   }, [])
+
+  // Listen for active speaker preview stream from useConference
+  useEffect(() => {
+    const onPreview = (e: Event) => {
+      const { stream, name } = (e as CustomEvent<{ stream: MediaStream | null; name: string }>).detail
+      if (stream && stream.getVideoTracks().some(t => t.readyState === 'live')) {
+        setVcPreview({ stream, name })
+      } else {
+        setVcPreview(null)
+      }
+    }
+    window.addEventListener('bundy-vc-preview-stream', onPreview)
+    return () => window.removeEventListener('bundy-vc-preview-stream', onPreview)
+  }, [])
+
+  // Sync preview video element srcObject
+  useEffect(() => {
+    if (vcPreviewVideoRef.current && vcPreview?.stream) {
+      if (vcPreviewVideoRef.current.srcObject !== vcPreview.stream) {
+        vcPreviewVideoRef.current.srcObject = vcPreview.stream
+        vcPreviewVideoRef.current.play().catch(() => {})
+      }
+      // Auto-clear preview if all video tracks end
+      const tracks = vcPreview.stream.getVideoTracks()
+      const onEnded = () => {
+        if (vcPreview.stream.getVideoTracks().every(t => t.readyState === 'ended')) {
+          setVcPreview(null)
+        }
+      }
+      tracks.forEach(t => t.addEventListener('ended', onEnded))
+      return () => { tracks.forEach(t => t.removeEventListener('ended', onEnded)) }
+    } else if (vcPreviewVideoRef.current && !vcPreview) {
+      vcPreviewVideoRef.current.srcObject = null
+    }
+  }, [vcPreview])
+
+  // VC join/leave/screen-share system notifications in chat
+  useEffect(() => {
+    const sysMsg = (content: string) => ({
+      id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      content,
+      createdAt: new Date().toISOString(),
+      sender: { id: 'system', username: 'System', alias: null, avatarUrl: null },
+      system: true,
+    })
+    const myVcId = () => myConferenceRef.current?.channelId
+    const onJoin = (e: Event) => {
+      const { channelId: cId, userName } = (e as CustomEvent<{ channelId: string; userId: string; userName: string }>).detail
+      if (cId === myVcId()) {
+        setVcMessages(prev => [...prev, sysMsg(`${userName} joined the voice channel`)])
+        setTimeout(() => vcMsgEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+      }
+    }
+    const onLeave = (e: Event) => {
+      const { channelId: cId, userId: uid } = (e as CustomEvent<{ channelId: string; userId: string }>).detail
+      if (cId === myVcId()) {
+        // Find name from active conference participants
+        const name = activeConferences[cId]?.find(p => p.id === uid)?.name ?? uid
+        setVcMessages(prev => [...prev, sysMsg(`${name} left the voice channel`)])
+        setTimeout(() => vcMsgEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+      }
+    }
+    const onScreenShare = (e: Event) => {
+      const { from, channelId: cId, screenSharing: ss } = (e as CustomEvent<{ from: string; channelId: string; screenSharing: boolean }>).detail
+      if (cId === myVcId()) {
+        const name = activeConferences[cId]?.find(p => p.id === from)?.name ?? from
+        setVcMessages(prev => [...prev, sysMsg(ss ? `${name} started screen sharing` : `${name} stopped screen sharing`)])
+        setTimeout(() => vcMsgEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+      }
+    }
+    window.addEventListener('bundy-conference-joined', onJoin)
+    window.addEventListener('bundy-conference-left', onLeave)
+    window.addEventListener('bundy-conference-screen-share', onScreenShare)
+    return () => {
+      window.removeEventListener('bundy-conference-joined', onJoin)
+      window.removeEventListener('bundy-conference-left', onLeave)
+      window.removeEventListener('bundy-conference-screen-share', onScreenShare)
+    }
+  }, [activeConferences])
 
   // VC invite: load available users
   async function openVcInvite() {
@@ -1602,15 +1702,6 @@ export function MessagesPanel({
           offerSdp={activeCall.offerSdp}
           bufferedIce={iceBufferRef.current.splice(0)}
           onEnd={() => { iceBufferRef.current = []; answerSdpRef.current = null; setActiveCall(null) }}
-        />
-      )}
-      {myConference && !myConference.channelId.startsWith('vc_') && (
-        <ConferenceWidget
-          config={config} auth={auth}
-          channelId={myConference.channelId}
-          channelName={myConference.channelName}
-          initialParticipants={myConference.participants}
-          onLeave={() => setMyConference(null)}
         />
       )}
 
@@ -1781,8 +1872,13 @@ export function MessagesPanel({
                   {!collapsedSections.dms && dmList.map(c => {
                     const partnerId = c.partnerId
                     const partnerInCall = !!(partnerId && (usersInCall.has(partnerId) || Object.values(activeConferences).some(ps => ps.some(p => p.id === partnerId))))
+                    const dmHasConference = !!activeConferences[c.id]
+                    // Check if partner is in a VC (voice channel) — key starts with "vc_"
+                    const partnerVcEntry = partnerId ? Object.entries(activeConferences).find(([key, ps]) => key.startsWith('vc_') && ps.some(p => p.id === partnerId)) : undefined
+                    const partnerInVc = partnerVcEntry ? (voiceChannels.find(vc => `vc_${vc.id}` === partnerVcEntry[0])?.name ?? 'Voice Channel') : null
+                    const partnerVc = partnerVcEntry ? voiceChannels.find(vc => `vc_${vc.id}` === partnerVcEntry[0]) : undefined
                     return (
-                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
+                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall || dmHasConference} partnerInVc={partnerInVc} onJoinVc={partnerVc ? () => joinVoiceChannel(partnerVc) : undefined} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
                     )
                   })}
                 </>
@@ -1859,17 +1955,26 @@ export function MessagesPanel({
                           <span style={{ flex: 1, fontSize: 13, color: hasParticipants ? C.sidebarTextActive : C.sidebarText, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {vc.name}
                           </span>
-                          {/* Chat icon — only visible on hover */}
-                          <button
-                            onClick={e => { e.stopPropagation(); openVcChat(vc) }}
-                            title="Open chat"
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', opacity: isHovered ? 0.7 : 0, transition: 'opacity 0.15s' }}
-                          >
-                            <MessageSquare size={12} />
-                          </button>
+                          {/* Chat icon — visible on hover or when unread */}
+                          {(() => {
+                            const unread = vcUnreadCounts.get(vc.id) ?? 0
+                            return (
+                              <button
+                                onClick={e => { e.stopPropagation(); openVcChat(vc) }}
+                                title="Open chat"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: unread > 0 ? C.text : C.sidebarText, padding: 2, borderRadius: 4, display: 'flex', alignItems: 'center', gap: 3, opacity: isHovered || unread > 0 ? 0.9 : 0, transition: 'opacity 0.15s', position: 'relative' }}
+                              >
+                                <MessageSquare size={12} />
+                                {unread > 0 && (
+                                  <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: '#ed4245', borderRadius: 6, minWidth: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', lineHeight: 1 }}>
+                                    {unread > 99 ? '99+' : unread}
+                                  </span>
+                                )}
+                              </button>
+                            )
+                          })()}
                           {hasParticipants && (
                             <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                              <span style={{ fontSize: 10, color: C.success, fontWeight: 600 }}>{vc.participants.length}</span>
                               {activeDurationSec > 0 && (
                                 <span style={{ fontSize: 9, color: C.textMuted }}>{activeDurationStr}</span>
                               )}
@@ -1920,8 +2025,8 @@ export function MessagesPanel({
           )}
         </div>
 
-        {/* Floating VC control bar at bottom of sidebar */}
-        {myConference && myConference.channelId.startsWith('vc_') && (
+        {/* Floating call control bar at bottom of sidebar */}
+        {myConference && (
           <div style={{
             borderTop: `1px solid ${C.separator}`, background: C.bgSecondary, flexShrink: 0,
             padding: '8px 10px',
@@ -1940,9 +2045,23 @@ export function MessagesPanel({
                 onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)' }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)' }}
               >
-                <Monitor size={14} />
+                <Eye size={14} />
               </button>
             </div>
+            {/* Speaker video/screen preview — only shown when user is not looking at the call room */}
+            {vcPreview && (selected || selectedVc || showThreadsView || showScheduledView) && (
+              <div
+                onClick={() => { setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false) }}
+                title="Click to open call"
+                style={{ marginBottom: 6, borderRadius: 6, overflow: 'hidden', background: '#000', position: 'relative', aspectRatio: '4/3', cursor: 'pointer' }}>
+                <video ref={vcPreviewVideoRef} autoPlay playsInline muted
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+                <div style={{ position: 'absolute', bottom: 4, left: 6, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.6)', borderRadius: 3, padding: '1px 5px' }}>
+                  {vcPreview.name}
+                </div>
+                <div style={{ position: 'absolute', top: 4, right: 4, background: 'rgba(0,0,0,0.5)', borderRadius: 3, padding: '1px 4px', fontSize: 9, color: 'rgba(255,255,255,0.7)' }}>↗</div>
+              </div>
+            )}
             {/* Bottom line: mute, deafen, screen share, end call */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
               <button
@@ -2002,8 +2121,8 @@ export function MessagesPanel({
         )}
       </div>
 
-      {/* ─── VoiceChannelView (always mounted when in VC, hidden when navigating) ─── */}
-      {myConference && myConference.channelId.startsWith('vc_') && (
+      {/* ─── VoiceChannelView (always mounted when in call, hidden when navigating) ─── */}
+      {myConference && (
         <div style={{
           flex: 1, display: (showThreadsView || showScheduledView || selectedVc || selected) ? 'none' : 'flex',
           flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden',
@@ -2013,7 +2132,9 @@ export function MessagesPanel({
             channelId={myConference.channelId}
             channelName={myConference.channelName}
             initialParticipants={myConference.participants}
-            onLeave={() => { setMyConference(null); setVcLocalState({ muted: false, deafened: false, screenSharing: false }) }}
+            joinSeq={myConference.joinSeq}
+            onLeave={() => { setMyConference(null); setVcLocalState({ muted: false, deafened: false, screenSharing: false }); setVcPreview(null) }}
+            mode={myConference.channelId.startsWith('vc_') ? 'vc' : 'call'}
           />
         </div>
       )}
@@ -2425,6 +2546,28 @@ export function MessagesPanel({
               const prevDate = prevMsg ? new Date(prevMsg.createdAt).toDateString() : ''
               const showDateSep = msgDate !== prevDate
               const senderName = msg.sender.alias ?? msg.sender.username
+
+              // System messages (join/leave/screen share)
+              if (msg.system) {
+                return (
+                  <React.Fragment key={msg.id}>
+                    {showDateSep && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0 8px', paddingLeft: 48 }}>
+                        <div style={{ flex: 1, height: 1, background: C.separator }} />
+                        <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted }}>{new Date(msg.createdAt).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
+                        <div style={{ flex: 1, height: 1, background: C.separator }} />
+                      </div>
+                    )}
+                    <div style={{ textAlign: 'center', padding: '4px 0', fontSize: 11, color: C.textMuted, fontStyle: 'italic' }}>
+                      {msg.content}
+                      <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7 }}>
+                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </React.Fragment>
+                )
+              }
+
               return (
                 <React.Fragment key={msg.id}>
                   {showDateSep && (
@@ -2527,28 +2670,7 @@ export function MessagesPanel({
 
               {/* Action icons */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                {selected.type === 'dm' && selected.partnerId && (() => {
-                  const partner = selected.members.find(m => m.userId === selected.partnerId)
-                  const targetUser = { id: selected.partnerId, name: partner?.user.alias ?? partner?.user.username ?? selected.name, avatar: selected.avatar ?? null }
-                  return (
-                    <>
-                      <button onClick={() => setActiveCall({ targetUser, callType: 'audio' })} title="Audio call"
-                        style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                        onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
-                        <Phone size={15} />
-                      </button>
-                      <button onClick={() => setActiveCall({ targetUser, callType: 'video' })} title="Video call"
-                        style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                        onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = C.textMuted }}>
-                        <Video size={15} />
-                      </button>
-                    </>
-                  )
-                })()}
-
-                {selected.type !== 'dm' && (() => {
+                {(() => {
                   const conf = activeConferences[selected.id]
                   const inThisConf = myConference?.channelId === selected.id
                   if (inThisConf) return null
@@ -2655,7 +2777,7 @@ export function MessagesPanel({
           )}
 
           {/* Call in progress banner */}
-          {selected.type !== 'dm' && activeConferences[selected.id] && myConference?.channelId !== selected.id && (() => {
+          {activeConferences[selected.id] && myConference?.channelId !== selected.id && (() => {
             const conf = activeConferences[selected.id]
             return (
               <div style={{ padding: '8px 16px', background: 'linear-gradient(90deg, #43B58122, #43B58111)', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -2701,9 +2823,11 @@ export function MessagesPanel({
                 const fwdContent = fwdMatch ? fwdMatch[2] : null
                 const REPORT_URL_RE = /\/report\/[a-z0-9]+\/[a-z0-9]+/i
                 const TASK_URL_RE = /\/tasks\/[a-z0-9]+$/i
+                const FEEDBACK_URL_RE = /\/report\/feedback\/[a-z0-9]+/i
                 const allUrls = isAttachment ? [] : extractUrls(msg.content)
-                const plainUrls = allUrls.filter(u => !isImageUrl(u) && !REPORT_URL_RE.test(u) && !TASK_URL_RE.test(u))
-                const reportLinks = allUrls.map(u => REPORT_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
+                const plainUrls = allUrls.filter(u => !isImageUrl(u) && !FEEDBACK_URL_RE.test(u) && !REPORT_URL_RE.test(u) && !TASK_URL_RE.test(u))
+                const feedbackLinks = allUrls.map(u => FEEDBACK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
+                const reportLinks = allUrls.filter(u => !FEEDBACK_URL_RE.test(u)).map(u => REPORT_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
                 const taskLinks = allUrls.map(u => TASK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
                 const isEditing = editingMsgId === msg.id
                 const isHovered = hoveredMsgId === msg.id
@@ -2773,8 +2897,14 @@ export function MessagesPanel({
                                 ? new Date(otherReads[0].readAt).toLocaleString('en-US', fmtOpts)
                                 : null
                               const Icon = isRead ? CheckCheck : Check
+                              const iconColor = isRead ? C.accent : C.textMuted
+                              const isGroupOrChannel = selected?.type === 'group' || selected?.type === 'channel'
+                              const totalOthers = isGroupOrChannel ? (selected.members?.filter(m => m.userId !== auth.userId).length ?? 0) : 0
+                              // Build reader names for tooltip
+                              const memberMap = new Map((selected?.members ?? []).map(m => [m.userId, m.user.alias ?? m.user.username]))
+                              const readerNames = otherReads.map(r => memberMap.get(r.userId) ?? 'Unknown')
                               return (
-                                <span style={{ position: 'relative', alignSelf: 'center', display: 'inline-flex', cursor: 'default' }}
+                                <span style={{ position: 'relative', alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'default' }}
                                   onMouseEnter={e => {
                                     const tip = e.currentTarget.querySelector('[data-tip]') as HTMLElement
                                     if (tip) tip.style.opacity = '1'
@@ -2783,7 +2913,12 @@ export function MessagesPanel({
                                     const tip = e.currentTarget.querySelector('[data-tip]') as HTMLElement
                                     if (tip) tip.style.opacity = '0'
                                   }}>
-                                  <Icon size={14} color={C.textMuted} />
+                                  <Icon size={14} color={iconColor} />
+                                  {isGroupOrChannel && isRead && (
+                                    <span style={{ fontSize: 10, color: C.textMuted }}>
+                                      {otherReads.length === totalOthers ? 'Read by all' : `Read by ${otherReads.length}`}
+                                    </span>
+                                  )}
                                   <span data-tip="" style={{
                                     position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
                                     marginBottom: 6, padding: '6px 10px', borderRadius: 6,
@@ -2795,7 +2930,12 @@ export function MessagesPanel({
                                     zIndex: 50, display: 'flex', flexDirection: 'column', gap: 2,
                                   }}>
                                     <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Check size={11} color={C.textMuted} />Sent {sentTime}</span>
-                                    {isRead && readTime && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><CheckCheck size={11} color={C.textMuted} />Read {readTime}</span>}
+                                    {isRead && readTime && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><CheckCheck size={11} color={iconColor} />Read {readTime}</span>}
+                                    {isGroupOrChannel && readerNames.length > 0 && (
+                                      <span style={{ borderTop: `1px solid ${C.separator}`, paddingTop: 3, marginTop: 1, fontSize: 10, color: C.textMuted }}>
+                                        {readerNames.join(', ')}
+                                      </span>
+                                    )}
                                   </span>
                                 </span>
                               )
@@ -2886,6 +3026,10 @@ export function MessagesPanel({
                           <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>
                         )}
                         {plainUrls.map((url, ui) => <OgPreview key={ui} url={url} config={config} />)}
+                        {feedbackLinks.map((m, fi) => {
+                          const matchedUrl = allUrls.find(u => FEEDBACK_LINK_RE.test(u)) || ''
+                          return <FeedbackLinkCard key={`f${fi}`} linkId={m[1]} pinId={m[2] || null} fullUrl={matchedUrl} config={config} />
+                        })}
                         {reportLinks.map((m, ri) => <ReportLinkCard key={`r${ri}`} clientId={m[1]} projectId={m[2]} itemType={m[3] || null} itemId={m[4] || null} config={config} />)}
                         {taskLinks.map((m, ti) => <TaskLinkCard key={`t${ti}`} taskId={m[1]} config={config} />)}
                         {grouped.length > 0 && (
@@ -2933,6 +3077,14 @@ export function MessagesPanel({
                           }, {
                             icon: <MessageCircle size={16} />, title: 'Reply in thread',
                             onClick: () => openThread(msg), color: C.textSecondary,
+                          }, {
+                            icon: <Quote size={16} />, title: 'Quote',
+                            onClick: () => {
+                              const senderAlias = usersMap[msg.senderId] ?? msg.senderId
+                              const quoted = msg.content.split('\n').map(l => `> ${l}`).join('\n')
+                              const quoteBlock = `> **${senderAlias}**\n${quoted}\n\n`
+                              setInput(prev => quoteBlock + prev)
+                            }, color: C.textSecondary,
                           }, {
                             icon: <CornerDownRight size={16} />, title: 'Forward',
                             onClick: () => setForwardingMsg(msg), color: C.textSecondary,
@@ -3081,20 +3233,16 @@ export function MessagesPanel({
                     )
                   })}
                 </div>
-                <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.separator}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                  <textarea
-                    value={threadInput}
-                    onChange={e => setThreadInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadReply() } }}
-                    placeholder="Reply…"
-                    rows={1}
-                    style={{ flex: 1, resize: 'none', padding: '8px 10px', fontSize: 12, border: `1px solid ${C.separator}`, borderRadius: 8, outline: 'none', color: C.text, background: C.bgInput, minHeight: 32, maxHeight: 80, fontFamily: 'inherit' }}
-                  />
-                  <button onClick={sendThreadReply} disabled={!threadInput.trim() || sendingThread}
-                    style={{ padding: '8px 10px', borderRadius: 8, border: 'none', background: threadInput.trim() ? C.accent : C.lgBg, color: threadInput.trim() ? '#fff' : C.textMuted, cursor: threadInput.trim() ? 'pointer' : 'default', flexShrink: 0 }}>
-                    {sendingThread ? <Loader size={14} /> : <Send size={14} />}
-                  </button>
-                </div>
+                <MessageInput
+                  placeholder="Reply…"
+                  config={config}
+                  channelId={selected?.id ?? ''}
+                  onTyping={() => {}}
+                  input={threadInput}
+                  setInput={setThreadInput}
+                  sendFn={sendThreadReply}
+                  sending={sendingThread}
+                />
               </div>
             )}
 
@@ -3221,7 +3369,7 @@ export function MessagesPanel({
           />
         </div>
 
-      ) : !(myConference && myConference.channelId.startsWith('vc_')) ? (
+      ) : !myConference ? (
         /* ─── Empty state ──────────────────────────────────────────────────── */
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textMuted, flexDirection: 'column', gap: 12 }}>
           <MessageSquare size={40} strokeWidth={1} />
@@ -3377,6 +3525,7 @@ export function MessagesPanel({
         </>,
         document.body
       )}
+
     </div>
   )
 }

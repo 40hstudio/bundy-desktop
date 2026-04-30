@@ -1,22 +1,24 @@
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import type { ApiConfig } from '../types'
-
-const DEMO_MODE = false // keep in sync with FullDashboard
+import { useConfigStore } from '../stores/configStore'
 
 /** @internal used by Avatar, AuthImage to resolve server-relative URLs */
 export let apiBase = ''
 export function setApiBase(base: string) { apiBase = base }
 
+/**
+ * Loads the API config from the main process on mount and writes it to the
+ * global config store. Returns the current config (null until loaded).
+ *
+ * New code should prefer `useConfig()` from `stores/configStore` directly —
+ * this hook remains for backward compatibility with existing call sites.
+ */
 export function useApiConfig(): ApiConfig | null {
-  const [config, setConfig] = useState<ApiConfig | null>(
-    DEMO_MODE ? { apiBase: 'http://localhost:0', token: 'demo' } : null
-  )
+  const config = useConfigStore((s) => s.config)
+  const setConfig = useConfigStore((s) => s.setConfig)
   useEffect(() => {
-    if (DEMO_MODE) return
-    window.electronAPI.getApiConfig().then(c => {
-      setApiBase(c.apiBase)
-      setConfig(c)
-    }).catch(() => {})
-  }, [])
+    if (config) return
+    window.electronAPI.getApiConfig().then(c => setConfig(c)).catch(() => {})
+  }, [config, setConfig])
   return config
 }

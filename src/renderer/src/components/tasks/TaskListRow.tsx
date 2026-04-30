@@ -4,10 +4,9 @@ import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_STATUS_ICONS, TASK_STATUS_LABELS, PRIORITY_COLORS } from './constants'
 
-export default function TaskListRow({ task, auth: _auth, onOpen, draggable: canDrag, onDragStart, onDragEnd, isDragging, showDivider }: {
+export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, unreadCount }: {
   task: Task; auth: Auth; onOpen: () => void
-  draggable?: boolean; onDragStart?: () => void; onDragEnd?: () => void; isDragging?: boolean
-  showDivider?: boolean
+  showDivider?: boolean; unreadCount?: number
 }) {
   const isDone = task.status === 'done'
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
@@ -15,13 +14,9 @@ export default function TaskListRow({ task, auth: _auth, onOpen, draggable: canD
   return (
     <div
       onClick={onOpen}
-      draggable={canDrag}
-      onDragStart={canDrag ? (e) => { onDragStart?.(); e.dataTransfer.effectAllowed = 'move' } : undefined}
-      onDragEnd={canDrag ? () => onDragEnd?.() : undefined}
       style={{
         padding: '10px 4px',
-        display: 'flex', alignItems: 'center', gap: 10, cursor: canDrag ? 'grab' : 'pointer',
-        opacity: isDragging ? 0.4 : 1,
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
         borderTop: showDivider ? `1px solid ${C.separator}` : 'none',
         transition: 'background 0.12s', borderRadius: 4,
       }}
@@ -65,6 +60,15 @@ export default function TaskListRow({ task, auth: _auth, onOpen, draggable: canD
         <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
           <MessageSquare size={10} /> {task._count.comments}
         </span>
+      )}
+      {(unreadCount ?? 0) > 0 && (
+        <span style={{
+          minWidth: 16, height: 16, borderRadius: 8,
+          background: C.warning,
+          color: '#fff', fontSize: 9, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '0 4px', lineHeight: 1, flexShrink: 0,
+        }}>{unreadCount! > 99 ? '99+' : unreadCount}</span>
       )}
       <span style={{ fontSize: 10, fontWeight: 600, color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0 }}>
         {TASK_STATUS_LABELS[task.status] ?? task.status}

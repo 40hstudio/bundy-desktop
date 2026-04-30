@@ -1,6 +1,7 @@
 import React from 'react'
 import { CheckSquare, ExternalLink, FolderOpen } from 'lucide-react'
 import { C } from '../theme'
+import { sanitizeHtml } from './sanitize'
 
 // ─── URL type helpers ─────────────────────────────────────────────────────────
 
@@ -49,11 +50,12 @@ export function simpleMarkdown(md: string): string {
 
 const TASK_LINK_RE = /\/tasks\/([a-z0-9]+)$/i
 const REPORT_LINK_RE = /\/report\/([a-z0-9]+)\/([a-z0-9]+)(?:\/(folder|document|file)\/([a-z0-9]+))?$/i
+const FEEDBACK_LINK_RE = /\/report\/feedback\/([a-z0-9]+)(?:\?pin=([a-z0-9]+))?/i
 
-export { TASK_LINK_RE, REPORT_LINK_RE }
+export { TASK_LINK_RE, REPORT_LINK_RE, FEEDBACK_LINK_RE }
 
 export function parseContent(text: string, isMe = false, usersMap?: Record<string, string>): React.ReactNode {
-  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
+  const linkRe = /!?\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>\]"']+)/g
   const result: React.ReactNode[] = []
   let cursor = 0
   let m: RegExpExecArray | null
@@ -63,16 +65,20 @@ export function parseContent(text: string, isMe = false, usersMap?: Record<strin
     if (m.index > cursor) {
       result.push(formatInline(text.slice(cursor, m.index), keyIdx++))
     }
+    const isImgMd = m[0].startsWith('!')
     const label = m[1] ?? m[3]
     const url = m[2] ?? m[3]
     const linkColor = isMe ? 'rgba(255,255,255,0.9)' : C.accent
     const taskMatch = TASK_LINK_RE.exec(url)
-    const reportMatch = REPORT_LINK_RE.exec(url)
+    const feedbackMatch = FEEDBACK_LINK_RE.exec(url)
+    const reportMatch = !feedbackMatch ? REPORT_LINK_RE.exec(url) : null
     if (taskMatch) {
       // Skip inline rendering — TaskLinkCard handles display below the message
+    } else if (feedbackMatch) {
+      // Skip inline rendering — FeedbackLinkCard handles display below the message
     } else if (reportMatch) {
       // Skip inline rendering — ReportLinkCard handles display below the message
-    } else if (isImageUrl(url)) {
+    } else if (isImgMd || isImageUrl(url)) {
       result.push(
         <img key={keyIdx++} src={url} alt={label ?? ''} onClick={() => window.electronAPI.openExternal(url)}
           style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, display: 'block', marginTop: 4, cursor: 'pointer' }}
@@ -104,10 +110,13 @@ export function formatInline(text: string, key?: number, usersMap?: Record<strin
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/@([\w.]+)/g, (_match, username) => {
-      const displayName = usersMap?.[username] || username
-      return `<span style="display:inline-flex;align-items:center;gap:2px;padding:0 5px;border-radius:4px;background:${C.accent}22;color:${C.accent};font-weight:600;font-size:0.9em;vertical-align:baseline;cursor:default">${displayName}</span>`
+      const isBroadcast = username === 'all' || username === 'here'
+      const displayName = isBroadcast ? `@${username}` : (usersMap?.[username] || username)
+      const bgColor = isBroadcast ? '#FAA61A33' : `${C.accent}22`
+      const fgColor = isBroadcast ? '#FAA61A' : C.accent
+      return `<span style="display:inline-flex;align-items:center;gap:2px;padding:0 5px;border-radius:4px;background:${bgColor};color:${fgColor};font-weight:600;font-size:0.9em;vertical-align:baseline;cursor:default">${displayName}</span>`
     })
-  return <span key={key} dangerouslySetInnerHTML={{ __html: html }} style={{ userSelect: 'text', WebkitUserSelect: 'text', wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'pre-wrap' }} />
+  return <span key={key} dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} style={{ userSelect: 'text', WebkitUserSelect: 'text', wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'pre-wrap' }} />
 }
 
 export function renderMessageContent(text: string, isMe = false, usersMap?: Record<string, string>): React.ReactNode {

@@ -1,11 +1,8 @@
-import store from './store'
+import store, { getDeviceId, getApiBase } from './store'
 import { getToken } from './secure-storage'
 
-function baseUrl(): string {
-  return store.get('apiBase') || 'https://bundy.40h.studio'
-}
-
-function authHeader(): Record<string, string> {
+/** Builds an Authorization header from the stored desktop token, or {} if logged out. */
+export function authHeader(): Record<string, string> {
   const token = getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
@@ -31,26 +28,82 @@ function updateReachable(online: boolean): void {
   _onOnlineStateChange?.(online)
 }
 
-/** Throws if the response is not ok. Fires the expiry handler on 401. */
-async function checkResponse(res: Response): Promise<void> {
+// ─── Request wrapper ───────────────────────────────────────────────────────────
+
+type RequestOptions = {
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT'
+  body?: unknown
+  /** AbortSignal timeout in ms. */
+  timeoutMs?: number
+  /** Extra headers to merge in. */
+  headers?: Record<string, string>
+  /** Override the API base for this request (used by createWebSession). */
+  baseOverride?: string
+  /** When true, suppress reachability tracking (used for fire-and-forget calls). */
+  silent?: boolean
+}
+
+class HttpError extends Error {
+  constructor(public status: number, message: string) { super(message) }
+}
+
+/**
+ * Single fetch wrapper used by every endpoint helper.
+ *  - Adds Authorization + Content-Type (when body present)
+ *  - Applies AbortSignal.timeout
+ *  - Maps 401 → token-expired handler + throws TOKEN_EXPIRED
+ *  - On non-2xx: parses JSON `{error}` field for the message
+ *  - Tracks reachability so the offline indicator stays accurate
+ */
+export async function request<T = unknown>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const { method = 'GET', body, timeoutMs, headers, baseOverride, silent } = opts
+  const url = `${baseOverride ?? getApiBase()}${path}`
+  const init: RequestInit = {
+    method,
+    headers: {
+      ...authHeader(),
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
+    },
+  }
+  if (body !== undefined) init.body = JSON.stringify(body)
+  if (timeoutMs) init.signal = AbortSignal.timeout(timeoutMs)
+
+  let res: Response
+  try {
+    res = await fetch(url, init)
+  } catch (err) {
+    if (!silent) updateReachable(false)
+    throw err
+  }
+
+  if (!silent) updateReachable(true)
+
   if (res.status === 401) {
     _onTokenExpired?.()
-    throw new Error('TOKEN_EXPIRED')
+    throw new HttpError(401, 'TOKEN_EXPIRED')
   }
   if (!res.ok) {
     const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
+    throw new HttpError(res.status, json.error ?? `HTTP ${res.status}`)
   }
+
+  // Some endpoints return 204 / no JSON body
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
 }
+
+// ─── Token exchange (no auth header) ───────────────────────────────────────────
 
 export async function exchangeToken(
   shortToken: string,
-  deviceName: string
+  deviceName: string,
 ): Promise<{ desktopToken: string; userId: string; username: string; role: string; avatarUrl: string | null }> {
-  const res = await fetch(`${baseUrl()}/api/desktop/token`, {
+  // Special: this endpoint authenticates with the short token in the body, not Bearer.
+  const res = await fetch(`${getApiBase()}/api/desktop/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: shortToken, deviceName })
+    body: JSON.stringify({ token: shortToken, deviceName, deviceId: getDeviceId() }),
   })
   if (!res.ok) {
     const json = (await res.json().catch(() => ({}))) as { error?: string }
@@ -58,6 +111,8 @@ export async function exchangeToken(
   }
   return res.json() as Promise<{ desktopToken: string; userId: string; username: string; role: string; avatarUrl: string | null }>
 }
+
+// ─── Bundy status ──────────────────────────────────────────────────────────────
 
 export interface BundyStatus {
   isClockedIn: boolean
@@ -69,7 +124,6 @@ export interface BundyStatus {
   role: string
 }
 
-// The web API uses different action names — map desktop → server
 const ACTION_MAP = {
   'clock-in': 'CHECK_IN',
   'clock-out': 'CLOCK_OUT',
@@ -88,7 +142,7 @@ interface BundyApiResponse {
 /** Mirrors the web dashboard todayMs calculation exactly. */
 function computeElapsedMs(
   logs: Array<{ action: string; timestamp: string }>,
-  currentStatus: string
+  currentStatus: string,
 ): number {
   let total = 0
   let lastIn: number | null = null
@@ -107,105 +161,86 @@ function computeElapsedMs(
 }
 
 export async function getBundyStatus(): Promise<BundyStatus> {
-  const res = await fetch(`${baseUrl()}/api/bundy`, {
-    headers: { ...authHeader() }
-  })
-  await checkResponse(res)
-
-  const data = (await res.json()) as BundyApiResponse
+  const data = await request<BundyApiResponse>('/api/bundy', { timeoutMs: 5_000 })
   const { currentStatus, todayLogs } = data
-
-  const isClockedIn = ['CHECK_IN', 'BACK', 'BREAK'].includes(currentStatus)
-  const isTracking = ['CHECK_IN', 'BACK'].includes(currentStatus)
-  const onBreak = currentStatus === 'BREAK'
-  const elapsedMs = computeElapsedMs(todayLogs, currentStatus)
-
   return {
-    isClockedIn,
-    isTracking,
-    onBreak,
-    elapsedMs,
+    isClockedIn: ['CHECK_IN', 'BACK', 'BREAK'].includes(currentStatus),
+    isTracking: ['CHECK_IN', 'BACK'].includes(currentStatus),
+    onBreak: currentStatus === 'BREAK',
+    elapsedMs: computeElapsedMs(todayLogs, currentStatus),
     username: store.get('username') || '',
     role: store.get('role') || '',
   }
 }
 
 export async function doAction(action: DesktopAction, _note?: string): Promise<void> {
-  const serverAction = ACTION_MAP[action]
-  const res = await fetch(`${baseUrl()}/api/bundy`, {
+  await request('/api/bundy', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ action: serverAction })
+    body: { action: ACTION_MAP[action] },
+    timeoutMs: 3_000,
   })
-  await checkResponse(res)
 }
 
 export async function submitReport(content: string): Promise<void> {
-  const res = await fetch(`${baseUrl()}/api/bundy/report`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ content })
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
+  await request('/api/bundy/report', { method: 'POST', body: { content } })
 }
 
-export async function sendDesktopHeartbeat(currentActivity?: { app: string | null; url: string | null }, idle?: boolean): Promise<{ currentStatus: string | null; midnightClockOut: boolean }> {
-  if (!store.get('desktopToken')) return { currentStatus: null, midnightClockOut: false }
+export async function sendDesktopHeartbeat(
+  currentActivity?: { app: string | null; url: string | null; runningApps?: string[] },
+  idle?: boolean,
+): Promise<{ currentStatus: string | null; midnightClockOut: boolean; workLimitBreak: boolean }> {
+  if (!getToken()) return { currentStatus: null, midnightClockOut: false, workLimitBreak: false }
   try {
-    const res = await fetch(`${baseUrl()}/api/desktop/heartbeat`, {
-      method: 'POST',
-      headers: { ...authHeader(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentApp: currentActivity?.app ?? null, currentUrl: currentActivity?.url ?? null, idle: idle ?? false }),
-    })
-    if (res.ok) {
-      updateReachable(true)
-      const data = (await res.json()) as { currentStatus?: string; midnightClockOut?: boolean }
-      return { currentStatus: data.currentStatus ?? null, midnightClockOut: data.midnightClockOut ?? false }
+    const data = await request<{ currentStatus?: string; midnightClockOut?: boolean; workLimitBreak?: boolean }>(
+      '/api/desktop/heartbeat',
+      {
+        method: 'POST',
+        body: {
+          currentApp: currentActivity?.app ?? null,
+          currentUrl: currentActivity?.url ?? null,
+          idle: idle ?? false,
+          runningApps: currentActivity?.runningApps ?? [],
+        },
+        timeoutMs: 10_000,
+      },
+    )
+    return {
+      currentStatus: data.currentStatus ?? null,
+      midnightClockOut: data.midnightClockOut ?? false,
+      workLimitBreak: data.workLimitBreak ?? false,
     }
-    updateReachable(false)
   } catch {
-    updateReachable(false)
+    return { currentStatus: null, midnightClockOut: false, workLimitBreak: false }
   }
-  return { currentStatus: null, midnightClockOut: false }
 }
 
 export async function breakOnQuit(): Promise<void> {
-  if (!store.get('desktopToken')) return
-  // Immediately marks desktop offline + auto-breaks if user is clocked in
-  await fetch(`${baseUrl()}/api/desktop/quit`, {
-    method: 'POST',
-    headers: { ...authHeader() }
-  }).catch(() => {})
+  if (!getToken()) return
+  // Best-effort: marks desktop offline + auto-breaks if user is clocked in
+  await request('/api/desktop/quit', { method: 'POST', silent: true }).catch(() => {})
 }
 
 /** Exchange the desktop Bearer token for a one-time session URL (30 s TTL). */
 export async function createWebSession(overrideBase?: string): Promise<{ jwt: string; maxAge: number }> {
-  const base = overrideBase ?? baseUrl()
-  const res = await fetch(`${base}/api/desktop/web-session`, {
+  return request<{ jwt: string; maxAge: number }>('/api/desktop/web-session', {
     method: 'POST',
-    headers: { ...authHeader() }
+    baseOverride: overrideBase,
   })
-  if (!res.ok) throw new Error('Failed to create web session')
-  const data = (await res.json()) as { jwt: string; maxAge: number }
-  return data
 }
 
 export async function uploadScreenshot(
   imageBase64: string,
   displayIndex: number,
-  capturedAt: string
+  capturedAt: string,
+  format: 'png' | 'jpeg' = 'jpeg',
 ): Promise<void> {
-  const res = await fetch(`${baseUrl()}/api/activity/screenshot`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ imageBase64, displayIndex, capturedAt })
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    console.error('[api] screenshot upload failed:', json.error ?? `HTTP ${res.status}`)
+  try {
+    await request('/api/activity/screenshot', {
+      method: 'POST',
+      body: { imageBase64, displayIndex, capturedAt, format },
+    })
+  } catch (err) {
+    console.error('[api] screenshot upload failed:', err instanceof Error ? err.message : err)
   }
 }
 
@@ -235,97 +270,53 @@ export interface DailyPlan {
 }
 
 export async function getDailyPlan(): Promise<DailyPlan | null> {
-  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan`, {
-    headers: { ...authHeader() }
-  })
-  if (!res.ok) return null
-  const data = (await res.json()) as { plan: DailyPlan | null }
-  return data.plan
+  try {
+    const data = await request<{ plan: DailyPlan | null }>('/api/desktop/daily-plan')
+    return data.plan
+  } catch {
+    return null
+  }
 }
 
 export async function ensureDailyPlan(): Promise<DailyPlan> {
-  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({})
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
-  const data = (await res.json()) as { plan: DailyPlan }
+  const data = await request<{ plan: DailyPlan }>('/api/desktop/daily-plan', { method: 'POST', body: {} })
   return data.plan
 }
 
 export async function getProjects(): Promise<PlanProject[]> {
-  const res = await fetch(`${baseUrl()}/api/desktop/projects`, {
-    headers: { ...authHeader() }
-  })
-  if (!res.ok) return []
-  const data = (await res.json()) as { projects: PlanProject[] }
-  return data.projects
+  try {
+    const data = await request<{ projects: PlanProject[] }>('/api/desktop/projects')
+    return data.projects
+  } catch {
+    return []
+  }
 }
 
-export async function addPlanItem(
-  projectName: string,
-  details: string
-): Promise<PlanItem> {
-  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
+export async function addPlanItem(projectName: string, details: string): Promise<PlanItem> {
+  const data = await request<{ item: PlanItem }>('/api/desktop/daily-plan/items', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ projectName, details })
+    body: { projectName, details },
   })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
-  const data = (await res.json()) as { item: PlanItem }
   return data.item
 }
 
-export async function updatePlanItem(
-  itemId: string,
-  status?: string,
-  outcome?: string
-): Promise<PlanItem> {
-  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
+export async function updatePlanItem(itemId: string, status?: string, outcome?: string): Promise<PlanItem> {
+  const data = await request<{ item: PlanItem }>('/api/desktop/daily-plan/items', {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ itemId, status, outcome })
+    body: { itemId, status, outcome },
   })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
-  const data = (await res.json()) as { item: PlanItem }
   return data.item
 }
 
 export async function deletePlanItem(itemId: string): Promise<void> {
-  const res = await fetch(`${baseUrl()}/api/desktop/daily-plan/items`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ itemId })
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
+  await request('/api/desktop/daily-plan/items', { method: 'DELETE', body: { itemId } })
 }
 
 export async function submitReportWithPlan(
   content: string,
-  planItems: Array<{ itemId: string; status: string; outcome?: string }>
+  planItems: Array<{ itemId: string; status: string; outcome?: string }>,
 ): Promise<void> {
-  const res = await fetch(`${baseUrl()}/api/bundy/report`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ content, planItems })
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
-  }
+  await request('/api/bundy/report', { method: 'POST', body: { content, planItems } })
 }
 
 // ─── SSE connection for real-time sync ─────────────────────────────────────────
@@ -353,9 +344,9 @@ export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void
     sseReconnectTimer = null
     if (controller.signal.aborted) return
 
-    fetch(`${baseUrl()}/api/bundy/stream`, {
+    fetch(`${getApiBase()}/api/bundy/stream`, {
       headers: { ...authHeader() },
-      signal: controller.signal
+      signal: controller.signal,
     })
       .then((res) => {
         if (!res.ok || !res.body) {
@@ -363,7 +354,6 @@ export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void
           return
         }
 
-        // Fire onReconnect on every reconnect (not the first connect)
         if (hasConnectedOnce && onReconnect) onReconnect()
         hasConnectedOnce = true
 
@@ -388,6 +378,8 @@ export function connectSSE(onUpdate: () => void, onReconnect?: () => void): void
               } else if (line.startsWith('data: ')) {
                 if (currentEvent === 'update') {
                   onUpdate()
+                } else if (currentEvent === 'force-logout') {
+                  if (_onTokenExpired) _onTokenExpired()
                 }
                 currentEvent = ''
               } else if (line === '') {
@@ -431,13 +423,9 @@ export async function sendHeartbeat(data: {
   topApps?: Record<string, number>
   topUrls?: Record<string, number>
 }): Promise<void> {
-  const res = await fetch(`${baseUrl()}/api/activity/heartbeat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify(data)
-  })
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string }
-    console.error('[api] heartbeat failed:', json.error ?? `HTTP ${res.status}`)
+  try {
+    await request('/api/activity/heartbeat', { method: 'POST', body: data })
+  } catch (err) {
+    console.error('[api] heartbeat failed:', err instanceof Error ? err.message : err)
   }
 }

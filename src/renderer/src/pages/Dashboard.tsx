@@ -4,6 +4,7 @@ import {
   CircleDot, PlayCircle, FlaskConical, Send, Ban, CheckCircle2, RotateCcw,
   WifiOff, ExternalLink
 } from 'lucide-react'
+import { sanitizeHtml } from '../utils/sanitize'
 
 interface Auth {
   userId: string
@@ -247,12 +248,31 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   void tick
 
   const doAction = useCallback(async (action: string) => {
+    // Block clock-in / back if permissions are missing
+    if ((action === 'clock-in' || action === 'back' || action === 'break-end') && permissions) {
+      const missingPerms: string[] = []
+      if (permissions.screen !== 'granted') missingPerms.push('Screen Recording')
+      if (!permissions.accessibility) missingPerms.push('Accessibility')
+      if (missingPerms.length > 0) {
+        setError(`Grant ${missingPerms.join(' and ')} permission${missingPerms.length > 1 ? 's' : ''} before clocking in`)
+        return
+      }
+    }
+
+    // Optimistic UI update — change buttons IMMEDIATELY before IPC
+    if (status) {
+      const optimistic = { ...status, elapsedMs: liveMs }
+      if (action === 'break-start') { optimistic.isTracking = false; optimistic.onBreak = true }
+      else if (action === 'break-end') { optimistic.isTracking = true; optimistic.onBreak = false }
+      else if (action === 'clock-in') { optimistic.isClockedIn = true; optimistic.isTracking = true; optimistic.onBreak = false; optimistic.elapsedMs = 0 }
+      else if (action === 'clock-out') { optimistic.isClockedIn = false; optimistic.isTracking = false; optimistic.onBreak = false }
+      applyStatus(optimistic)
+    }
+
     setLoading(action)
     setError('')
     try {
       await window.electronAPI.doAction(action)
-      const next = await window.electronAPI.getStatus()
-      applyStatus(next)
       // After check-in, ensure today's plan exists and reload
       if (action === 'clock-in') {
         await window.electronAPI.ensureDailyPlan()
@@ -264,7 +284,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
     } finally {
       setLoading(null)
     }
-  }, [applyStatus, loadPlan, loadProjects])
+  }, [applyStatus, loadPlan, loadProjects, permissions])
 
   const missingScreen = permissions?.screen !== 'granted'
   const missingAccessibility = !permissions?.accessibility
@@ -1120,7 +1140,7 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                     }}
                     dangerouslySetInnerHTML={{
                       __html: reportContent.trim()
-                        ? simpleMarkdown(reportContent)
+                        ? sanitizeHtml(simpleMarkdown(reportContent))
                         : '<span style="opacity:0.4">Nothing to preview yet…</span>'
                     }}
                   />
@@ -1170,9 +1190,11 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
                         setShowReportModal(false)
                         setShowPreview(false)
                         setReportContent('')
-                        await loadPlan()
-                        const next = await window.electronAPI.getStatus()
-                        applyStatus(next)
+                        // Optimistic clock-out UI update
+                        if (status) {
+                          applyStatus({ ...status, isClockedIn: false, isTracking: false, onBreak: false, elapsedMs: liveMs })
+                        }
+                        await loadPlan().catch(() => {})
                       } catch (err: unknown) {
                         setReportError(err instanceof Error ? err.message : 'Failed to submit')
                       } finally {

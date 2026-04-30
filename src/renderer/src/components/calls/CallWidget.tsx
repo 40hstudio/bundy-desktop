@@ -4,8 +4,8 @@ import { ApiConfig, Auth } from '../../types'
 import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
 import CallControls from './CallControls'
-
-const DEMO_MODE = false
+import { useDraggableWindow } from '../../hooks/useDraggableWindow'
+import { useAutoHideControls } from '../../hooks/useAutoHideControls'
 
 export default function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
   config: ApiConfig; auth: Auth
@@ -23,9 +23,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   const [videoOff, setVideoOff] = useState(false)
   const [windowMode, setWindowMode] = useState<'mini' | 'normal' | 'fullscreen'>('normal')
   const [floatingOnDesktop, setFloatingOnDesktop] = useState(false)
-  const [position, setPosition] = useState({ x: window.innerWidth - 320, y: window.innerHeight - 240 })
-  const [isDragging, setIsDragging] = useState(false)
-  const dragOffset = useRef({ x: 0, y: 0 })
+  const { position, setPosition, isDragging, startDrag } = useDraggableWindow()
   const [callDuration, setCallDuration] = useState(0)
   const durationTimer = useRef<NodeJS.Timeout | null>(null)
   const localVideo = useRef<HTMLVideoElement>(null)
@@ -36,8 +34,6 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   const localStream = useRef<MediaStream | null>(null)
   const iceBuffer = useRef<RTCIceCandidateInit[]>(bufferedIce ? [...bufferedIce] : [])
   const remoteDescSet = useRef(false)
-  const [showControls, setShowControls] = useState(true)
-  const hideTimer = useRef<NodeJS.Timeout | null>(null)
   const renegotiating = useRef(false)
   const [screenSharing, setScreenSharing] = useState(false)
   const screenShareStream = useRef<MediaStream | null>(null)
@@ -62,12 +58,6 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   const reactionIdRef = useRef(0)
 
   useEffect(() => {
-    if (DEMO_MODE) {
-      setStatus('connected')
-      statusRef.current = 'connected'
-      durationTimer.current = setInterval(() => setCallDuration(d => d + 1), 1000)
-      return () => { if (durationTimer.current) clearInterval(durationTimer.current) }
-    }
     const ctrl = new AbortController()
     listenForSignals(ctrl)
     if (isReceiver) {
@@ -133,30 +123,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
     }
   }, [remoteHasVideo])
 
-  useEffect(() => {
-    if (!isDragging) return
-    const onMove = (e: MouseEvent) => {
-      const x = Math.max(0, Math.min(window.innerWidth - 300, e.clientX - dragOffset.current.x))
-      const y = Math.max(0, Math.min(window.innerHeight - 80, e.clientY - dragOffset.current.y))
-      setPosition({ x, y })
-    }
-    const onUp = () => setIsDragging(false)
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-  }, [isDragging])
-
-  useEffect(() => {
-    if (windowMode !== 'fullscreen') { setShowControls(true); return }
-    const onMouseMove = () => {
-      setShowControls(true)
-      if (hideTimer.current) clearTimeout(hideTimer.current)
-      hideTimer.current = setTimeout(() => setShowControls(false), 3000)
-    }
-    onMouseMove()
-    window.addEventListener('mousemove', onMouseMove)
-    return () => { window.removeEventListener('mousemove', onMouseMove); if (hideTimer.current) clearTimeout(hideTimer.current) }
-  }, [windowMode])
+  const showControls = useAutoHideControls(windowMode === 'fullscreen')
 
   const handleSetWindowMode = (mode: 'mini' | 'normal' | 'fullscreen') => {
     if (mode === 'mini') {
@@ -198,13 +165,20 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   }, [status, floatingOnDesktop])
 
   async function setupPeer(stream: MediaStream) {
+    // Fetch ICE servers from our server (self-hosted TURN)
+    let iceServers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+    try {
+      const res = await fetch(`${config.apiBase}/api/ice-servers`, {
+        headers: { Authorization: `Bearer ${config.token}` },
+      })
+      if (res.ok) iceServers = await res.json()
+    } catch { /* fallback to STUN-only */ }
+
     const peerConn = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-      ],
+      iceServers,
       iceTransportPolicy: 'all',
     })
     pc.current = peerConn
@@ -568,7 +542,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
     return () => clearInterval(interval)
   }, [status])
 
-  const handleDragStart = (e: React.MouseEvent) => { dragOffset.current = { x: e.clientX - position.x, y: e.clientY - position.y }; setIsDragging(true) }
+  const handleDragStart = startDrag
   const showVideo = videoActive || remoteHasVideo
   const fmtDur = () => `${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, '0')}`
 

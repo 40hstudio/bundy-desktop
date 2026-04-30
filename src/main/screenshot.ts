@@ -1,58 +1,48 @@
 import { desktopCapturer } from 'electron'
 import { uploadScreenshot } from './api'
+import { queueScreenshot } from './sync'
+import { scheduleAtBoundary, trySendOrQueue } from './scheduler'
 
 const WINDOW_MS = 10 * 60 * 1000 // 10-minute window
+// Fire screenshot 5 seconds after the boundary so it doesn't race the activity heartbeat
+const BOUNDARY_OFFSET_MS = 5_000
 
-let timer: NodeJS.Timeout | null = null
-
-/**
- * Returns the ms remaining until the next 10-minute boundary (minute 0, 10, 20…)
- * plus a random offset within that next window so each capture fires at a
- * different time each cycle (e.g. boundary at :10 → fires somewhere :10–:19).
- */
-function msUntilNextWindow(): number {
-  const now = Date.now()
-  const msIntoWindow = now % WINDOW_MS
-  const msToNextBoundary = WINDOW_MS - msIntoWindow
-  const jitter = Math.floor(Math.random() * WINDOW_MS)
-  return msToNextBoundary + jitter
-}
-
-function scheduleNext(): void {
-  timer = setTimeout(() => {
-    void captureAll()
-    scheduleNext()
-  }, msUntilNextWindow())
-}
+let stopFn: (() => void) | null = null
 
 export function startScreenshots(): void {
-  if (timer) return
-  scheduleNext()
+  if (stopFn) return
+  stopFn = scheduleAtBoundary({
+    intervalMs: WINDOW_MS,
+    offsetMs: BOUNDARY_OFFSET_MS,
+    fn: () => { void captureAll() },
+  })
 }
 
 export function stopScreenshots(): void {
-  if (timer) {
-    clearTimeout(timer)
-    timer = null
-  }
+  stopFn?.()
+  stopFn = null
 }
 
 async function captureAll(): Promise<void> {
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: 2560, height: 1440 }
+      thumbnailSize: { width: 1920, height: 1080 },
     })
 
     const capturedAt = new Date().toISOString()
 
     await Promise.all(
       sources.map(async (source, index) => {
-        const thumbnail = source.thumbnail
-        const png = thumbnail.toPNG()
-        const imageBase64 = png.toString('base64')
-        await uploadScreenshot(imageBase64, index, capturedAt)
-      })
+        const jpg = source.thumbnail.toJPEG(75)
+        const imageBase64 = jpg.toString('base64')
+        const payload = { imageBase64, displayIndex: index, capturedAt, format: 'jpeg' as const }
+        await trySendOrQueue(
+          payload,
+          (p) => uploadScreenshot(p.imageBase64, p.displayIndex, p.capturedAt, p.format),
+          queueScreenshot,
+        )
+      }),
     )
   } catch (err) {
     console.error('[screenshot] capture failed:', err)

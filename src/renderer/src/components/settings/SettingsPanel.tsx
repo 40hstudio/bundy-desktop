@@ -4,8 +4,6 @@ import { ApiConfig, Auth } from '../../types'
 import { C, card, neu } from '../../theme'
 import Avatar from '../shared/Avatar'
 
-const DEMO_MODE = false
-
 function PermRow({ label, granted, onFix }: { label: string; granted: boolean; onFix: () => void }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -36,17 +34,6 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
   const avatarFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (DEMO_MODE) {
-      setPerms({ screen: 'granted', accessibility: true })
-      setVersion('2.3.1')
-      setUpdateState(null)
-      setProfile({ alias: 'John Doe', email: 'john.doe@company.com', phone: '+1 (555) 123-4567', userStatus: 'Working on dashboard redesign', avatarUrl: null })
-      setEditAlias('John Doe')
-      setEditEmail('john.doe@company.com')
-      setEditPhone('+1 (555) 123-4567')
-      setEditStatus('Working on dashboard redesign')
-      return
-    }
     window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
     window.electronAPI.getVersion().then(setVersion).catch(() => {})
     window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
