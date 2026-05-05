@@ -2821,51 +2821,35 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   )
 }
 
-// v1.5.2207 — lightbox supports more than just images. Token-protected
-// /api/uploads/* URLs need a bearer-fetch → object URL hop because <video>
-// / <audio> tags don't carry the auth header on their own.
+// v1.5.2302 — videos/audio/PDF stream directly from the URL now, letting
+// the browser do byte-range requests. The previous implementation
+// bearer-fetched the entire blob first, which meant a 500MB video had to
+// fully download before playback could even start. report-files live on
+// the public-by-obscurity tier of /api/uploads so no auth header is
+// needed; images stay on AuthImage because messaging attachments aren't
+// always on the same tier.
 function LightboxBody({ file, config }: { file: RFile; config: ApiConfig }) {
   const isVideo = isVideoFile(file)
   const isAudio = isAudioFile(file)
   const isPdf = isPdfFile(file)
   const src = `${config.apiBase}${file.url}`
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [error, setError] = useState(false)
-  useEffect(() => {
-    if (isImageFile(file)) return
-    let revoke: string | null = null
-    let cancelled = false
-    fetch(src, { headers: { Authorization: `Bearer ${config.token}` } })
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob() })
-      .then(blob => { if (!cancelled) { const u = URL.createObjectURL(blob); revoke = u; setBlobUrl(u) } })
-      .catch(() => { if (!cancelled) setError(true) })
-    return () => { cancelled = true; if (revoke) URL.revokeObjectURL(revoke) }
-  }, [src, config.token, file, isVideo, isAudio, isPdf])
 
   if (isImageFile(file)) {
     return <AuthImage src={src} config={config}
       style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 6 }} />
   }
-  if (error) {
-    return <div style={{ color: '#fff', padding: 24 }}>Could not load preview.</div>
-  }
-  if (!blobUrl) {
-    return <div style={{ color: '#fff', padding: 24, display: 'flex', alignItems: 'center', gap: 8 }}>
-      <Loader size={16} /> Loading…
-    </div>
-  }
   if (isVideo) {
-    return <video controls autoPlay src={blobUrl}
+    return <video controls autoPlay preload="metadata" src={src}
       style={{ maxWidth: '90vw', maxHeight: '85vh', borderRadius: 6, background: '#000' }} />
   }
   if (isAudio) {
     return <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 24 }}>
       <File size={48} style={{ color: '#fff', opacity: 0.6 }} />
-      <audio controls autoPlay src={blobUrl} style={{ width: 360, maxWidth: '90vw' }} />
+      <audio controls autoPlay preload="metadata" src={src} style={{ width: 360, maxWidth: '90vw' }} />
     </div>
   }
   if (isPdf) {
-    return <iframe src={blobUrl} title={file.name}
+    return <iframe src={src} title={file.name}
       style={{ width: '90vw', height: '85vh', border: 'none', borderRadius: 6, background: '#fff' }} />
   }
   return <div style={{ color: '#fff', padding: 24 }}>No preview available.</div>

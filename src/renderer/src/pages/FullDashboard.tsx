@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-  Home, CheckSquare, Bell, FileText, Settings, Shield,
+  Home, CheckSquare, Bell, Settings, Shield, Box,
   WifiOff, Loader, Headphones, ChevronRight, Smile, Calendar,
 } from 'lucide-react'
 import { C } from '../theme'
@@ -51,7 +51,7 @@ const BASE_NAV: NavItem[] = [
   { id: 'tasks', icon: (a) => <CheckSquare size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Tasks' },
   { id: 'activity', icon: (a) => <Bell size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Activity' },
   { id: 'calendar', icon: (a) => <Calendar size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Calendar' },
-  { id: 'report', icon: (a) => <FileText size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Report' },
+  { id: 'report', icon: (a) => <Box size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Box' },
 ]
 const ADMIN_NAV: NavItem = { id: 'admin', icon: (a) => <Shield size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Admin' }
 
