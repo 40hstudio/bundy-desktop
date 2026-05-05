@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import {
   Plus, Trash2, Pencil, FileText, Upload, Folder, File, Play, Music, FileType,
   ArrowLeft, Download, Link2, Clock, RotateCcw, Building2, Briefcase,
@@ -82,53 +81,12 @@ export function fileTypeAccent(file: { mimeType: string | null; name: string }) 
 }
 
 // ─── Thumbnails ───────────────────────────────────────────────────────────────
-
-// Generates a poster image from the first frame of a video by streaming the
-// authenticated blob into a hidden <video>, then drawing onto a canvas.
-function useVideoPoster(src: string, token: string) {
-  const [poster, setPoster] = useState<string | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    let revoke: string | null = null
-    fetch(src, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob() })
-      .then(blob => {
-        if (cancelled) return
-        const blobUrl = URL.createObjectURL(blob)
-        const v = document.createElement('video')
-        v.preload = 'metadata'
-        v.muted = true
-        v.playsInline = true
-        v.src = blobUrl
-        const cleanup = () => { URL.revokeObjectURL(blobUrl) }
-        v.addEventListener('loadeddata', () => {
-          // Seek a bit in so we don't capture an all-black first frame.
-          try { v.currentTime = Math.min(0.3, (v.duration || 0) / 4) } catch { /* */ }
-        })
-        v.addEventListener('seeked', () => {
-          if (cancelled) { cleanup(); return }
-          const c = document.createElement('canvas')
-          const w = v.videoWidth || 320
-          const h = v.videoHeight || 240
-          const ratio = Math.min(240 / w, 240 / h, 1)
-          c.width = Math.max(1, Math.floor(w * ratio))
-          c.height = Math.max(1, Math.floor(h * ratio))
-          const ctx = c.getContext('2d')
-          if (ctx) {
-            ctx.drawImage(v, 0, 0, c.width, c.height)
-            const data = c.toDataURL('image/jpeg', 0.7)
-            setPoster(data)
-          }
-          cleanup()
-        })
-        v.addEventListener('error', cleanup)
-        revoke = blobUrl
-      })
-      .catch(() => { /* ignore — fallback icon will render */ })
-    return () => { cancelled = true; if (revoke) URL.revokeObjectURL(revoke) }
-  }, [src, token])
-  return poster
-}
+//
+// v1.5.2301: video thumbnails no longer auto-fetch the full file. The previous
+// implementation downloaded the entire blob (potentially hundreds of MB)
+// through the auth path just to grab one frame for a 60×48 tile. We now show
+// a type tile with a Play badge — same as audio/PDF — and rely on the
+// double-click → lightbox flow to actually stream the video.
 
 export function FileThumbnail({ file, config, size = 60, height }: {
   file: { id: string; name: string; url: string; mimeType: string | null }
@@ -143,62 +101,46 @@ export function FileThumbnail({ file, config, size = 60, height }: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     flexShrink: 0, position: 'relative',
   }
-  const fullSrc = `${config.apiBase}${file.url}`
+  const iconPx = Math.max(14, Math.floor(w / 2.5))
 
   if (isImageFile(file)) {
     return (
       <div style={baseStyle}>
-        <AuthImage src={fullSrc} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        <AuthImage src={`${config.apiBase}${file.url}`} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
       </div>
     )
   }
   if (isVideoFile(file)) {
-    return <VideoThumbnail src={fullSrc} token={config.token} style={baseStyle} iconSize={Math.max(12, Math.floor(w / 3))} />
+    return (
+      <div style={{ ...baseStyle, background: 'rgba(244,114,182,0.12)' }}>
+        <Play size={iconPx} style={{ color: '#f472b6', fill: '#f472b6' }} />
+      </div>
+    )
   }
   if (isAudioFile(file)) {
     return (
       <div style={{ ...baseStyle, background: 'rgba(52,211,153,0.12)' }}>
-        <Music size={Math.max(14, Math.floor(w / 2.5))} style={{ color: '#34d399' }} />
+        <Music size={iconPx} style={{ color: '#34d399' }} />
       </div>
     )
   }
   if (isPdfFile(file)) {
     return (
       <div style={{ ...baseStyle, background: 'rgba(239,68,68,0.12)' }}>
-        <FileType size={Math.max(14, Math.floor(w / 2.5))} style={{ color: '#ef4444' }} />
+        <FileType size={iconPx} style={{ color: '#ef4444' }} />
       </div>
     )
   }
   if (/\.(zip|rar|7z|tar|gz)$/i.test(file.name)) {
     return (
       <div style={{ ...baseStyle, background: 'rgba(167,139,250,0.12)' }}>
-        <File size={Math.max(14, Math.floor(w / 2.5))} style={{ color: '#a78bfa' }} />
+        <File size={iconPx} style={{ color: '#a78bfa' }} />
       </div>
     )
   }
   return (
     <div style={baseStyle}>
-      <File size={Math.max(14, Math.floor(w / 2.5))} style={{ color: C.textSecondary }} />
-    </div>
-  )
-}
-
-function VideoThumbnail({ src, token, style, iconSize }: { src: string; token: string; style: React.CSSProperties; iconSize: number }) {
-  const poster = useVideoPoster(src, token)
-  return (
-    <div style={{ ...style, background: '#000' }}>
-      {poster && <img src={poster} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-      <div style={{
-        position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'rgba(0,0,0,0.18)',
-      }}>
-        <div style={{
-          width: iconSize + 10, height: iconSize + 10, borderRadius: '50%',
-          background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Play size={iconSize} style={{ color: '#fff', fill: '#fff' }} />
-        </div>
-      </div>
+      <File size={iconPx} style={{ color: C.textSecondary }} />
     </div>
   )
 }

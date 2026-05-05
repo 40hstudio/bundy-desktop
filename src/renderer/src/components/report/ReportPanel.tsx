@@ -1681,9 +1681,13 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                           style={{ ...rowStyle, position: 'relative', opacity: draggingItem?.id === file.id ? 0.4 : 1, cursor: 'pointer', background: isItemSelected('file', file.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent' }}
                           onMouseEnter={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = C.bgHover }}
                           onMouseLeave={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = 'transparent' }}>
-                          <div style={{ width: 28, height: 22, flexShrink: 0 }}>
-                            <FileThumbnail file={file} config={config} size={28} height={22} />
-                          </div>
+                          {isImageFile(file) ? (
+                            <div style={{ width: 18, height: 18, borderRadius: 3, overflow: 'hidden', flexShrink: 0 }}>
+                              <AuthImage src={`${config.apiBase}${file.url}`} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            </div>
+                          ) : (
+                            <File size={16} style={{ color: fileTypeAccent(file), flexShrink: 0 }} />
+                          )}
                           <span style={{ flex: 1, fontSize: 13, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                             <span style={{ fontSize: 10, color: C.textMuted }}>{formatSize(file.size)}</span>
@@ -1879,9 +1883,14 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                     }}
                                     onMouseEnter={e => { if (!isSel && !mSel) e.currentTarget.style.background = C.bgHover }}
                                     onMouseLeave={e => { if (!isSel && !mSel) e.currentTarget.style.background = 'transparent' }}>
-                                    <div style={{ width: 18, height: 14, flexShrink: 0 }}>
-                                      <FileThumbnail file={file} config={config} size={18} height={14} />
-                                    </div>
+                                    {isImageFile(file) ? (
+                                      <div style={{ width: 14, height: 14, borderRadius: 2, overflow: 'hidden', flexShrink: 0 }}>
+                                        <AuthImage src={`${config.apiBase}${file.url}`} config={config}
+                                          style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                      </div>
+                                    ) : (
+                                      <File size={14} style={{ color: isSel ? '#fff' : fileTypeAccent(file), flexShrink: 0 }} />
+                                    )}
                                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                                   </div>
                                 )
@@ -2598,6 +2607,19 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
         }} onClick={() => setLightboxFile(null)}>
           {/* Top-right buttons */}
           <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 201, display: 'flex', gap: 8 }}>
+            {isPdfFile(lightboxFile) && (
+              <button onClick={e => { e.stopPropagation(); openFileInBrowser(lightboxFile) }}
+                title="Open in browser"
+                style={{
+                  width: 36, height: 36, borderRadius: 18,
+                  background: 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.25)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.15)' }}>
+                <ExternalLink size={18} />
+              </button>
+            )}
             <button onClick={e => { e.stopPropagation(); downloadFile(lightboxFile) }}
               style={{
                 width: 36, height: 36, borderRadius: 18,
