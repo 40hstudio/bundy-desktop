@@ -25,7 +25,7 @@ jobs:
         # --ignore-scripts skips electron-builder install-app-deps
         # (which downloads electron and rebuilds native modules — we
         # don't need those for lint/typecheck/renderer tests).
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --legacy-peer-deps
 
       - name: Lint
         run: npm run lint
