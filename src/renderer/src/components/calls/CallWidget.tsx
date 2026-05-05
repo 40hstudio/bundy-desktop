@@ -7,6 +7,7 @@ import CallControls from './CallControls'
 import { useDraggableWindow } from '../../hooks/useDraggableWindow'
 import { useAutoHideControls } from '../../hooks/useAutoHideControls'
 import { playSound } from '../../utils/sounds'
+import { track } from '../../utils/eventLogger'
 import { isMac } from '../../hooks/usePlatform'
 
 export default function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
@@ -264,6 +265,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   }
 
   async function startCall() {
+    track('call:start', { type: callType, to: targetUser.id })
     try {
       const stream = await getMediaWithFallback(callType === 'video')
       localStream.current = stream
@@ -276,6 +278,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   }
 
   async function answerCall() {
+    track('call:answer', { type: callType, from: targetUser.id })
     try {
       const stream = await getMediaWithFallback(callType === 'video')
       localStream.current = stream
@@ -352,7 +355,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
     if (sendEnd) fetch(`${config.apiBase}/api/calls`, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'end', to: targetUser.id }) }).catch(() => {})
   }
 
-  function toggleMute() { localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted }); setMuted(!muted) }
+  function toggleMute() { track('call:mute:toggle', { wasMuted: muted }); localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted }); setMuted(!muted) }
   function toggleDeafen() {
     const newDeafened = !deafened; setDeafened(newDeafened)
     if (remoteAudioEl.current) remoteAudioEl.current.muted = newDeafened
@@ -486,6 +489,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   }
 
   function hangup() {
+    track('call:hangup', { peer: targetUser.id, finalStatus: statusRef.current })
     playSound('call.ended', { volume: 0.4 })
     cleanup(true); setStatus('ended'); onEnd()
   }
@@ -508,6 +512,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
 
   async function startScreenShare(sourceId: string) {
     if (!pc.current) return
+    track('call:screenshare:start', { sourceId })
     setScreenSources(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any }).catch(() => navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any }))

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
+import { track } from '../../utils/eventLogger'
 
 export interface DocDetail {
   id: string
@@ -45,6 +46,7 @@ export function useReportDocument(
   onSavedRef.current = onDocumentSaved
 
   const openDocument = useCallback(async (docId: string) => {
+    track('box:document:open', { docId })
     setDocLoading(true)
     setOpenLinkId(null)
     const res = await apiFetch(`/api/report/documents/${docId}`)
@@ -71,6 +73,9 @@ export function useReportDocument(
       const { document: doc } = await res.json()
       setOpenDoc(doc)
       onSavedRef.current(doc)
+      track('box:document:save', { docId: cur.id, titleChanged: title !== undefined, contentChanged: content !== undefined })
+    } else {
+      track('box:document:save:fail', { docId: cur.id, status: res.status })
     }
     setDocSaving(false)
   }, [apiFetch])

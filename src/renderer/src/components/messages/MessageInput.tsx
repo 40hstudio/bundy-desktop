@@ -5,6 +5,7 @@ import {
   Quote, Code, Braces, MoreHorizontal, ChevronDown, Video, Mic, Clock,
 } from 'lucide-react'
 import { C } from '../../theme'
+import { track } from '../../utils/eventLogger'
 import type { ApiConfig, UserInfo } from '../../types'
 import { Avatar } from '../shared/Avatar'
 import { EmojiPicker } from './EmojiPicker'
@@ -640,8 +641,10 @@ export function MessageInput({
     if (file.size > MAX_BYTES) {
       setUploadError(`"${file.name}" exceeds 50 MB`)
       setTimeout(() => setUploadError(null), 4000)
+      track('messages:attach:rejected-size', { name: file.name, size: file.size })
       return Promise.resolve(null)
     }
+    track('messages:attach:start', { name: file.name, size: file.size, mime: file.type, channelId })
 
     return new Promise(async (resolve) => {
       const isImage = isImageFilename(file.name)

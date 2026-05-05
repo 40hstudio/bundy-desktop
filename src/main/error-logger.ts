@@ -19,7 +19,11 @@ import { appendFileSync, statSync, readFileSync, writeFileSync, mkdirSync } from
 import { join, dirname } from 'path'
 
 const LOG_FILE = join(app.getPath('userData'), 'error.log')
+const EVENT_LOG_FILE = join(app.getPath('userData'), 'events.log')
 const MAX_BYTES = 5 * 1024 * 1024 // 5 MB
+// Events log gets noisy fast (every click), so cap it more aggressively
+// than error.log and trim more often.
+const EVENT_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
 
 export interface ErrorEntry {
   timestamp: string
@@ -32,16 +36,16 @@ export interface ErrorEntry {
   appVersion: string
 }
 
-function trimIfTooLarge(): void {
+function trimIfTooLarge(file: string, maxBytes: number): void {
   try {
-    const s = statSync(LOG_FILE)
-    if (s.size <= MAX_BYTES) return
-    const data = readFileSync(LOG_FILE, 'utf-8')
+    const s = statSync(file)
+    if (s.size <= maxBytes) return
+    const data = readFileSync(file, 'utf-8')
     // Drop the first 50% of lines; keep the most recent half.
     const lines = data.split('\n')
     const half = Math.floor(lines.length / 2)
     const trimmed = lines.slice(half).join('\n')
-    writeFileSync(LOG_FILE, `# trimmed at ${new Date().toISOString()}\n${trimmed}`)
+    writeFileSync(file, `# trimmed at ${new Date().toISOString()}\n${trimmed}`)
   } catch { /* fs error — best-effort */ }
 }
 
@@ -59,12 +63,34 @@ export function appendErrorLog(entry: Omit<ErrorEntry, 'appVersion' | 'timestamp
       appVersion: app.getVersion(),
     }
     appendFileSync(LOG_FILE, JSON.stringify(full) + '\n')
-    trimIfTooLarge()
+    trimIfTooLarge(LOG_FILE, MAX_BYTES)
+  } catch { /* disk full / permission denied — nothing to do */ }
+}
+
+export interface EventEntry {
+  ts: string
+  kind: string
+  name: string
+  data?: Record<string, unknown>
+  url?: string
+  appVersion: string
+}
+
+export function appendEventLog(entry: Omit<EventEntry, 'appVersion'>): void {
+  try {
+    mkdirSync(dirname(EVENT_LOG_FILE), { recursive: true })
+    const full: EventEntry = { ...entry, appVersion: app.getVersion() }
+    appendFileSync(EVENT_LOG_FILE, JSON.stringify(full) + '\n')
+    trimIfTooLarge(EVENT_LOG_FILE, EVENT_MAX_BYTES)
   } catch { /* disk full / permission denied — nothing to do */ }
 }
 
 export function getErrorLogPath(): string {
   return LOG_FILE
+}
+
+export function getEventLogPath(): string {
+  return EVENT_LOG_FILE
 }
 
 export function initErrorLogger(): void {
@@ -106,4 +132,32 @@ export function initErrorLogger(): void {
 
   // IPC for the renderer to ask "where is the file?" (for the Settings UI)
   ipcMain.handle('get-error-log-path', () => LOG_FILE)
+  ipcMain.handle('get-event-log-path', () => EVENT_LOG_FILE)
+
+  // Renderer event stream — clicks, navigation, named feature events.
+  // We clamp aggressively because any single payload could be a typo'd
+  // 4MB innerText snapshot.
+  ipcMain.on('report-renderer-event', (_event, payload: Partial<EventEntry>) => {
+    if (!payload || typeof payload !== 'object') return
+    const clamp = (s: unknown, n: number): string | undefined => {
+      if (typeof s !== 'string') return undefined
+      return s.length > n ? s.slice(0, n) + '… [truncated]' : s
+    }
+    const kind = typeof payload.kind === 'string' ? clamp(payload.kind, 32)! : 'log'
+    const name = typeof payload.name === 'string' ? clamp(payload.name, 200)! : '(empty)'
+    let data: Record<string, unknown> | undefined
+    if (payload.data && typeof payload.data === 'object') {
+      try {
+        const json = JSON.stringify(payload.data)
+        data = json.length > 4_000 ? { _truncated: true, preview: json.slice(0, 4_000) } : (payload.data as Record<string, unknown>)
+      } catch { /* circular — drop */ }
+    }
+    appendEventLog({
+      ts: typeof payload.ts === 'string' ? payload.ts : new Date().toISOString(),
+      kind,
+      name,
+      data,
+      url: clamp(payload.url, 500),
+    })
+  })
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
+import { track } from '../../utils/eventLogger'
 
 export type MessageSearchHit = {
   id: string
@@ -55,6 +56,7 @@ export function useMessagesSearch(
     if (!url) return
     timerRef.current = setTimeout(async () => {
       setSearching(true)
+      track('messages:search', { q })
       try {
         const data = await apiFetch(url)
         setResults(data.messages ?? [])

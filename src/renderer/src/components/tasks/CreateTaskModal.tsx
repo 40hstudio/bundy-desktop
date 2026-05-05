@@ -3,6 +3,7 @@ import { ApiConfig, Auth, Task, TaskProject, UserInfo } from '../../types'
 import { C } from '../../theme'
 import { Modal, Button, FormField, Input, Textarea, Select } from '../shared'
 import { apiFetch } from '../../api/client'
+import { track } from '../../utils/eventLogger'
 import { QueuedWriteError } from '../../api/writeQueue'
 
 export default function CreateTaskModal({ config, auth, projects, selectedProjectId, onClose, onCreated }: {
@@ -33,6 +34,7 @@ export default function CreateTaskModal({ config, auth, projects, selectedProjec
     if (!title.trim()) { setError('Title is required'); return }
     setSaving(true); setError(null)
     const titleTrimmed = title.trim()
+    track('tasks:create', { titleLen: titleTrimmed.length, status, priority, projectId: projectId || null })
     try {
       const data = await apiFetch<{ task: Task }>('/api/tasks', {
         method: 'POST',

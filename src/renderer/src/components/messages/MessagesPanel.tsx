@@ -35,6 +35,7 @@ import { useLightboxClaim } from '../../utils/lightboxClaim'
 import { apiFetch as sharedApiFetch } from '../../api/client'
 import { QueuedWriteError } from '../../api/writeQueue'
 import { playSound } from '../../utils/sounds'
+import { track } from '../../utils/eventLogger'
 import CallWidget from '../calls/CallWidget'
 import VoiceChannelView from '../calls/VoiceChannelView'
 import type { IncomingCallPayload } from './IncomingCallOverlay'
@@ -1674,6 +1675,7 @@ export function MessagesPanel({
     if (!input.trim() || !selected || sending) return
     const content = input.trim()
     const channelId = selected.id
+    track('messages:send', { channelId, len: content.length, hasUrl: /https?:\/\//.test(content) })
     setSending(true); setInput('')
     const tempId = `temp-${(crypto as Crypto).randomUUID?.() ?? Math.random().toString(36).slice(2)}`
     try {
@@ -1860,6 +1862,7 @@ export function MessagesPanel({
         method: 'POST', body: JSON.stringify({ emoji }),
       })
       const action = res.action as 'added' | 'removed'
+      track('messages:reaction', { channelId: selected.id, msgId, emoji, action, isThread })
       const updateFn = (prev: ChatMessage[]) => prev.map(m => {
         if (m.id !== msgId) return m
         const reactions = [...(m.reactions ?? [])]
@@ -1916,6 +1919,7 @@ export function MessagesPanel({
   async function sendThreadReply() {
     if (!threadInput.trim() || !selected || !threadParent || sendingThread) return
     const content = threadInput.trim()
+    track('messages:thread:reply', { channelId: selected.id, parentId: threadParent.id, len: content.length })
     setSendingThread(true); setThreadInput('')
     try {
       await apiFetch(`/api/channels/${selected.id}/messages`, {
@@ -2106,6 +2110,7 @@ export function MessagesPanel({
   async function sendVcMessage() {
     if (!vcInput.trim() || !selectedVc || vcSending) return
     const content = vcInput.trim()
+    track('messages:vc:send', { vcId: selectedVc.id, len: content.length })
     setVcSending(true); setVcInput('')
     try {
       await apiFetch(`/api/voice-channels/${selectedVc.id}/messages`, {

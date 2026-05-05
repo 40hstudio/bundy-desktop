@@ -22,6 +22,7 @@ import { tryDirectR2Upload } from '../../api/r2Upload'
 import { xhrUploadJson } from '../../api/xhrUpload'
 import { trackUpload } from '../../stores/uploadProgressStore'
 import { TaskActivity } from './TaskActivity'
+import { track } from '../../utils/eventLogger'
 
 export default function TaskDetailDrawer({ taskId, config, auth, projects, focusCommentId, onClose, onUpdated, onDeleted, onRefresh }: {
   taskId: string; config: ApiConfig; auth: Auth
@@ -263,6 +264,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
     if (!detail) return
+    track('tasks:update', { taskId: viewTaskId, field: fieldName, fields: Object.keys(data) })
     setSavingField(fieldName ?? null)
     try {
       const d = await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'PATCH', body: JSON.stringify(data) }) as { task: Task }
@@ -285,6 +287,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
   }
 
   async function deleteTask() {
+    track('tasks:delete', { taskId: viewTaskId })
     setDeleting(true)
     try {
       await apiFetch(`/api/tasks/${viewTaskId}`, { method: 'DELETE' })

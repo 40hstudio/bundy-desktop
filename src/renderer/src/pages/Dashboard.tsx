@@ -5,6 +5,7 @@ import {
   WifiOff, ExternalLink
 } from 'lucide-react'
 import { sanitizeHtml } from '../utils/sanitize'
+import { track } from '../utils/eventLogger'
 
 interface Auth {
   userId: string
@@ -248,12 +249,14 @@ export default function Dashboard({ auth, onLogout }: Props): JSX.Element {
   void tick
 
   const doAction = useCallback(async (action: string) => {
+    track('clock:action', { action })
     // Block clock-in / back if permissions are missing
     if ((action === 'clock-in' || action === 'back' || action === 'break-end') && permissions) {
       const missingPerms: string[] = []
       if (permissions.screen !== 'granted') missingPerms.push('Screen Recording')
       if (!permissions.accessibility) missingPerms.push('Accessibility')
       if (missingPerms.length > 0) {
+        track('clock:action:blocked', { action, missing: missingPerms })
         setError(`Grant ${missingPerms.join(' and ')} permission${missingPerms.length > 1 ? 's' : ''} before clocking in`)
         return
       }

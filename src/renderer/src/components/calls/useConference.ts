@@ -20,6 +20,7 @@ import {
 import { ApiConfig, Auth, UserInfo } from '../../types'
 import { xhrUploadJson } from '../../api/xhrUpload'
 import { trackUpload } from '../../stores/uploadProgressStore'
+import { track } from '../../utils/eventLogger'
 
 // ─── Types (keep identical to mesh version) ─────────────────────────────
 
@@ -378,6 +379,7 @@ export default function useConference({
   // ─── Init: connect to LiveKit room ────────────────────────────────────
 
   async function initConference(ctrl: AbortController) {
+    track('call:vc:join', { channelId })
     try {
       // 1. Fetch LiveKit token from server
       const tokenRes = await fetch(`${config.apiBase}/api/livekit/token`, {
@@ -717,6 +719,7 @@ export default function useConference({
   async function toggleMute() {
     const room = roomRef.current
     const desired = !mutedRef.current
+    track('call:vc:mute', { channelId, muted: desired })
     setMuted(desired)
     signalFetch({ action: 'conference-mute', channelId, muted: desired }).catch(() => {})
     if (!room) return
@@ -729,6 +732,7 @@ export default function useConference({
 
   function toggleDeafen() {
     const newDeafened = !deafenedRef.current
+    track('call:vc:deafen', { channelId, deafened: newDeafened })
     setDeafened(newDeafened)
     for (const [, audioEl] of audioElementsRef.current) audioEl.muted = newDeafened
     signalFetch({ action: 'conference-deafen', channelId, deafened: newDeafened }).catch(() => {})
@@ -842,6 +846,7 @@ export default function useConference({
   async function startScreenShare(sourceId: string) {
     const room = roomRef.current
     if (!room) return
+    track('call:vc:screenshare:start', { channelId, sourceId })
     setScreenSources(null)
     try {
       // Ask Electron desktopCapturer for native-resolution video at
@@ -894,7 +899,7 @@ export default function useConference({
     } catch (err) { console.error('[Conference/LK] screen share failed:', err) }
   }
 
-  function handleLeave() { cleanupAll(true); onLeave() }
+  function handleLeave() { track('call:vc:leave', { channelId }); cleanupAll(true); onLeave() }
 
   function sendReaction(emoji: string) {
     const id = ++reactionIdRef.current

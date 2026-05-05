@@ -28,6 +28,7 @@ import type { IncomingCallPayload } from '../components/messages/IncomingCallOve
 import { ErrorBoundary } from '../components/shared/ErrorBoundary'
 import { useWriteQueue } from '../api/writeQueue'
 import { playSound } from '../utils/sounds'
+import { track } from '../utils/eventLogger'
 import { CallPurposePromptHost } from '../components/calls/CallPurposePrompt'
 
 // Electron-specific CSS property for window dragging
@@ -313,6 +314,13 @@ function ProfileMenuItem({ label, shortcut, trailing, bold, onClick }: {
 
 export default function FullDashboard({ auth, onLogout }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>('home')
+
+  // Log every tab transition (programmatic + user click). Done via effect so
+  // it stays correct even when other code paths call setTab — pendingTaskId,
+  // pendingReport, deep-links, voice-channel callbacks, etc.
+  useEffect(() => {
+    track('nav:tab', { to: tab })
+  }, [tab])
   const [isOnline, setIsOnline] = useState(true)
   // Phase 2 — queued offline writes counter (non-empty when there are
   // unsent messages / unsynced status changes still waiting to replay).

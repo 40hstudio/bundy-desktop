@@ -29,6 +29,7 @@ import { tryDirectR2Upload } from '../../api/r2Upload'
 import { xhrUploadJson } from '../../api/xhrUpload'
 import { trackUpload } from '../../stores/uploadProgressStore'
 import { useReportDocument } from './useReportDocument'
+import { track } from '../../utils/eventLogger'
 import { ReportTree } from './ReportTree'
 import { ReportEditor } from './ReportEditor'
 
@@ -384,6 +385,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // ── Client CRUD ─────────────────────────────────────────────────────────
 
   async function addClient() {
+    track('box:playground:add')
     const res = await apiFetch('/api/report/clients', {
       method: 'POST', body: JSON.stringify({ name: 'New Playground' }),
     })
@@ -399,6 +401,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   async function renameClient(clientId: string, name: string) {
     const trimmed = name.trim()
     if (!trimmed) { setEditingId(null); return }
+    track('box:playground:rename', { clientId, name: trimmed })
     setClients(prev => prev.map(c => c.id === clientId ? { ...c, name: trimmed } : c))
     setEditingId(null)
     await apiFetch(`/api/report/clients/${clientId}`, {
@@ -407,6 +410,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   }
 
   async function deleteClient(clientId: string) {
+    track('box:playground:delete', { clientId })
     setClients(prev => prev.filter(c => c.id !== clientId))
     if (selection?.clientId === clientId) setSelection(null)
     setMenuId(null)
@@ -416,6 +420,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // ── Project CRUD ────────────────────────────────────────────────────────
 
   async function addProject(clientId: string) {
+    track('box:project:add', { clientId })
     const res = await apiFetch(`/api/report/clients/${clientId}/projects`, {
       method: 'POST', body: JSON.stringify({ name: 'New Project' }),
     })
@@ -434,6 +439,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   async function renameProject(clientId: string, projectId: string, name: string) {
     const trimmed = name.trim()
     if (!trimmed) { setEditingId(null); return }
+    track('box:project:rename', { clientId, projectId, name: trimmed })
     setClients(prev => prev.map(c => {
       if (c.id !== clientId) return c
       return { ...c, projects: c.projects.map(p => p.id === projectId ? { ...p, name: trimmed } : p) }
@@ -445,6 +451,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   }
 
   async function deleteProject(clientId: string, projectId: string) {
+    track('box:project:delete', { clientId, projectId })
     setClients(prev => prev.map(c => {
       if (c.id !== clientId) return c
       return { ...c, projects: c.projects.filter(p => p.id !== projectId) }
@@ -458,6 +465,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   async function createFolder() {
     if (!selection) return
+    track('box:folder:create', { projectId: selection.projectId, parentFolderId: currentFolderId })
     // In column view, create inside the deepest selected folder
     let targetFolderId = currentFolderId
     if (viewMode === 'columns') {
@@ -503,6 +511,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   }
 
   async function deleteFolder(folderId: string) {
+    track('box:folder:delete', { folderId })
     setFolders(prev => prev.filter(f => f.id !== folderId))
     // In column view, also truncate sub-columns that were showing this folder's contents
     if (col0Selected === folderId) {
@@ -527,6 +536,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   function navigateToFolder(folderId: string, folderName: string) {
     if (!selection) return
+    track('box:folder:open', { folderId, name: folderName })
     setCurrentFolderId(folderId)
     setFolderPath(prev => [...prev, { id: folderId, name: folderName }])
     loadContents(selection.projectId, folderId)
@@ -561,6 +571,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   async function createDocument() {
     if (!selection) return
+    track('box:document:create', { projectId: selection.projectId, folderId: currentFolderId })
     const res = await apiFetch(`/api/report/projects/${selection.projectId}/contents`, {
       method: 'POST', body: JSON.stringify({ type: 'document', title: 'Untitled', folderId: currentFolderId }),
     })
@@ -574,6 +585,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // live in useReportDocument.
 
   async function deleteDocument(docId: string) {
+    track('box:document:delete', { docId })
     setDocuments(prev => prev.filter(d => d.id !== docId))
     setSubColumns(prev => prev.map(sc => ({ ...sc, documents: sc.documents.filter(d => d.id !== docId) })))
     closeDocIfOpen(docId)
@@ -613,6 +625,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   }
 
   function openFeedbackLink(linkId: string) {
+    track('box:feedback:open', { linkId })
     // Open feedback viewer in the system browser with auto-login
     // Always use the public domain for browser URLs (config.apiBase may be localhost in dev)
     const publicBase = 'https://bundy.40h.studio'
@@ -640,6 +653,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // ── File upload ─────────────────────────────────────────────────────────
 
   async function deleteFile(fileId: string) {
+    track('box:file:delete', { fileId })
     setFiles(prev => prev.filter(f => f.id !== fileId))
     setSubColumns(prev => prev.map(sc => ({ ...sc, files: sc.files.filter(f => f.id !== fileId) })))
     setMenuId(null)
@@ -652,6 +666,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   async function uploadFileObj(file: globalThis.File) {
     if (!selection) return
     if (file.size > MAX_FILE_SIZE) { alert('File must be under 500MB'); return }
+    track('box:file:upload:start', { name: file.name, size: file.size, mime: file.type, projectId: selection.projectId, folderId: currentFolderId })
     setUploading(true)
     const tracker = trackUpload({ name: file.name, surface: 'report', total: file.size })
     // Phase 3 — try direct-to-R2 first; fall back to multipart on 501 / error.
@@ -666,6 +681,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       setFiles(prev => [uploaded, ...prev])
       tracker.success()
       setUploading(false)
+      track('box:file:upload:done', { name: file.name, path: 'r2-direct', fileId: uploaded.id })
       return
     }
     // Multipart fallback — XHR so we can keep reporting progress.
@@ -683,8 +699,10 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       )
       setFiles(prev => [uploaded.file, ...prev])
       tracker.success()
+      track('box:file:upload:done', { name: file.name, path: 'multipart', fileId: uploaded.file.id })
     } catch (err) {
       tracker.fail(err instanceof Error ? err.message : String(err))
+      track('box:file:upload:fail', { name: file.name, error: err instanceof Error ? err.message : String(err) })
     }
     setUploading(false)
   }
@@ -736,6 +754,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     setTreeDropTargetId(null)
     if (!selection || targetProjectId === selection.projectId) return
     if (item.type === 'link') return // links aren't supported across projects yet
+    track('box:item:move-cross-project', { type: item.type, id: item.id, fromProjectId: selection.projectId, toProjectId: targetProjectId, toClientId: targetClientId })
 
     // Optimistic — remove from current view
     if (item.type === 'folder') setFolders(prev => prev.filter(f => f.id !== item.id))
@@ -880,6 +899,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   async function copyShareLink(itemType: 'project' | 'folder' | 'document' | 'file' | 'link', itemId?: string) {
     const path = buildSharePath(itemType, itemId)
     if (!path) return
+    track('box:share:copy', { itemType, itemId })
     const link = `${config.apiBase}${path}`
     try {
       if (window.electronAPI?.writeClipboard) {
@@ -1109,6 +1129,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // the user is auto-authenticated on the web side, otherwise the /uploads
   // route would 401 in the browser.
   function openFileInBrowser(file: RFile) {
+    track('box:file:open-external', { fileId: file.id, name: file.name })
     const publicBase = config.apiBase
     const target = file.url
     const bridgeUrl = `${publicBase}/api/auth/desktop-bridge?token=${encodeURIComponent(config.token)}&redirect=${encodeURIComponent(target)}`
@@ -1514,7 +1535,10 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                           <div key={file.id} data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                             draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
                             onClick={e => { handleItemClick(e, { type: 'file', id: file.id, name: file.name }) }}
-                            onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
+                            onDoubleClick={() => {
+                              if (isPreviewableFile(file)) { track('box:file:open', { fileId: file.id, name: file.name, mime: file.mimeType }); setLightboxFile(file) }
+                              else { track('box:file:download', { fileId: file.id, name: file.name }); downloadFile(file) }
+                            }}
                             onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
                             style={{
                               width: 110, padding: '12px 8px', borderRadius: 8, textAlign: 'center', cursor: 'pointer', position: 'relative',
@@ -1676,7 +1700,10 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                         <div key={file.id} data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                           draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
                           onClick={e => { handleItemClick(e, { type: 'file', id: file.id, name: file.name }) }}
-                          onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
+                          onDoubleClick={() => {
+                              if (isPreviewableFile(file)) { track('box:file:open', { fileId: file.id, name: file.name, mime: file.mimeType }); setLightboxFile(file) }
+                              else { track('box:file:download', { fileId: file.id, name: file.name }); downloadFile(file) }
+                            }}
                           onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
                           style={{ ...rowStyle, position: 'relative', opacity: draggingItem?.id === file.id ? 0.4 : 1, cursor: 'pointer', background: isItemSelected('file', file.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent' }}
                           onMouseEnter={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = C.bgHover }}
@@ -1868,7 +1895,10 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   <div key={file.id}
                                     data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                                     onClick={e => { if (handleItemClick(e, { type: 'file', id: file.id, name: file.name })) return; handleColumnSelect(colIdx, 'file', file.id, file) }}
-                                    onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
+                                    onDoubleClick={() => {
+                              if (isPreviewableFile(file)) { track('box:file:open', { fileId: file.id, name: file.name, mime: file.mimeType }); setLightboxFile(file) }
+                              else { track('box:file:download', { fileId: file.id, name: file.name }); downloadFile(file) }
+                            }}
                                     onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
                                     draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
                                     style={{

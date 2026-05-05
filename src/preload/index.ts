@@ -204,6 +204,12 @@ const api = {
   reportError: (payload: { level: string; message: string; stack?: string; url?: string; userAgent?: string; timestamp: string }): void =>
     ipcRenderer.send('report-renderer-error', payload),
   getErrorLogPath: (): Promise<string> => ipcRenderer.invoke('get-error-log-path'),
+  // Renderer event stream — clicks, navigation, feature actions. Logs to
+  // userData/events.log. Fires every click so it's `send` (one-way), not
+  // `invoke`, to keep the call-site cheap.
+  reportEvent: (payload: { ts: string; kind: string; name: string; data?: Record<string, unknown>; url?: string }): void =>
+    ipcRenderer.send('report-renderer-event', payload),
+  getEventLogPath: (): Promise<string> => ipcRenderer.invoke('get-event-log-path'),
   setCurrentReportDocument: (documentId: string | null): void =>
     ipcRenderer.send('set-current-report-document', documentId),
   setCurrentChannel: (channelId: string | null): void =>

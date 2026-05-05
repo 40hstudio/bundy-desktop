@@ -22,6 +22,8 @@ declare global {
       setCurrentTask: (taskId: string | null) => void
       reportError: (payload: { level: string; message: string; stack?: string; url?: string; userAgent?: string; timestamp: string }) => void
       getErrorLogPath: () => Promise<string>
+      reportEvent: (payload: { ts: string; kind: string; name: string; data?: Record<string, unknown>; url?: string }) => void
+      getEventLogPath: () => Promise<string>
       setCurrentReportDocument: (documentId: string | null) => void
       setCurrentChannel: (channelId: string | null) => void
       setCurrentVoiceChannel: (voiceChannelId: string | null) => void

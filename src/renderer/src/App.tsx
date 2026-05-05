@@ -9,6 +9,7 @@ import { attachTasksSseListeners } from './stores/tasksStore'
 import { setApiClientUserId } from './api/client'
 import { attachQueueReplay } from './api/queueReplay'
 import { playSound } from './utils/sounds'
+import { track } from './utils/eventLogger'
 
 const SPLASH_MIN_MS = 5000
 
@@ -221,6 +222,7 @@ export default function App(): JSX.Element {
   // If the server rejects our token (expired at 5 AM WIB), force re-login
   useEffect(() => {
     return window.electronAPI.onTokenExpired(() => {
+      track('auth:token-expired')
       playSound('system.token-expired')
       setAuth(null)
     })
@@ -295,6 +297,7 @@ export default function App(): JSX.Element {
 
   const handleLogin = (a: Auth) => setAuth(a)
   const handleLogout = () => {
+    track('auth:logout', { userId: auth?.userId })
     window.electronAPI.logout()
     setAuth(null)
   }

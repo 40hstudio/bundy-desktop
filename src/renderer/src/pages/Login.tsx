@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { track } from '../utils/eventLogger'
 
 interface Props {
   onLogin: (auth: { userId: string; username: string; role: string }) => void
@@ -35,15 +36,20 @@ export default function Login({ onLogin }: Props): JSX.Element {
     const t = token.trim().toUpperCase()
     if (t.length !== 6) {
       setError('Token must be 6 characters')
+      track('auth:login:invalid', { reason: 'token-length' })
       return
     }
+    track('auth:login:submit')
     setLoading(true)
     setError('')
     try {
       const auth = await window.electronAPI.login(t)
+      track('auth:login:success', { userId: auth.userId, role: auth.role })
       onLogin(auth)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      const message = err instanceof Error ? err.message : 'Login failed'
+      track('auth:login:fail', { message })
+      setError(message)
     } finally {
       setLoading(false)
     }
