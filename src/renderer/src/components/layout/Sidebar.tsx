@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
-  Home, Headphones, CheckSquare, Bell, FileText, Settings,
+  Home, Headphones, CheckSquare, Bell, Box, Settings,
   Smile, ChevronRight, LogOut,
 } from 'lucide-react'
 import { C } from '../../theme'
@@ -14,7 +14,7 @@ const NAV: NavItem[] = [
   { id: 'messages', icon: (a) => <Headphones size={20} strokeWidth={a ? 2 : 1.5} />, label: 'DMs' },
   { id: 'tasks', icon: (a) => <CheckSquare size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Tasks' },
   { id: 'activity', icon: (a) => <Bell size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Activity' },
-  { id: 'report', icon: (a) => <FileText size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Report' },
+  { id: 'report', icon: (a) => <Box size={20} strokeWidth={a ? 2 : 1.5} />, label: 'Box' },
 ]
 
 export { SIDEBAR_W }

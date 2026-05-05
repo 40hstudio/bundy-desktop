@@ -19,7 +19,12 @@ const KIND_META: Record<BannerKind, { icon: React.ReactNode; color: string }> = 
 /**
  * macOS-style banner stack rendered top-right of the window.
  * Each banner can be dismissed individually, or all at once via "Clear all".
- * Auto-dismisses after `durationMs` (default 6 s) unless 0 is passed.
+ *
+ * Default behavior (v1.5.2102+): banners persist until the user clicks the
+ * X on a specific banner or "Clear all". Auto-dismiss is opt-in by passing
+ * a positive `durationMs` to `show()` — e.g. transient "Saved" toasts
+ * after a button click. SSE-driven banners (mentions, DMs, calendar
+ * reminders) stay visible so the user never misses them by stepping away.
  */
 export default function NotificationBanner() {
   const toasts = useNotificationsStore(s => s.toasts)
@@ -74,9 +79,12 @@ export default function NotificationBanner() {
             }}>{meta.icon}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               {t.title && (
+                // v1.5.2111 — allow the title to wrap to 2 lines so the
+                // venue context (task/group/channel) doesn't get clipped.
                 <div style={{
                   fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 2,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden', textOverflow: 'ellipsis', wordBreak: 'break-word',
                 }}>{t.title}</div>
               )}
               <div style={{

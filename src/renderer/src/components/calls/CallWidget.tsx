@@ -6,6 +6,8 @@ import Avatar from '../shared/Avatar'
 import CallControls from './CallControls'
 import { useDraggableWindow } from '../../hooks/useDraggableWindow'
 import { useAutoHideControls } from '../../hooks/useAutoHideControls'
+import { playSound } from '../../utils/sounds'
+import { isMac } from '../../hooks/usePlatform'
 
 export default function CallWidget({ config, auth: _auth, targetUser, callType, onEnd, offerSdp, bufferedIce }: {
   config: ApiConfig; auth: Auth
@@ -67,6 +69,8 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
     }
     let callingAudio: HTMLAudioElement | null = null
     if (!isReceiver) {
+      // Outgoing-call ringback — kept on the legacy file per the sound
+      // mapping; user said they like the existing calling-idle.mp3.
       callingAudio = new Audio('sounds/calling-idle.mp3')
       callingAudio.loop = true
       callingAudio.volume = 0.5
@@ -78,9 +82,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       timeout = setTimeout(() => {
         if (statusRef.current === 'calling') {
           window.dispatchEvent(new CustomEvent('bundy-missed-call', { detail: { userId: targetUser.id, userName: targetUser.name, callType, reason: 'no-answer' } }))
-          const endAudio = new Audio('sounds/call-end.mp3')
-          endAudio.volume = 0.4
-          endAudio.play().catch(() => {})
+          playSound('call.missed', { volume: 0.4 })
           cleanup(true); setStatus('ended'); onEnd()
         }
       }, 30000)
@@ -91,9 +93,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   useEffect(() => {
     if (status === 'connected' && !durationTimer.current) {
       durationTimer.current = setInterval(() => setCallDuration(d => d + 1), 1000)
-      const connAudio = new Audio('sounds/call-connected.mp3')
-      connAudio.volume = 0.4
-      connAudio.play().catch(() => {})
+      playSound('call.connected', { volume: 0.4 })
     }
     return () => { if (status === 'ended' && durationTimer.current) { clearInterval(durationTimer.current); durationTimer.current = null } }
   }, [status])
@@ -128,7 +128,9 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   const handleSetWindowMode = (mode: 'mini' | 'normal' | 'fullscreen') => {
     if (mode === 'mini') {
       const state = { userName: targetUser.name, userAvatar: targetUser.avatar, status, duration: callDuration, muted, videoActive }
-      if (window.electronAPI?.openCallFloat) {
+      // Floating call window is macOS-only (transparency + Spaces +
+      // visibleOnFullScreen). Non-Mac falls back to the in-app mini.
+      if (isMac && window.electronAPI?.openCallFloat) {
         setFloatingOnDesktop(true)
         window.electronAPI.openCallFloat(state)
       } else {
@@ -306,7 +308,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
       } else iceBuffer.current.push(payload.candidate)
     }
     const onCallEnd = () => {
-      const endAudio = new Audio('sounds/call-end.mp3'); endAudio.volume = 0.4; endAudio.play().catch(() => {})
+      playSound('call.ended', { volume: 0.4 })
       cleanup(false); setStatus('ended'); setTimeout(onEnd, 1000)
     }
     const onReoffer = async (e: Event) => {
@@ -484,7 +486,7 @@ export default function CallWidget({ config, auth: _auth, targetUser, callType, 
   }
 
   function hangup() {
-    const endAudio = new Audio('sounds/call-end.mp3'); endAudio.volume = 0.4; endAudio.play().catch(() => {})
+    playSound('call.ended', { volume: 0.4 })
     cleanup(true); setStatus('ended'); onEnd()
   }
 

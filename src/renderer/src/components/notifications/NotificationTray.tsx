@@ -11,7 +11,7 @@ export interface NotificationItem {
   body: string
   channelId: string
   channelName?: string
-  channelType?: 'dm' | 'group' | 'channel'
+  channelType?: 'dm' | 'group' | 'channel' | 'task'
   senderAvatar?: string | null
   timestamp: string
   read: boolean
@@ -172,7 +172,13 @@ export default function NotificationTray() {
 
   const handleMsgClick = useCallback((item: NotificationItem) => {
     markMsgRead(item.id)
-    window.dispatchEvent(new CustomEvent('bundy-open-channel', { detail: { channelId: item.channelId } }))
+    // Task discussions live in MessagesPanel's main pane (Projects /
+    // Discussion section). Route there instead of bundy-open-channel.
+    if (item.channelType === 'task') {
+      window.dispatchEvent(new CustomEvent('bundy-open-task-discussion', { detail: { taskId: item.channelId } }))
+    } else {
+      window.dispatchEvent(new CustomEvent('bundy-open-channel', { detail: { channelId: item.channelId } }))
+    }
     setOpen(false)
   }, [markMsgRead])
 
@@ -355,7 +361,9 @@ function NotifRow({ item, onClick, iconForType, timeAgo }: {
     : (item as NotificationItem).channelName
       ? (item as NotificationItem).channelType === 'dm'
         ? 'Direct Message'
-        : `${(item as NotificationItem).channelName} — ${(item as NotificationItem).channelType === 'group' ? 'Group' : 'Channel'}`
+        : (item as NotificationItem).channelType === 'task'
+          ? `${(item as NotificationItem).channelName}`
+          : `${(item as NotificationItem).channelName} — ${(item as NotificationItem).channelType === 'group' ? 'Group' : 'Channel'}`
       : ''
 
   return (

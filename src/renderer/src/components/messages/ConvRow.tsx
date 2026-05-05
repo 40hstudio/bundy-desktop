@@ -1,16 +1,20 @@
 import React, { useState } from 'react'
-import { Hash, Phone, Volume2, X } from 'lucide-react'
+import { Hash, Phone, Volume2, X, Calendar as CalendarIcon } from 'lucide-react'
 import { C } from '../../theme'
 import type { Conversation } from '../../types'
 import { Avatar } from '../shared/Avatar'
 
 export function ConvRow({
   conv, selected, typingUsers, hasActiveCall, isMentioned, partnerInVc, onJoinVc,
+  partnerInMeeting,
   onClick, onClose, getPresence, getTrackerStatus,
 }: {
   conv: Conversation; selected: boolean
   typingUsers: string[]; hasActiveCall?: boolean; isMentioned?: boolean
   partnerInVc?: string | null; onJoinVc?: () => void
+  /** Truthy when the DM partner is currently in a calendar meeting.
+   *  Renders an "In meeting" pill parallel to the VC pill (v1.5.2105). */
+  partnerInMeeting?: boolean
   onClick: () => void; onClose?: () => void
   getPresence?: (userId: string) => 'active' | 'recent' | 'away'
   getTrackerStatus?: (userId: string) => string | null
@@ -92,7 +96,16 @@ export function ConvRow({
           )}
         </div>
 
-        {hasActiveCall && !partnerInVc && (
+        {partnerInMeeting && !partnerInVc && (
+          <span
+            title="In a calendar meeting"
+            style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+          >
+            <CalendarIcon size={12} color={C.accent} style={{ animation: 'pulse 2s infinite' }} />
+            <span style={{ fontSize: 9, color: C.accent, fontWeight: 600 }}>In meeting</span>
+          </span>
+        )}
+        {hasActiveCall && !partnerInVc && !partnerInMeeting && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
             <Phone size={13} color={C.success} style={{ animation: 'pulse 2s infinite' }} />
             <span style={{ fontSize: 9, color: C.success, fontWeight: 600 }}>On call</span>

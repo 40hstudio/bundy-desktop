@@ -242,6 +242,26 @@ export function startPoller(): void {
         w.webContents.send('task-event', event)
       }
     },
+    onReportEvent: (event) => {
+      // Same fan-out shape as onTaskEvent. Renderer dispatches a CustomEvent
+      // that the report panel + chat preview cards listen for.
+      const allWindows = [popupWin, fullNativeWin].filter(
+        (w): w is NonNullable<typeof w> => w != null && !w.isDestroyed(),
+      )
+      for (const w of allWindows) {
+        w.webContents.send('report-event', event)
+      }
+    },
+    onCalendarEvent: (event) => {
+      // Calendar SSE → all open windows. Only the renderer running
+      // CalendarPanel actually subscribes; others ignore the event.
+      const allWindows = [popupWin, fullNativeWin].filter(
+        (w): w is NonNullable<typeof w> => w != null && !w.isDestroyed(),
+      )
+      for (const w of allWindows) {
+        w.webContents.send('calendar-event', event)
+      }
+    },
   })
 }
 

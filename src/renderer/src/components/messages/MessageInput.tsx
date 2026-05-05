@@ -68,7 +68,7 @@ function convertNode(node: Node): string {
   switch (tag) {
     case 'strong': case 'b': return inner ? `**${inner}**` : ''
     case 'em': case 'i': return inner ? `*${inner}*` : ''
-    case 'u': return inner
+    case 'u': return inner ? `__${inner}__` : ''
     case 's': case 'strike': case 'del': return inner ? `~~${inner}~~` : ''
     case 'code': return el.parentElement?.tagName.toLowerCase() === 'pre' ? inner : (inner ? `\`${inner}\`` : '')
     case 'pre': return `\`\`\`\n${el.textContent || ''}\n\`\`\``
@@ -81,6 +81,17 @@ function convertNode(node: Node): string {
       const p = el.parentElement?.tagName.toLowerCase()
       if (p === 'ol') { const idx = Array.from(el.parentElement!.children).indexOf(el) + 1; return `${idx}. ${inner.trim()}\n` }
       return `- ${inner.trim()}\n`
+    }
+    case 'span': {
+      // execCommand often produces inline-style spans instead of <strong>/<em>/<u>/<s>.
+      // Fall through inline marker conversion when we recognize the pattern.
+      const style = el.getAttribute('style') || ''
+      let m = inner
+      if (/font-weight:\s*(bold|[6-9]\d{2})/i.test(style) && m) m = `**${m}**`
+      if (/font-style:\s*italic/i.test(style) && m) m = `*${m}*`
+      if (/text-decoration[^;]*\bunderline\b/i.test(style) && m) m = `__${m}__`
+      if (/text-decoration[^;]*\bline-through\b/i.test(style) && m) m = `~~${m}~~`
+      return m
     }
     default: return inner
   }
@@ -116,13 +127,16 @@ function ensureEditorStyles() {
 
 export function MessageInput({
   placeholder, config, channelId, onTyping, input, setInput, sendFn, sending,
-  onUpload, onGifSelect, hideGifs, hideSchedule,
+  onUpload, onGifSelect, hideGifs, hideSchedule, onScheduled,
 }: {
   placeholder: string; config: ApiConfig; channelId: string
   onTyping: () => void; input: string; setInput: (v: string) => void
   sendFn: () => void; sending: boolean
   onSend?: (content: string) => void
   onUpload?: (file: File) => Promise<{ url: string; filename: string }>
+  /** Called after a scheduled-send succeeds so the parent can refresh its
+   *  scheduled-messages list immediately (P3-#11). */
+  onScheduled?: () => void
   /**
    * If provided, sendGif calls this with the GIF URL instead of POSTing to
    * the channel directly. Required when the parent owns the send pipeline
@@ -145,11 +159,41 @@ export function MessageInput({
   const [showCustomTime, setShowCustomTime] = useState(false)
   const [customDate, setCustomDate] = useState('')
   const [customTime, setCustomTime] = useState('09:00')
+
+  // Local-time YYYY-MM-DD for an `<input type="date">` (toISOString uses
+  // UTC and rolls over the day at midnight UTC, which surprises users in
+  // non-UTC zones — keep it in the user's local timezone).
+  function localDateString(d: Date): string {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  function localTimeString(d: Date): string {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  // #6 — open Custom-time pre-filled with today + one hour from now.
+  function defaultCustomDate(): string { return localDateString(new Date(Date.now() + 60 * 60_000)) }
+  function defaultCustomTime(): string { return localTimeString(new Date(Date.now() + 60 * 60_000)) }
   const [allUsers, setAllUsers] = useState<UserInfo[]>([])
   const [mentionResults, setMentionResults] = useState<UserInfo[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const isInternalUpdate = useRef(false)
+  // Custom link modal — replaces prompt() which Electron forbids.
+  const [linkModal, setLinkModal] = useState<{ url: string; savedRange: Range | null } | null>(null)
+  // Pending uploads displayed as chips ABOVE the editor (one chip per file,
+  // each carrying its own status + percentage progress).
+  type PendingUpload = {
+    id: string; name: string; size: number
+    status: 'uploading' | 'done' | 'error'
+    url?: string
+    isImage?: boolean
+    thumbDataUrl?: string
+    progress?: number      // 0–100
+    xhr?: XMLHttpRequest   // so cancel button can abort
+  }
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
 
   // Emoji picker state
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
@@ -163,6 +207,67 @@ export function MessageInput({
   const gifSearchTimer = useRef<NodeJS.Timeout | null>(null)
   const gifPickerRef = useRef<HTMLDivElement>(null)
 
+  // ─── #9: Audio + video clip recorder ────────────────────────────────────────
+  // Three-phase flow: setup → recording → preview → send. Setup lets the
+  // user pick a source for video (camera / screen / both) and confirms with
+  // an explicit Record button so we never start capturing without consent.
+  // Combined ("camera + screen") mode renders the screen onto a canvas with
+  // the camera composited in the bottom-left as a PiP overlay, captures the
+  // canvas stream + mic audio, and feeds that to MediaRecorder.
+  type VideoSource = 'camera' | 'screen' | 'both'
+  type ScreenSource = { id: string; name: string; thumbnail: string }
+  type CameraDevice = { deviceId: string; label: string }
+  type RecorderState = {
+    type: 'audio' | 'video'
+    phase: 'setup' | 'recording' | 'preview'
+    /** For video: which capture source to use. Ignored for audio. */
+    videoSource: VideoSource
+    /** Available screen / window sources fetched from the main process when
+     *  the user picks a screen-bearing video source. */
+    screenSources?: ScreenSource[]
+    screenSourcesLoading?: boolean
+    /** The screen / window the user chose, required for screen / both. */
+    selectedScreenId?: string
+    /** Available camera input devices (populated lazily). */
+    cameraDevices?: CameraDevice[]
+    /** The camera the user chose; defaults to the system default when
+     *  unset, or the first device once the list loads. */
+    selectedCameraId?: string
+    /** Active media stream while phase === 'recording'. */
+    stream?: MediaStream
+    /** Held alongside `stream` for the combined screen+cam flow so we can
+     *  shut both source streams down cleanly on stop/cancel. */
+    auxStreams?: MediaStream[]
+    mr?: MediaRecorder
+    chunks: Blob[]
+    startedAt: number
+    elapsedMs: number
+    blob?: Blob
+    blobUrl?: string
+    /** RAF id for the canvas compositor (combined mode). */
+    rafId?: number
+  }
+  const [recorder, setRecorder] = useState<RecorderState | null>(null)
+  const recorderRef = useRef(recorder)
+  recorderRef.current = recorder
+  // P0-2 — safety net: every cancel / send / discard path already
+  // revokes the recorder's blob URL, but if the user closes the tab
+  // mid-recording or mid-preview the blob URL would leak. This unmount
+  // cleanup catches that edge case + stops any live MediaRecorder so
+  // the mic/camera lights don't stay on.
+  useEffect(() => {
+    return () => {
+      const r = recorderRef.current
+      if (!r) return
+      if (r.blobUrl) { try { URL.revokeObjectURL(r.blobUrl) } catch { /* ignore */ } }
+      if (r.mr && r.mr.state !== 'inactive') { try { r.mr.stop() } catch { /* ignore */ } }
+      r.stream?.getTracks().forEach(t => { try { t.stop() } catch { /* ignore */ } })
+      r.auxStreams?.forEach(s => s.getTracks().forEach(t => { try { t.stop() } catch { /* ignore */ } }))
+    }
+  }, [])
+  const liveVideoRef = useRef<HTMLVideoElement>(null)
+  const compositorCanvasRef = useRef<HTMLCanvasElement | null>(null)
+
   useEffect(() => { ensureEditorStyles() }, [])
 
   useEffect(() => {
@@ -172,13 +277,27 @@ export function MessageInput({
       .catch(() => {})
   }, [config])
 
-  // Sync parent → editor (clear after send)
+  // Sync parent → editor. Two scenarios:
+  // 1. After-send clear: parent sets input back to ''.
+  // 2. Channel switch with a per-channel draft: parent loads the new
+  //    user's draft into `input`. The contenteditable div doesn't reset
+  //    on its own (component stays mounted across channel changes), so
+  //    we have to reflect the new value here. Without this the previous
+  //    user's typed text leaks into the next conversation's composer.
   useEffect(() => {
     if (isInternalUpdate.current) { isInternalUpdate.current = false; return }
     if (!editorRef.current) return
-    if (input === '' && editorRef.current.textContent) {
+    const editorText = editorRef.current.textContent ?? ''
+    if (input === editorText) return
+    if (input === '') {
       editorRef.current.innerHTML = ''
       setHasContent(false)
+    } else {
+      // Plain-text replacement is enough — drafts only persist text
+      // (no styling), and any preserved markup would be re-derived
+      // when the user next types.
+      editorRef.current.innerText = input
+      setHasContent(true)
     }
   }, [input])
 
@@ -244,9 +363,12 @@ export function MessageInput({
     preRange.selectNodeContents(editorRef.current)
     preRange.setEnd(range.startContainer, range.startOffset)
     const textBefore = preRange.toString()
-    const match = textBefore.match(/@(\w*)$/)
+    // v1.5.2111 — require whitespace or start-of-input before @ so that
+    // email addresses (e.g. "user@example.com") don't trigger the picker.
+    // Capture group 1 is the trigger char (or empty), group 2 is the query.
+    const match = textBefore.match(/(^|[\s\n])@(\w*)$/)
     if (match) {
-      const q = match[1].toLowerCase()
+      const q = match[2].toLowerCase()
       // Special broadcast mentions
       const broadcastItems: UserInfo[] = []
       if ('all'.startsWith(q)) broadcastItems.push({ id: 'all', username: 'all', alias: 'all', avatarUrl: null } as UserInfo)
@@ -268,8 +390,30 @@ export function MessageInput({
   }
 
   function insertLink() {
-    const url = prompt('Enter URL:')
-    if (url) applyCommand('createLink', url)
+    // Capture the current selection so we can restore it after the modal closes
+    // (clicking the modal input would otherwise blur the editor and drop the range).
+    const sel = window.getSelection()
+    const savedRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null
+    setLinkModal({ url: '', savedRange })
+  }
+  function applyLinkFromModal() {
+    if (!linkModal) return
+    let url = linkModal.url.trim()
+    if (!url) { setLinkModal(null); return }
+    // P3-#5 — bare hostnames like "test.com" rendered as raw `[text](url)`
+    // because the markdown parser only matches http(s):// URLs. Prepend the
+    // protocol if the user didn't.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !url.startsWith('mailto:') && !url.startsWith('/')) {
+      url = `https://${url}`
+    }
+    // Restore the saved selection so createLink wraps the right range.
+    const sel = window.getSelection()
+    if (linkModal.savedRange && sel) {
+      sel.removeAllRanges()
+      sel.addRange(linkModal.savedRange)
+    }
+    applyCommand('createLink', url)
+    setLinkModal(null)
   }
 
   function toggleInlineCode() {
@@ -319,9 +463,14 @@ export function MessageInput({
       const text = textNode.textContent || ''
       const cursorPos = range.startOffset
       const textBefore = text.slice(0, cursorPos)
-      const atIdx = textBefore.lastIndexOf('@')
-      if (atIdx >= 0) {
-        // Split text and insert badge
+      // v1.5.2111 \u2014 derive the slice strictly from the @<word-chars> match
+      // at the cursor. Previously we used `lastIndexOf('@')` and slice up to
+      // cursorPos, which could over-consume characters typed AFTER the @ in
+      // a fast-typing race (e.g. "@RifkieI" landing in the badge).
+      const trigger = textBefore.match(/(^|[\s\n])@(\w*)$/)
+      if (trigger) {
+        const queryLen = trigger[2].length
+        const atIdx = cursorPos - queryLen - 1 // position of the @ char
         const before = text.slice(0, atIdx)
         const after = text.slice(cursorPos)
         textNode.textContent = before
@@ -382,7 +531,7 @@ export function MessageInput({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendFn()
+      void composedSend()
     }
   }
 
@@ -405,11 +554,14 @@ export function MessageInput({
   async function sendScheduled(scheduledAt: Date) {
     if (!input.trim()) return
     const content = input.trim()
-    await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, scheduledAt: scheduledAt.toISOString() }),
-    }).catch(() => {})
+    try {
+      const res = await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, scheduledAt: scheduledAt.toISOString() }),
+      })
+      if (res.ok) onScheduled?.()  // P3-#11 — parent refreshes the menu
+    } catch { /* network blip */ }
     // Clear editor
     setInput('')
     if (editorRef.current) { editorRef.current.innerHTML = ''; setHasContent(false) }
@@ -453,68 +605,630 @@ export function MessageInput({
     }).catch(() => {})
   }
 
-  async function uploadFileBlob(file: File) {
-    if (!channelId && !onUpload) return
-    setUploading(true)
+  // P3-#1/#2/#3/#4 — multi-file upload with above-input progress chips.
+  // Each file gets a `PendingUpload` row immediately (status: 'uploading').
+  // While the upload is in flight, the chip shows a spinner and a thumbnail
+  // preview (data URL) for images. On completion, status flips to 'done' and
+  // the chip's url/filename are set; on send, all completed chips' markdown
+  // is appended to the message body.
+  const MAX_BYTES = 50 * 1024 * 1024 // 50 MB (#11a)
+
+  function isImageFilename(name: string): boolean {
+    return /\.(jpe?g|png|gif|webp|avif|svg)$/i.test(name)
+  }
+  function isVideoFilename(name: string): boolean {
+    return /\.(mp4|webm|ogg|mov|m4v)$/i.test(name)
+  }
+
+  async function readImageAsDataUrl(file: File): Promise<string | undefined> {
     try {
-      let url: string, filename: string
-      if (onUpload) {
-        const result = await onUpload(file)
-        url = result.url
-        filename = result.filename
-      } else {
-        const form = new FormData()
-        form.append('file', file)
-        const res = await fetch(`${config.apiBase}/api/channels/${channelId}/attachments`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${config.token}` },
-          body: form,
-        })
-        if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
-        const data = await res.json() as { url: string; filename: string }
-        url = data.url
-        filename = data.filename
-      }
-      const fullUrl = `${config.apiBase}${url}`
-      const isImage = /\.(jpe?g|png|gif|webp|avif|svg)$/i.test(filename)
-      const md = isImage
-        ? `![${filename}](${fullUrl})`
-        : `[📎 ${filename}](${fullUrl})`
-      // Insert styled chip into contentEditable, with data-md for htmlToMarkdown
-      const chipHtml = isImage
-        ? `<span class="bundy-upload-chip" data-md="${md.replace(/"/g, '&quot;')}" contenteditable="false" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;background:rgba(0,122,204,0.12);color:${C.accent};font-size:13px;font-weight:500;cursor:default;vertical-align:baseline">🖼 ${filename.replace(/</g, '&lt;')}</span>`
-        : `<span class="bundy-upload-chip" data-md="${md.replace(/"/g, '&quot;')}" contenteditable="false" style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;background:rgba(0,122,204,0.12);color:${C.accent};font-size:13px;font-weight:500;cursor:default;vertical-align:baseline">📎 ${filename.replace(/</g, '&lt;')}</span>`
-      if (editorRef.current) {
-        editorRef.current.focus()
-        const existing = editorRef.current.innerHTML
-        if (existing && existing !== '<br>') {
-          editorRef.current.innerHTML = existing + '<br>' + chipHtml
-        } else {
-          editorRef.current.innerHTML = chipHtml
-        }
-        syncToParent()
-      } else {
-        setInput(prev => prev ? `${prev}\n${md}` : md)
-      }
-    } catch (err) {
-      console.error('[Upload] failed:', err)
-      setUploadError('Upload failed — please try again')
+      return await new Promise<string>((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result as string)
+        r.onerror = reject
+        r.readAsDataURL(file)
+      })
+    } catch { return undefined }
+  }
+
+  // P3-#2/#3 — XHR-based upload so xhr.upload.onprogress can drive a real
+  // percentage. fetch() never exposes upload progress, which is why a 23 MB
+  // video looked stuck. Returns a promise that resolves to the upload row
+  // (which can be polled by composedSend for the "follow-up" auto-post).
+  function uploadFileBlob(file: File): Promise<PendingUpload | null> {
+    if (!channelId && !onUpload) return Promise.resolve(null)
+    if (file.size > MAX_BYTES) {
+      setUploadError(`"${file.name}" exceeds 50 MB`)
       setTimeout(() => setUploadError(null), 4000)
-    } finally { setUploading(false) }
+      return Promise.resolve(null)
+    }
+
+    return new Promise(async (resolve) => {
+      const isImage = isImageFilename(file.name)
+      const id = `up-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const thumbDataUrl = isImage ? await readImageAsDataUrl(file) : undefined
+
+      // onUpload prop path (task discussion comments, etc.) — no progress hook
+      // available, so just toggle status.
+      if (onUpload) {
+        setPendingUploads((prev) => [...prev, {
+          id, name: file.name, size: file.size, status: 'uploading',
+          isImage, thumbDataUrl, progress: 0,
+        }])
+        try {
+          const result = await onUpload(file)
+          const fullUrl = result.url.startsWith('http') ? result.url : `${config.apiBase}${result.url}`
+          const done: PendingUpload = { id, name: result.filename, size: file.size, status: 'done', url: fullUrl, isImage, thumbDataUrl, progress: 100 }
+          setPendingUploads((prev) => prev.map((u) => u.id === id ? done : u))
+          resolve(done)
+        } catch (err) {
+          console.error('[Upload] onUpload failed:', err)
+          setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, status: 'error' } : u))
+          setUploadError(`Upload failed: ${file.name}`)
+          setTimeout(() => setUploadError(null), 4000)
+          resolve(null)
+        }
+        return
+      }
+
+      // v1.5.2109 — Phase 2 of the R2 migration: try direct-to-R2 first,
+      // fall back to the legacy multipart route on 501 ("R2 disabled"),
+      // sign-step error, OR PUT-step failure (e.g. CSP block, R2 outage,
+      // mid-upload network drop). Both paths use XHR for the body upload
+      // so xhr.upload.onprogress drives the % indicator either way.
+      type R2Outcome = 'done' | 'aborted' | 'fallback'
+      const tryR2Direct = (): Promise<{ outcome: R2Outcome; pending?: PendingUpload }> => new Promise(async (r2Resolve) => {
+        try {
+          const signRes = await fetch(
+            `${config.apiBase}/api/channels/${channelId}/attachments/sign`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${config.token}`,
+              },
+              body: JSON.stringify({
+                filename: file.name,
+                contentType: file.type || 'application/octet-stream',
+                size: file.size,
+              }),
+            },
+          )
+          if (!signRes.ok) {
+            // 501 = R2 disabled (expected before bucket provisioned).
+            // Other codes shouldn't happen — log so we notice.
+            if (signRes.status !== 501) {
+              console.warn(`[Upload] sign returned ${signRes.status}, falling back to multipart`)
+            }
+            r2Resolve({ outcome: 'fallback' })
+            return
+          }
+          const { uploadUrl, url } = (await signRes.json()) as { uploadUrl: string; url: string }
+          const putXhr = new XMLHttpRequest()
+          putXhr.open('PUT', uploadUrl)
+          putXhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+
+          setPendingUploads((prev) => [...prev, {
+            id, name: file.name, size: file.size, status: 'uploading',
+            isImage, thumbDataUrl, progress: 0, xhr: putXhr,
+          }])
+          console.log(`[Upload] R2 direct ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`)
+
+          putXhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const pct = Math.round((e.loaded / e.total) * 100)
+              setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, progress: pct } : u))
+            }
+          }
+          putXhr.onload = () => {
+            if (putXhr.status >= 200 && putXhr.status < 300) {
+              const fullUrl = `${config.apiBase}${url}`
+              console.log(`[Upload] R2 done ${file.name} → ${fullUrl}`)
+              const done: PendingUpload = { id, name: file.name, size: file.size, status: 'done', url: fullUrl, isImage, thumbDataUrl, progress: 100 }
+              setPendingUploads((prev) => prev.map((u) => u.id === id ? done : u))
+              r2Resolve({ outcome: 'done', pending: done })
+            } else {
+              console.warn(`[Upload] R2 PUT HTTP ${putXhr.status} for ${file.name}, falling back to multipart`)
+              setPendingUploads((prev) => prev.filter((u) => u.id !== id))
+              r2Resolve({ outcome: 'fallback' })
+            }
+          }
+          putXhr.onerror = () => {
+            // Most common cause: CSP block (browser refuses cross-origin PUT)
+            // or R2 transient network glitch. Both are recoverable via the
+            // multipart fallback path below.
+            console.warn(`[Upload] R2 PUT error for ${file.name}, falling back to multipart`)
+            setPendingUploads((prev) => prev.filter((u) => u.id !== id))
+            r2Resolve({ outcome: 'fallback' })
+          }
+          putXhr.onabort = () => {
+            setPendingUploads((prev) => prev.filter((u) => u.id !== id))
+            r2Resolve({ outcome: 'aborted' })
+          }
+          putXhr.send(file)
+        } catch (err) {
+          console.warn('[Upload] sign network error, falling back to multipart:', err)
+          r2Resolve({ outcome: 'fallback' })
+        }
+      })
+
+      const r2Result = await tryR2Direct()
+      if (r2Result.outcome === 'done') { resolve(r2Result.pending ?? null); return }
+      if (r2Result.outcome === 'aborted') { resolve(null); return }
+      // outcome === 'fallback' → drop through to multipart below
+
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${config.apiBase}/api/channels/${channelId}/attachments`)
+      xhr.setRequestHeader('Authorization', `Bearer ${config.token}`)
+
+      setPendingUploads((prev) => [...prev, {
+        id, name: file.name, size: file.size, status: 'uploading',
+        isImage, thumbDataUrl, progress: 0, xhr,
+      }])
+      console.log(`[Upload] start ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`)
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100)
+          setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, progress: pct } : u))
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText) as { url: string; filename: string }
+            const fullUrl = `${config.apiBase}${data.url}`
+            console.log(`[Upload] done ${data.filename} → ${fullUrl}`)
+            const done: PendingUpload = { id, name: data.filename, size: file.size, status: 'done', url: fullUrl, isImage, thumbDataUrl, progress: 100 }
+            setPendingUploads((prev) => prev.map((u) => u.id === id ? done : u))
+            resolve(done)
+          } catch {
+            setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, status: 'error' } : u))
+            resolve(null)
+          }
+        } else {
+          console.error(`[Upload] HTTP ${xhr.status} for ${file.name}`)
+          setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, status: 'error' } : u))
+          setUploadError(`Upload failed (${xhr.status}): ${file.name}`)
+          setTimeout(() => setUploadError(null), 4000)
+          resolve(null)
+        }
+      }
+
+      xhr.onerror = () => {
+        console.error(`[Upload] network error for ${file.name}`)
+        setPendingUploads((prev) => prev.map((u) => u.id === id ? { ...u, status: 'error' } : u))
+        setUploadError(`Upload failed: ${file.name}`)
+        setTimeout(() => setUploadError(null), 4000)
+        resolve(null)
+      }
+      xhr.onabort = () => {
+        setPendingUploads((prev) => prev.filter((u) => u.id !== id))
+        resolve(null)
+      }
+
+      const form = new FormData()
+      form.append('file', file)
+      xhr.send(form)
+    })
+  }
+
+  async function uploadAll(files: FileList | File[]) {
+    const arr = Array.from(files)
+    // Fire uploads in parallel — server is fast enough that batching isn't needed.
+    await Promise.all(arr.map((f) => uploadFileBlob(f)))
   }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    await uploadFileBlob(file)
+    if (!e.target.files || e.target.files.length === 0) return
+    await uploadAll(e.target.files)
     if (fileRef.current) fileRef.current.value = ''
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) uploadFileBlob(file)
+    if (e.dataTransfer.files?.length) {
+      void uploadAll(e.dataTransfer.files)
+    }
+  }
+
+  function removeUpload(id: string) {
+    setPendingUploads((prev) => {
+      // P3-#2 — abort an in-flight XHR if the user removes the chip mid-upload.
+      const target = prev.find((u) => u.id === id)
+      if (target?.xhr && target.status === 'uploading') {
+        try { target.xhr.abort() } catch { /* already done */ }
+      }
+      return prev.filter((u) => u.id !== id)
+    })
+  }
+
+  // ─── Recorder lifecycle ─────────────────────────────────────────────────────
+  // Picks the most-likely-supported MIME type. Chromium/Electron typically
+  // accepts audio/webm;codecs=opus and video/webm;codecs=vp9,opus.
+  function pickRecorderMime(type: 'audio' | 'video'): string {
+    // VP8+Opus first — produces WebM that Chromium's <video> element
+    // reliably renders the first frame from a blob URL even when the
+    // file lacks a duration header (common with MediaRecorder output).
+    // VP9 sometimes ships a black box during preview until playback
+    // starts because the decoder can't resolve duration in time.
+    const candidates = type === 'audio'
+      ? ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+      : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm', 'video/mp4']
+    for (const m of candidates) {
+      try { if (MediaRecorder.isTypeSupported(m)) return m } catch { /* fall through */ }
+    }
+    return ''
+  }
+
+  // Open the recorder UI in setup phase — no capture starts until the user
+  // explicitly clicks Record.
+  function openRecorder(type: 'audio' | 'video') {
+    if (recorderRef.current) return
+    setRecorder({
+      type, phase: 'setup', videoSource: 'camera',
+      chunks: [], startedAt: 0, elapsedMs: 0,
+    })
+    if (type === 'video') void loadCameraDevices()
+  }
+
+  // Enumerate webcams. Most browsers won't return device labels until the
+  // user has granted at least one media permission this session, so we
+  // request a short-lived audio stream first to "unlock" labels.
+  async function loadCameraDevices() {
+    try {
+      let primed = false
+      try {
+        const probe = await navigator.mediaDevices.getUserMedia({ audio: true })
+        probe.getTracks().forEach((t) => { try { t.stop() } catch { /* ignore */ } })
+        primed = true
+      } catch { /* labels may stay generic */ }
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const cams: CameraDevice[] = devices
+        .filter((d) => d.kind === 'videoinput')
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }))
+      setRecorder((r) => {
+        if (!r || r.phase !== 'setup') return r
+        return { ...r, cameraDevices: cams, selectedCameraId: r.selectedCameraId ?? cams[0]?.deviceId }
+      })
+      if (!primed) console.debug('[recorder] camera labels may be empty until first capture grant')
+    } catch (err) {
+      console.error('[recorder] enumerateDevices failed:', err)
+    }
+  }
+
+  function setSelectedCamera(deviceId: string) {
+    setRecorder((r) => r && r.phase === 'setup' ? { ...r, selectedCameraId: deviceId } : r)
+  }
+
+  function setVideoSource(src: VideoSource) {
+    setRecorder((r) => {
+      if (!r || r.phase !== 'setup') return r
+      const next: RecorderState = { ...r, videoSource: src }
+      // Fetch the screen / window list lazily the first time the user
+      // picks a screen-bearing source.
+      if ((src === 'screen' || src === 'both') && !next.screenSources && !next.screenSourcesLoading) {
+        next.screenSourcesLoading = true
+        loadScreenSources()
+      }
+      // Camera-only mode doesn't need a screen pick.
+      if (src === 'camera') next.selectedScreenId = undefined
+      return next
+    })
+  }
+
+  function setSelectedScreen(id: string) {
+    setRecorder((r) => r && r.phase === 'setup' ? { ...r, selectedScreenId: id } : r)
+  }
+
+  async function loadScreenSources() {
+    try {
+      const sources = await window.electronAPI.getScreenSources()
+      setRecorder((r) => {
+        if (!r || r.phase !== 'setup') return r
+        // Auto-pick the primary screen as a sensible default — user can
+        // click another tile to switch.
+        const primary = sources.find(s => /screen/i.test(s.name)) ?? sources[0]
+        return { ...r, screenSources: sources, screenSourcesLoading: false, selectedScreenId: r.selectedScreenId ?? primary?.id }
+      })
+    } catch (err) {
+      console.error('[recorder] getScreenSources failed:', err)
+      setRecorder((r) => r ? { ...r, screenSourcesLoading: false, screenSources: [] } : r)
+    }
+  }
+
+  async function getCaptureStream(state: RecorderState): Promise<{ stream: MediaStream; aux: MediaStream[] }> {
+    if (state.type === 'audio') {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true })
+      return { stream: s, aux: [] }
+    }
+    if (state.videoSource === 'camera') {
+      const videoConstraints: MediaTrackConstraints = state.selectedCameraId
+        ? { deviceId: { exact: state.selectedCameraId }, width: 640, height: 480 }
+        : { width: 640, height: 480 }
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: videoConstraints })
+      return { stream: s, aux: [] }
+    }
+    const sourceId = state.selectedScreenId
+    if (!sourceId) throw new Error('No screen source selected')
+    if (state.videoSource === 'screen') {
+      // Screen-only: try to grab system audio too; fall back to mic if the
+      // platform won't return a desktop audio track.
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as MediaTrackConstraints,
+        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as MediaTrackConstraints,
+      }).catch(async () => {
+        const v = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as MediaTrackConstraints,
+        })
+        // Layer the user's mic onto the screen video if we couldn't tap
+        // system audio — at minimum the user should be heard.
+        try {
+          const mic = await navigator.mediaDevices.getUserMedia({ audio: true })
+          mic.getAudioTracks().forEach((t) => v.addTrack(t))
+        } catch { /* mic optional */ }
+        return v
+      })
+      return { stream: s, aux: [] }
+    }
+    // 'both' — composite cam onto screen via canvas, mix mic audio in.
+    const screenStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as MediaTrackConstraints,
+    })
+    const camVideoConstraints: MediaTrackConstraints = state.selectedCameraId
+      ? { deviceId: { exact: state.selectedCameraId }, width: 320, height: 240 }
+      : { width: 320, height: 240 }
+    const camStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: camVideoConstraints })
+    return { stream: composeCamOverScreen(screenStream, camStream), aux: [screenStream, camStream] }
+  }
+
+  // Build a composited MediaStream: screen video as the canvas backdrop,
+  // camera as a small overlay in the bottom-left, mic audio passthrough.
+  function composeCamOverScreen(screenStream: MediaStream, camStream: MediaStream): MediaStream {
+    const screenVideo = document.createElement('video')
+    screenVideo.muted = true
+    screenVideo.srcObject = screenStream
+    void screenVideo.play()
+    const camVideo = document.createElement('video')
+    camVideo.muted = true
+    camVideo.srcObject = camStream
+    void camVideo.play()
+
+    const canvas = document.createElement('canvas')
+    canvas.width = 1280
+    canvas.height = 720
+    const ctx = canvas.getContext('2d')!
+    compositorCanvasRef.current = canvas
+
+    let stopped = false
+    function draw() {
+      if (stopped) return
+      if (screenVideo.readyState >= 2) {
+        const sw = screenVideo.videoWidth || canvas.width
+        const sh = screenVideo.videoHeight || canvas.height
+        // Letterbox screen to canvas while preserving aspect.
+        const r = Math.min(canvas.width / sw, canvas.height / sh)
+        const dw = sw * r, dh = sh * r
+        const dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2
+        ctx.fillStyle = '#000'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(screenVideo, dx, dy, dw, dh)
+      }
+      if (camVideo.readyState >= 2) {
+        const camW = 240, camH = 180
+        const margin = 20
+        const x = margin
+        const y = canvas.height - camH - margin
+        ctx.save()
+        ctx.shadowColor = 'rgba(0,0,0,0.5)'
+        ctx.shadowBlur = 12
+        // Rounded rectangle clip for a polished PiP.
+        const r = 12
+        ctx.beginPath()
+        ctx.moveTo(x + r, y)
+        ctx.arcTo(x + camW, y, x + camW, y + camH, r)
+        ctx.arcTo(x + camW, y + camH, x, y + camH, r)
+        ctx.arcTo(x, y + camH, x, y, r)
+        ctx.arcTo(x, y, x + camW, y, r)
+        ctx.closePath()
+        ctx.clip()
+        ctx.drawImage(camVideo, x, y, camW, camH)
+        ctx.restore()
+        ctx.lineWidth = 2
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+        ctx.beginPath()
+        ctx.moveTo(x + r, y)
+        ctx.arcTo(x + camW, y, x + camW, y + camH, r)
+        ctx.arcTo(x + camW, y + camH, x, y + camH, r)
+        ctx.arcTo(x, y + camH, x, y, r)
+        ctx.arcTo(x, y, x + camW, y, r)
+        ctx.closePath()
+        ctx.stroke()
+      }
+      const id = requestAnimationFrame(draw)
+      setRecorder((r) => r ? { ...r, rafId: id } : r)
+    }
+    draw()
+
+    const out = (canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(30)
+    camStream.getAudioTracks().forEach((t) => out.addTrack(t))
+    // Tear-down hook: stop the RAF when the canvas track ends.
+    out.getVideoTracks()[0]?.addEventListener('ended', () => { stopped = true })
+    // We rely on cancelRecording / stopRecording below to also stop the
+    // animation by setting `stopped = true` via the ref.
+    ;(out as MediaStream & { __stopCompositor?: () => void }).__stopCompositor = () => { stopped = true }
+    return out
+  }
+
+  async function startRecordingNow() {
+    const cur = recorderRef.current
+    if (!cur || cur.phase !== 'setup') return
+    try {
+      const { stream, aux } = await getCaptureStream(cur)
+      const mime = pickRecorderMime(cur.type)
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
+      const chunks: Blob[] = []
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+      mr.onstop = () => {
+        const c = recorderRef.current
+        if (!c) return
+        const blob = new Blob(c.chunks, { type: mr.mimeType || (cur.type === 'audio' ? 'audio/webm' : 'video/webm') })
+        const blobUrl = URL.createObjectURL(blob)
+        setRecorder({ ...c, phase: 'preview', blob, blobUrl })
+      }
+      mr.start(250)
+      setRecorder({
+        ...cur, phase: 'recording', stream, auxStreams: aux,
+        mr, chunks, startedAt: Date.now(), elapsedMs: 0,
+      })
+    } catch (err) {
+      console.error('[recorder] capture failed:', err)
+      setUploadError(`Capture failed — ${cur.type === 'audio' ? 'mic' : 'camera/screen'} access denied?`)
+      setTimeout(() => setUploadError(null), 4000)
+    }
+  }
+
+  function teardownStreams(state: RecorderState) {
+    state.stream?.getTracks().forEach((t) => { try { t.stop() } catch { /* ignore */ } })
+    state.auxStreams?.forEach((s) => s.getTracks().forEach((t) => { try { t.stop() } catch { /* ignore */ } }))
+    const stopFn = (state.stream as (MediaStream & { __stopCompositor?: () => void }) | undefined)?.__stopCompositor
+    if (stopFn) try { stopFn() } catch { /* ignore */ }
+    if (state.rafId) try { cancelAnimationFrame(state.rafId) } catch { /* ignore */ }
+  }
+
+  function stopRecording() {
+    const cur = recorderRef.current
+    if (!cur || cur.phase !== 'recording' || !cur.mr) return
+    try { cur.mr.stop() } catch { /* already stopped */ }
+    teardownStreams(cur)
+  }
+
+  function cancelRecording() {
+    const cur = recorderRef.current
+    if (!cur) return
+    try { if (cur.mr && cur.mr.state !== 'inactive') cur.mr.stop() } catch { /* ignore */ }
+    teardownStreams(cur)
+    if (cur.blobUrl) { try { URL.revokeObjectURL(cur.blobUrl) } catch { /* ignore */ } }
+    setRecorder(null)
+  }
+
+  // From preview phase, toss the blob and go back to setup so the user can
+  // tweak source / try again without leaving the recorder UI.
+  function retakeRecording() {
+    const cur = recorderRef.current
+    if (!cur) return
+    if (cur.blobUrl) { try { URL.revokeObjectURL(cur.blobUrl) } catch { /* ignore */ } }
+    setRecorder({
+      type: cur.type, phase: 'setup', videoSource: cur.videoSource,
+      chunks: [], startedAt: 0, elapsedMs: 0,
+    })
+  }
+
+  async function sendRecording() {
+    const cur = recorderRef.current
+    if (!cur || cur.phase !== 'preview' || !cur.blob) return
+    const ts = Date.now()
+    const ext = (cur.blob.type.includes('mp4') ? 'mp4' : 'webm')
+    const name = cur.type === 'audio' ? `voice-note-${ts}.${ext}` : `video-note-${ts}.${ext}`
+    const file = new File([cur.blob], name, { type: cur.blob.type })
+    if (cur.blobUrl) { try { URL.revokeObjectURL(cur.blobUrl) } catch { /* ignore */ } }
+    setRecorder(null)
+    await uploadFileBlob(file)
+  }
+
+  // Tick the elapsed-time clock while recording (250ms cadence is plenty).
+  useEffect(() => {
+    if (!recorder || recorder.phase !== 'recording') return
+    const id = setInterval(() => {
+      setRecorder((r) => r && r.phase === 'recording'
+        ? { ...r, elapsedMs: Date.now() - r.startedAt }
+        : r)
+    }, 250)
+    return () => clearInterval(id)
+  }, [recorder?.phase])
+
+  // Wire the live camera stream to the preview <video> tag once both exist.
+  useEffect(() => {
+    if (recorder?.phase === 'recording' && recorder.type === 'video' && liveVideoRef.current && recorder.stream) {
+      liveVideoRef.current.srcObject = recorder.stream
+      liveVideoRef.current.play().catch(() => { /* autoplay blocked — user can click */ })
+    }
+  }, [recorder?.phase, recorder?.type, recorder?.stream])
+
+  // Tear down media tracks if the component unmounts mid-recording.
+  useEffect(() => () => {
+    const cur = recorderRef.current
+    if (!cur) return
+    try { if (cur.mr && cur.mr.state !== 'inactive') cur.mr.stop() } catch { /* ignore */ }
+    teardownStreams(cur)
+    if (cur.blobUrl) { try { URL.revokeObjectURL(cur.blobUrl) } catch { /* ignore */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function uploadMarkdown(u: PendingUpload): string {
+    return u.isImage ? `![${u.name}](${u.url})` : `[📎 ${u.name}](${u.url})`
+  }
+
+  async function postContent(content: string) {
+    if (!channelId) return
+    try {
+      await fetch(`${config.apiBase}/api/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      })
+    } catch (err) { console.error('[messages] post failed:', err) }
+  }
+
+  // P3-#4 — Send is non-blocking. We send immediately with the user's text +
+  // already-completed uploads. Any in-progress uploads keep running and post
+  // as separate follow-up messages when each finishes. This is much closer to
+  // how Slack / Discord behave.
+  async function composedSend() {
+    const completed = pendingUploads.filter((u) => u.status === 'done' && u.url)
+    const inProgress = pendingUploads.filter((u) => u.status === 'uploading')
+    const userText = input.trim()
+    if (completed.length === 0 && inProgress.length === 0) {
+      sendFn()
+      return
+    }
+
+    // Snapshot the in-progress xhrs so we can wait on them later.
+    const pendingXhrs = inProgress.slice()
+
+    // Send what's ready right now.
+    const initialMd = completed.map(uploadMarkdown).join('\n')
+    const combined = userText ? (initialMd ? `${initialMd}\n${userText}` : userText) : initialMd
+
+    // Clear UI immediately so the user can keep typing.
+    setPendingUploads(inProgress) // keep in-progress chips visible
+    setInput('')
+    if (editorRef.current) { editorRef.current.innerHTML = ''; setHasContent(false) }
+
+    if (combined) await postContent(combined)
+
+    // For each in-progress upload, post as its own message when it lands.
+    for (const u of pendingXhrs) {
+      const xhr = u.xhr
+      if (!xhr) continue
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText) as { url: string; filename: string }
+            const fullUrl = `${config.apiBase}${data.url}`
+            const isImage = isImageFilename(data.filename)
+            const md = isImage ? `![${data.filename}](${fullUrl})` : `[📎 ${data.filename}](${fullUrl})`
+            void postContent(md)
+            // Drop the now-posted upload from the chip list.
+            setPendingUploads((prev) => prev.filter((p) => p.id !== u.id))
+          } catch { /* already handled in onload */ }
+        }
+      }, { once: true })
+    }
   }
 
   // ─── Toolbar button helpers ──────────────────────────────────────────────────
@@ -535,8 +1249,318 @@ export function MessageInput({
 
   const sep = () => <div style={{ width: 1, height: 20, background: C.separator, margin: '0 4px' }} />
 
+  // Format ms → "0:12" / "1:05".
+  function fmtElapsed(ms: number): string {
+    const total = Math.floor(ms / 1000)
+    const m = Math.floor(total / 60)
+    const s = total % 60
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
   return (
     <div style={{ padding: '8px 16px 12px', flexShrink: 0, position: 'relative' }}>
+      {/* #9 — Audio / video clip recorder. Setup → record → preview flow.
+          Capture only starts when the user clicks the explicit Record
+          button so we never light up the mic / camera by surprise. */}
+      {recorder && (
+        <div style={{
+          padding: 12, marginBottom: 8, borderRadius: 10,
+          background: C.bgInput,
+          border: `1px solid ${recorder.phase === 'recording' ? '#ef4444' : C.separator}`,
+        }}>
+          {recorder.phase === 'setup' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {recorder.type === 'audio'
+                  ? <Mic size={16} color={C.accent} />
+                  : <Video size={16} color={C.accent} />}
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                  {recorder.type === 'audio' ? 'New voice note' : 'New video note'}
+                </span>
+                <button onClick={cancelRecording} title="Close"
+                  style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4, display: 'flex' }}>
+                  <X size={14} />
+                </button>
+              </div>
+              {recorder.type === 'video' && (
+                <>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {([
+                      { id: 'camera', label: 'Camera only' },
+                      { id: 'screen', label: 'Screen only' },
+                      { id: 'both', label: 'Screen + camera' },
+                    ] as const).map((opt) => {
+                      const active = recorder.videoSource === opt.id
+                      return (
+                        <button key={opt.id} onClick={() => setVideoSource(opt.id)}
+                          style={{
+                            flex: 1, padding: '8px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                            border: `1px solid ${active ? C.accent : C.separator}`,
+                            background: active ? `${C.accent}22` : 'transparent',
+                            color: active ? C.accent : C.text,
+                            fontWeight: active ? 600 : 500,
+                          }}>
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {/* Camera selector — relevant when the chosen mode
+                      involves the webcam. Single-cam users just see one
+                      label; multi-cam users get a dropdown. */}
+                  {(recorder.videoSource === 'camera' || recorder.videoSource === 'both') && (recorder.cameraDevices?.length ?? 0) > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 11, color: C.textMuted, whiteSpace: 'nowrap' }}>Camera:</span>
+                      <select
+                        value={recorder.selectedCameraId ?? ''}
+                        onChange={(e) => setSelectedCamera(e.target.value)}
+                        style={{
+                          flex: 1, padding: '6px 8px', borderRadius: 6,
+                          border: `1px solid ${C.separator}`, background: C.bgSecondary,
+                          color: C.text, fontSize: 12, fontFamily: 'inherit', cursor: 'pointer',
+                        }}>
+                        {recorder.cameraDevices!.map((d) => (
+                          <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {(recorder.videoSource === 'screen' || recorder.videoSource === 'both') && (
+                    <div>
+                      <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 6 }}>
+                        Choose a screen or window to capture:
+                      </div>
+                      {recorder.screenSourcesLoading ? (
+                        <div style={{ fontSize: 12, color: C.textMuted, padding: 12 }}>Loading sources…</div>
+                      ) : !recorder.screenSources || recorder.screenSources.length === 0 ? (
+                        <div style={{ fontSize: 12, color: C.textMuted, padding: 12 }}>No sources available.</div>
+                      ) : (
+                        <div style={{
+                          display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+                          gap: 8, maxHeight: 240, overflowY: 'auto', paddingRight: 4,
+                        }}>
+                          {recorder.screenSources.map((s) => {
+                            const active = recorder.selectedScreenId === s.id
+                            return (
+                              <button key={s.id} onClick={() => setSelectedScreen(s.id)}
+                                style={{
+                                  padding: 6, borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+                                  border: `2px solid ${active ? C.accent : C.separator}`,
+                                  background: active ? `${C.accent}10` : 'transparent',
+                                  display: 'flex', flexDirection: 'column', gap: 4,
+                                }}>
+                                <img src={s.thumbnail} alt={s.name}
+                                  style={{ width: '100%', height: 80, objectFit: 'cover', borderRadius: 4, background: '#000' }} />
+                                <span style={{ fontSize: 11, color: active ? C.accent : C.text, fontWeight: active ? 600 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {s.name}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+              {(() => {
+                const needsScreen = recorder.type === 'video' && (recorder.videoSource === 'screen' || recorder.videoSource === 'both')
+                const ready = !needsScreen || !!recorder.selectedScreenId
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: C.textMuted, flex: 1 }}>
+                      {recorder.type === 'audio'
+                        ? 'Press Record to start capturing audio.'
+                        : recorder.videoSource === 'camera' ? 'Press Record to start your webcam.'
+                        : recorder.videoSource === 'screen' ? (ready ? 'Press Record to capture the selected screen / window.' : 'Pick a screen or window above first.')
+                        : (ready ? 'Press Record to capture the selected source with webcam in the bottom-left.' : 'Pick a screen or window above first.')}
+                    </span>
+                    <button onClick={cancelRecording}
+                      style={{ background: 'none', border: `1px solid ${C.separator}`, color: C.textMuted, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                      Cancel
+                    </button>
+                    <button onClick={() => void startRecordingNow()} title="Start recording" disabled={!ready}
+                      style={{
+                        background: ready ? '#ef4444' : '#7d3a3a', border: 'none', color: '#fff',
+                        padding: '6px 14px', borderRadius: 6, cursor: ready ? 'pointer' : 'not-allowed',
+                        fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6,
+                        opacity: ready ? 1 : 0.7,
+                      }}>
+                      <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#fff' }} />
+                      Record
+                    </button>
+                  </div>
+                )
+              })()}
+            </div>
+          ) : recorder.phase === 'recording' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {recorder.type === 'video' ? (
+                <video ref={liveVideoRef} muted playsInline
+                  style={{ width: 128, height: 96, objectFit: 'cover', borderRadius: 6, background: '#000', flexShrink: 0 }} />
+              ) : (
+                <div style={{
+                  width: 40, height: 40, borderRadius: '50%', background: '#ef4444',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  animation: 'bundy-pulse 1.2s ease-in-out infinite',
+                }}>
+                  <Mic size={20} color="#fff" />
+                </div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#ef4444', animation: 'bundy-pulse 1.2s ease-in-out infinite' }} />
+                  Recording {recorder.type === 'audio' ? 'voice note' : `video (${recorder.videoSource})`}…
+                </div>
+                <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
+                  {fmtElapsed(recorder.elapsedMs)}
+                </div>
+              </div>
+              <button onClick={cancelRecording} title="Discard"
+                style={{ background: 'none', border: `1px solid ${C.separator}`, color: C.textMuted, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                Cancel
+              </button>
+              <button onClick={stopRecording} title="Stop & preview"
+                style={{ background: C.accent, border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                Stop
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {recorder.type === 'video' && recorder.blobUrl ? (
+                <video
+                  key={recorder.blobUrl}
+                  src={recorder.blobUrl}
+                  controls playsInline preload="auto"
+                  // MediaRecorder webm sometimes ships without a duration
+                  // header, leaving the element on a black frame until
+                  // play() runs. Nudging currentTime past 0 forces the
+                  // decoder to emit the first frame.
+                  onLoadedMetadata={(e) => { try { (e.currentTarget as HTMLVideoElement).currentTime = 0.05 } catch { /* ignore */ } }}
+                  style={{ width: 240, maxHeight: 180, borderRadius: 6, background: '#000', flexShrink: 0 }}
+                />
+              ) : recorder.blobUrl ? (
+                <audio src={recorder.blobUrl} controls
+                  style={{ width: 280, flexShrink: 0 }} />
+              ) : null}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                  {recorder.type === 'audio' ? '🎤 Voice note' : '📹 Video note'} ready
+                </div>
+                <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+                  {fmtElapsed(recorder.elapsedMs)} · review then send
+                </div>
+              </div>
+              <button onClick={cancelRecording} title="Discard"
+                style={{ background: 'none', border: `1px solid ${C.separator}`, color: C.textMuted, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                Discard
+              </button>
+              <button onClick={retakeRecording} title="Re-record"
+                style={{ background: 'none', border: `1px solid ${C.separator}`, color: C.text, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                Re-record
+              </button>
+              <button onClick={() => void sendRecording()} title="Send"
+                style={{ background: C.accent, border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Send size={14} /> Send
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* P3-#1/#2/#3 — Pending uploads, displayed ABOVE the editor with
+          per-file status (uploading spinner / done check / error). */}
+      {pendingUploads.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {pendingUploads.map((u) => (
+            <div key={u.id} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: 6, paddingRight: 10, borderRadius: 8,
+              background: C.bgInput, border: `1px solid ${u.status === 'error' ? '#ef4444' : C.separator}`,
+              maxWidth: 260, fontSize: 11,
+            }}>
+              {u.thumbDataUrl ? (
+                <img src={u.thumbDataUrl} alt="" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 36, height: 36, borderRadius: 4, background: C.bgHover, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>
+                  {/\.(mp4|webm|ogg|mov|m4v)$/i.test(u.name) ? '🎬'
+                    : /\.(mp3|wav|ogg|m4a|aac)$/i.test(u.name) ? '🎵'
+                    : '📎'}
+                </div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: C.text, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name}</div>
+                <div style={{ color: u.status === 'error' ? '#ef4444' : C.textMuted, fontSize: 10, marginTop: 2 }}>
+                  {u.status === 'uploading' && (
+                    <>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ display: 'inline-block', width: 8, height: 8, border: `1.5px solid ${C.accent}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'bundy-spin 0.7s linear infinite' }} />
+                        {u.progress != null ? `${u.progress}%` : 'Uploading…'}
+                      </span>
+                      {/* Real progress bar — gives the user something to look at on slow networks. */}
+                      <div style={{ marginTop: 4, height: 3, background: C.bgHover, borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ width: `${u.progress ?? 0}%`, height: '100%', background: C.accent, transition: 'width 0.2s' }} />
+                      </div>
+                    </>
+                  )}
+                  {u.status === 'done' && '✓ Ready'}
+                  {u.status === 'error' && '✗ Failed — click X to remove'}
+                </div>
+              </div>
+              <button onClick={() => removeUpload(u.id)}
+                title="Remove"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, display: 'flex' }}>
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Keyframes used by upload spinner + recorder pulse. Rendered
+          unconditionally so they're available whether or not the recorder
+          / uploads UI happens to be mounted. */}
+      <style>{`
+        @keyframes bundy-spin { to { transform: rotate(360deg); } }
+        @keyframes bundy-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.45 } }
+      `}</style>
+
+      {/* P3-#5 — Custom URL modal (replaces window.prompt which Electron forbids). */}
+      {linkModal && (
+        <div onClick={() => setLinkModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.bgPrimary, borderRadius: 10, padding: 18, width: 380, border: `1px solid ${C.separator}`, boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Insert link</div>
+            <input
+              autoFocus
+              value={linkModal.url}
+              onChange={(e) => setLinkModal({ ...linkModal, url: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); applyLinkFromModal() }
+                else if (e.key === 'Escape') { e.preventDefault(); setLinkModal(null) }
+              }}
+              placeholder="https://example.com"
+              style={{
+                width: '100%', padding: '8px 10px', fontSize: 13,
+                background: C.bgInput, color: C.text, border: `1px solid ${C.separator}`,
+                borderRadius: 6, outline: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={() => setLinkModal(null)}
+                style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: C.textMuted, border: `1px solid ${C.separator}`, borderRadius: 6, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={applyLinkFromModal}
+                style={{ padding: '6px 12px', fontSize: 12, background: C.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+                Insert
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* GIF Picker */}
       {showGifPicker && (
         <div ref={gifPickerRef} style={{
@@ -656,7 +1680,7 @@ export function MessageInput({
           </div>
           {/* Custom time */}
           <div style={{ borderTop: `1px solid ${C.separator}`, padding: '4px 0' }}>
-            <button onClick={() => { setShowScheduleMenu(false); setShowCustomTime(true); setCustomDate(new Date(Date.now() + 86400000).toISOString().slice(0, 10)) }}
+            <button onClick={() => { setShowScheduleMenu(false); setShowCustomTime(true); setCustomDate(defaultCustomDate()); setCustomTime(defaultCustomTime()) }}
               style={{
                 width: '100%', display: 'flex', alignItems: 'center', padding: '10px 16px',
                 background: 'none', border: 'none', cursor: 'pointer', color: C.text,
@@ -755,8 +1779,8 @@ export function MessageInput({
         }}>
           {[
             ...(!hideGifs ? [{ icon: <Image size={16} />, label: 'GIF', action: () => { setShowMoreMenu(false); setShowGifPicker(true); setGifQuery('') } }] : []),
-            { icon: <Video size={16} />, label: 'Video clip', action: () => setShowMoreMenu(false) },
-            { icon: <Mic size={16} />, label: 'Audio clip', action: () => setShowMoreMenu(false) },
+            { icon: <Video size={16} />, label: 'Video clip', action: () => { setShowMoreMenu(false); openRecorder('video') } },
+            { icon: <Mic size={16} />, label: 'Audio clip', action: () => { setShowMoreMenu(false); openRecorder('audio') } },
           ].map((item, i) => (
             <button key={i} onClick={item.action}
               style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', background: 'none', border: 'none', cursor: 'pointer', color: C.text, fontSize: 13, fontFamily: 'inherit' }}
@@ -769,7 +1793,8 @@ export function MessageInput({
         </div>
       )}
 
-      <input ref={fileRef} type="file" hidden onChange={handleFile} />
+      <input ref={fileRef} type="file" hidden multiple onChange={handleFile}
+        accept="image/*,video/*,audio/*,application/pdf,application/zip,text/*" />
 
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true) }}
@@ -888,14 +1913,14 @@ export function MessageInput({
           {/* Send + Chevron */}
           <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
             <button
-              onClick={sendFn}
-              disabled={!input.trim() || sending || uploading}
+              onClick={() => void composedSend()}
+              disabled={(!input.trim() && pendingUploads.filter(u => u.status === 'done').length === 0) || sending || uploading}
               title="Send message"
               style={{
                 width: 32, height: 32, borderRadius: hideSchedule ? 6 : '6px 0 0 6px', border: 'none',
-                background: input.trim() ? C.accent : 'transparent',
-                color: input.trim() ? '#fff' : C.textMuted,
-                cursor: input.trim() ? 'pointer' : 'default',
+                background: (input.trim() || pendingUploads.some(u => u.status === 'done')) ? C.accent : 'transparent',
+                color: (input.trim() || pendingUploads.some(u => u.status === 'done')) ? '#fff' : C.textMuted,
+                cursor: (input.trim() || pendingUploads.some(u => u.status === 'done')) ? 'pointer' : 'default',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 transition: 'background 0.15s, color 0.15s',
               }}>

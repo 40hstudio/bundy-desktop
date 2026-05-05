@@ -4,7 +4,11 @@ import Dashboard from './pages/Dashboard'
 import FullDashboard from './pages/FullDashboard'
 import FloatingCallOverlay from './pages/FloatingCallOverlay'
 import { ErrorBoundary } from './components/shared/ErrorBoundary'
+import { UploadProgressOverlay } from './components/shared/UploadProgressOverlay'
 import { attachTasksSseListeners } from './stores/tasksStore'
+import { setApiClientUserId } from './api/client'
+import { attachQueueReplay } from './api/queueReplay'
+import { playSound } from './utils/sounds'
 
 const SPLASH_MIN_MS = 5000
 
@@ -217,8 +221,23 @@ export default function App(): JSX.Element {
   // If the server rejects our token (expired at 5 AM WIB), force re-login
   useEffect(() => {
     return window.electronAPI.onTokenExpired(() => {
+      playSound('system.token-expired')
       setAuth(null)
     })
+  }, [])
+
+  // Tell the api client which user is logged in so the offline cache
+  // is namespaced per-user and doesn't leak across login switches.
+  useEffect(() => {
+    setApiClientUserId(auth?.userId ?? null)
+  }, [auth?.userId])
+
+  // Phase 2 — drain the offline write queue when the main process
+  // tells us the server is reachable again. Hydrates the in-memory
+  // queue counter on mount too, so a fresh launch picks up anything
+  // left over from the last session.
+  useEffect(() => {
+    return attachQueueReplay()
   }, [])
 
   // Bridge SSE task events → window CustomEvents that panels and link cards
@@ -235,7 +254,30 @@ export default function App(): JSX.Element {
         window.dispatchEvent(new CustomEvent('bundy-task-comment-added', { detail: event.data }))
       } else if (event.kind === 'task-notification') {
         window.dispatchEvent(new CustomEvent('bundy-task-notification', { detail: event.data }))
+      } else if (event.kind === 'task-typing') {
+        window.dispatchEvent(new CustomEvent('bundy-task-typing', { detail: event.data }))
+      } else if (event.kind === 'task-typing-stop') {
+        window.dispatchEvent(new CustomEvent('bundy-task-typing-stop', { detail: event.data }))
+      } else if (event.kind === 'task-comment-edit') {
+        window.dispatchEvent(new CustomEvent('bundy-task-comment-edited', { detail: event.data }))
+      } else if (event.kind === 'task-comment-delete') {
+        window.dispatchEvent(new CustomEvent('bundy-task-comment-deleted', { detail: event.data }))
       }
+    })
+  }, [])
+
+  // Bridge SSE report events → window CustomEvents. ReportPanel + cards subscribe.
+  useEffect(() => {
+    return window.electronAPI.onReportEvent((event) => {
+      window.dispatchEvent(new CustomEvent(`bundy-${event.kind}`, { detail: event.data }))
+    })
+  }, [])
+
+  // Bridge SSE calendar events → window CustomEvent. CalendarPanel listens
+  // for `bundy-calendar-event` and refetches its visible window.
+  useEffect(() => {
+    return window.electronAPI.onCalendarEvent((event) => {
+      window.dispatchEvent(new CustomEvent(`bundy-${event.kind}`, { detail: event.data }))
     })
   }, [])
 
@@ -265,6 +307,7 @@ export default function App(): JSX.Element {
     return (
       <ErrorBoundary label="App">
         <FullDashboard auth={auth} onLogout={handleLogout} />
+        <UploadProgressOverlay />
       </ErrorBoundary>
     )
   }
@@ -275,6 +318,7 @@ export default function App(): JSX.Element {
         auth={auth}
         onLogout={handleLogout}
       />
+      <UploadProgressOverlay />
     </ErrorBoundary>
   )
 }

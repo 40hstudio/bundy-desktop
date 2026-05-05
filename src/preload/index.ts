@@ -42,8 +42,33 @@ export interface DailyPlanData {
 
 export type SseTaskEvent =
   | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
-  | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
+  | { kind: 'task-comment'; data: {
+      taskId: string; mainTaskId: string; summary: string; actorId: string;
+      actorName?: string; taskTitle?: string; commentId?: string;
+      comment?: {
+        id: string; body: string; createdAt: string; editedAt: string | null;
+        parentCommentId: string | null;
+        attachmentUrl: string | null; attachmentName: string | null;
+        user: { id: string; username: string; alias: string | null; avatarUrl: string | null };
+        reactions: Array<{ emoji: string; userId: string; user: { id: string; username: string; alias: string | null } }>;
+      };
+    } }
+  | { kind: 'task-comment-edit'; data: { taskId: string; mainTaskId: string; commentId: string; body: string; editedAt: string } }
+  | { kind: 'task-comment-delete'; data: { taskId: string; mainTaskId: string; commentId: string } }
   | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string; commentId?: string | null; subtaskId?: string | null } }
+  | { kind: 'task-typing'; data: { taskId: string; mainTaskId: string; userId: string; userName: string } }
+  | { kind: 'task-typing-stop'; data: { taskId: string; mainTaskId: string; userId: string } }
+
+export type SseReportEvent =
+  | { kind: 'report-tree-update'; data: { kind: string; action: string; id: string; projectId?: string | null; clientId?: string | null; actorId?: string } }
+  | { kind: 'feedback-pin'; data: { linkId: string; pinId: string; action: 'created' | 'updated' | 'deleted'; actorId?: string } }
+  | { kind: 'feedback-reply'; data: { pinId: string; replyId: string; action: 'created' | 'updated' | 'deleted'; actorId?: string } }
+  | { kind: 'report-doc-edit'; data: { documentId: string; editId: string; summary: string | null; actorId: string; actorName: string } }
+  | { kind: 'report-doc-presence'; data: { documentId: string; editors: { userId: string; userName: string; avatar: string | null }[] } }
+  | { kind: 'feedback-notification'; data: { userId: string; notificationId: string; pinId: string; type: string; message: string } }
+
+export type SseCalendarEvent =
+  | { kind: 'calendar-event'; data: { eventId: string; action: 'created' | 'updated' | 'deleted'; recipientIds: string[]; title?: string; startsAt?: string; hostId?: string } }
 
 const api = {
   getStoredAuth: (): Promise<StoredAuth | null> => ipcRenderer.invoke('get-stored-auth'),
@@ -55,6 +80,10 @@ const api = {
   submitReport: (content: string): Promise<void> =>
     ipcRenderer.invoke('submit-report', content),
   checkPermissions: (): Promise<Permissions> => ipcRenderer.invoke('check-permissions'),
+  // P0-1 — exposes process.platform synchronously so the renderer can
+  // skip macOS-only API calls on Windows / Linux without crashing.
+  // 'darwin' | 'win32' | 'linux' (etc.); read once at boot.
+  platform: process.platform,
   openAccessibilitySettings: (): Promise<void> =>
     ipcRenderer.invoke('open-accessibility-settings'),
   openScreenRecordingSettings: (): Promise<void> =>
@@ -109,6 +138,16 @@ const api = {
     ipcRenderer.on('task-event', handler)
     return () => ipcRenderer.removeListener('task-event', handler)
   },
+  onReportEvent: (cb: (event: SseReportEvent) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: SseReportEvent): void => cb(event)
+    ipcRenderer.on('report-event', handler)
+    return () => ipcRenderer.removeListener('report-event', handler)
+  },
+  onCalendarEvent: (cb: (event: SseCalendarEvent) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: SseCalendarEvent): void => cb(event)
+    ipcRenderer.on('calendar-event', handler)
+    return () => ipcRenderer.removeListener('calendar-event', handler)
+  },
   sendCrashReport: (note: string): Promise<void> =>
     ipcRenderer.invoke('send-crash-report', note),
   openFullWindow: (): Promise<void> =>
@@ -161,6 +200,16 @@ const api = {
   // daily rollup can populate Task.actualHours.
   setCurrentTask: (taskId: string | null): void =>
     ipcRenderer.send('set-current-task', taskId),
+  // Renderer error capture (auto-logs to userData/error.log).
+  reportError: (payload: { level: string; message: string; stack?: string; url?: string; userAgent?: string; timestamp: string }): void =>
+    ipcRenderer.send('report-renderer-error', payload),
+  getErrorLogPath: (): Promise<string> => ipcRenderer.invoke('get-error-log-path'),
+  setCurrentReportDocument: (documentId: string | null): void =>
+    ipcRenderer.send('set-current-report-document', documentId),
+  setCurrentChannel: (channelId: string | null): void =>
+    ipcRenderer.send('set-current-channel', channelId),
+  setCurrentVoiceChannel: (voiceChannelId: string | null): void =>
+    ipcRenderer.send('set-current-voice-channel', voiceChannelId),
 
   // ─── Desktop notifications ────────────────────────────────────────
   showNotification: (title: string, body: string): Promise<void> =>

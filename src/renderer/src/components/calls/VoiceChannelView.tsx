@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Users, MicOff, Monitor, PhoneOff, Mic, Video, VideoOff, Headphones, UserPlus2, Volume2, MessageSquare, Wifi, X, Phone, Settings, Music, Search, Star, Plus, Upload } from 'lucide-react'
+import { Users, MicOff, Monitor, PhoneOff, Mic, Video, VideoOff, Headphones, UserPlus2, Volume2, MessageSquare, Wifi, X, Phone, Music, Search, Star, Plus, Upload, Smile } from 'lucide-react'
 import { ApiConfig, Auth } from '../../types'
 import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
@@ -46,10 +46,10 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
   const panOffset = useRef({ x: 0, y: 0 })
   const focusVideoRef = useRef<HTMLVideoElement | null>(null)
   const focusContainerRef = useRef<HTMLDivElement>(null)
-  const [camResolution, setCamResolution] = useState<string>(() => localStorage.getItem('bundy_cam_resolution') ?? '1080p')
-  const [showResSettings, setShowResSettings] = useState(false)
+  // Camera resolution UI removed in v1.5.2105 — LiveKit auto-negotiates.
   const isMinimapDragging = useRef(false)
   const [showSoundboard, setShowSoundboard] = useState(false)
+  const [showReactionPicker, setShowReactionPicker] = useState(false)
   const [sbUploading, setSbUploading] = useState(false)
   const [sbUploadName, setSbUploadName] = useState('')
   const [sbUploadEmoji, setSbUploadEmoji] = useState('')
@@ -58,29 +58,6 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
   const [sbShowUploadModal, setSbShowUploadModal] = useState(false)
   const sbFileRef = useRef<HTMLInputElement>(null)
   const [sbSelectedFile, setSbSelectedFile] = useState<File | null>(null)
-
-  const handleCamResChange = (res: string) => {
-    setCamResolution(res)
-    localStorage.setItem('bundy_cam_resolution', res)
-    setShowResSettings(false)
-    // Apply immediately if camera is already active
-    if (conf.videoActive && !conf.videoOff) {
-      void conf.changeVideoResolution(res)
-    }
-  }
-
-  // Close resolution settings when clicking outside
-  const resSettingsRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!showResSettings) return
-    const handler = (e: MouseEvent) => {
-      if (resSettingsRef.current && !resSettingsRef.current.contains(e.target as Node)) {
-        setShowResSettings(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showResSettings])
 
   const vcId = channelId.startsWith('vc_') ? channelId.slice(3) : channelId
   const formatDuration = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
@@ -267,13 +244,19 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
     const signalColor = connState === 'connected' || connState === 'completed' ? '#43B581'
       : connState === 'checking' || connState === 'new' ? '#FAA61A' : '#f87171'
 
+    // v1.5.2207 — large tile aspect now reflects the content. A 4:3 box
+    // around 16:9 screen-share content was making the share look squished
+    // (heavy letterbox bars + small visible area). Webcams stay 4:3.
+    const cardAspectRatio = !isSmall
+      ? ((isPeerSharing || isSelfScreenSharePreview) ? '16 / 9' : '4 / 3')
+      : undefined
     return (
       <div key={id} style={{
         background: C.bgFloating, borderRadius: 12, overflow: 'hidden', position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column',
         minHeight: isSmall ? cardH : undefined,
         height: isSmall ? cardH : undefined,
-        aspectRatio: !isSmall ? '4 / 3' : undefined,
+        aspectRatio: cardAspectRatio,
         outline: isSpeaking ? '3px solid #43B581' : '3px solid transparent', outlineOffset: 2,
         transition: 'outline-color 0.15s, transform 0.15s',
         cursor: !isSelf && (hasVideo || isPeerSharing) ? 'pointer' : 'default',
@@ -300,6 +283,31 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
         <div style={{ position: 'absolute', top: isSmall ? 4 : 6, right: isSmall ? 4 : 6, display: 'flex', alignItems: 'center', gap: 3 }}>
           <Wifi size={isSmall ? 10 : 12} color={signalColor} />
         </div>
+        {/* v1.5.2208 — soundboard play badge. The peerSoundboardPlays
+            map is keyed by participant userId; for the screen-share
+            tile we still want to show it for the realId. */}
+        {(() => {
+          const meta = conf.peerSoundboardPlays?.get(realId)
+          if (!meta) return null
+          return (
+            <div style={{
+              position: 'absolute', top: isSmall ? 18 : 24, left: isSmall ? 4 : 8,
+              background: 'rgba(67,181,129,0.92)', borderRadius: 999,
+              padding: isSmall ? '2px 7px' : '3px 9px',
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: isSmall ? 9 : 11, fontWeight: 700, color: '#fff',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.35)',
+              maxWidth: 'calc(100% - 16px)',
+              animation: 'bundy-sb-pulse 0.6s ease-out',
+            }}>
+              <Volume2 size={isSmall ? 9 : 11} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {meta.emoji ? `${meta.emoji} ${meta.name}` : meta.name}
+              </span>
+              <style>{`@keyframes bundy-sb-pulse { 0% { transform: scale(0.85); opacity: 0 } 60% { transform: scale(1.05); opacity: 1 } 100% { transform: scale(1); opacity: 1 } }`}</style>
+            </div>
+          )
+        })()}
         <div style={{
           position: 'absolute', bottom: isSmall ? 4 : 8, left: isSmall ? 4 : 8, right: isSmall ? 4 : 8,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -357,6 +365,25 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
           <Users size={12} /> {conf.totalParticipants}
         </span>
         <span style={{ color: C.textMuted, fontSize: 12, marginLeft: 4 }}>{formatDuration(conf.callDuration)}</span>
+        {/* v1.5.2107 — noise-suppression / echo-cancel pill so the user
+             can verify it's enabled. The actual flags are passed to
+             both the LiveKit room defaults and createLocalAudioTrack
+             — see useConference.ts. WebRTC native (open source). */}
+        <span
+          title="Background noise + echo + auto-gain are suppressed automatically (browser WebRTC native)"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            marginLeft: 4, padding: '2px 8px', borderRadius: 999,
+            background: `${C.success}18`, color: C.success,
+            fontSize: 10, fontWeight: 700, letterSpacing: 0.3,
+          }}
+        >
+          <span style={{
+            width: 6, height: 6, borderRadius: 3, background: C.success,
+            boxShadow: `0 0 6px ${C.success}`,
+          }} />
+          Noise suppression ON
+        </span>
         <div style={{ flex: 1 }} />
         <button onClick={conf.loadInviteUsers} title="Invite"
           style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, color: C.text, fontSize: 12 }}>
@@ -645,10 +672,14 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
         </div>
       )}
 
-      {/* Bottom control bar */}
+      {/* Bottom control bar — flexWrap so buttons wrap to a second
+           row on narrow windows (especially during screen share where
+           the gallery side eats horizontal space) instead of overflowing
+           off-screen. v1.5.2105. */}
       <div style={{
         borderTop: `1px solid ${C.separator}`, background: C.lgBg, flexShrink: 0,
-        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        padding: '10px 12px', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', gap: 8, flexWrap: 'wrap', rowGap: 8,
       }}>
         <ControlBtn icon={conf.muted ? <MicOff size={18} /> : <Mic size={18} />}
           label={conf.muted ? 'Unmute' : 'Mute'} active={!conf.muted} danger={conf.muted} onClick={conf.toggleMute} />
@@ -660,77 +691,62 @@ export default function VoiceChannelView({ config, auth, channelId, channelName,
         <ControlBtn icon={<Monitor size={18} />}
           label={conf.screenSharing ? 'Stop Sharing' : 'Share Screen'}
           active={conf.screenSharing} highlight={conf.screenSharing} onClick={conf.toggleScreenShare} />
-        {/* Camera resolution settings */}
-        <div ref={resSettingsRef} style={{ position: 'relative' }}>
+        {/* Camera resolution settings removed in v1.5.2105 — the
+             auto-negotiated resolution from LiveKit is fine for our
+             scale and the UI was clutter. */}
+        {/* Single reaction toggle — opens a popover with the full emoji
+            set instead of cluttering the controls bar with 4 inline
+            emoji buttons. Closes on click-outside via backdrop. */}
+        <div style={{ position: 'relative' }}>
+          {/* v1.5.2105 — sized to match ControlBtn (40×40) so the bottom
+               bar reads as a single row of equal-sized affordances. */}
           <button
-            onClick={() => setShowResSettings(v => !v)}
-            title="Camera resolution settings"
+            onClick={() => setShowReactionPicker(v => !v)}
+            title="React"
             style={{
-              background: showResSettings ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)',
+              background: showReactionPicker ? `${C.accent}30` : 'rgba(255,255,255,0.06)',
               border: 'none', borderRadius: 8, cursor: 'pointer',
-              padding: '7px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: C.textMuted, transition: 'background 0.15s',
-            }}
-          >
-            <Settings size={15} />
+              width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: showReactionPicker ? C.accent : '#9ca3af', transition: 'background 0.15s',
+            }}>
+            <Smile size={18} />
           </button>
-          {showResSettings && (
-            <div
-              onClick={e => e.stopPropagation()}
-              style={{
+          {showReactionPicker && (
+            <>
+              <div onClick={() => setShowReactionPicker(false)}
+                style={{ position: 'fixed', inset: 0, zIndex: 9998 }} />
+              <div style={{
                 position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
-                marginBottom: 8, background: C.bgSecondary, borderRadius: 10,
-                border: `1px solid ${C.separator}`, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-                padding: '12px 14px', minWidth: 170, zIndex: 200,
-              }}
-            >
-              <div style={{ color: C.textMuted, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 8 }}>Camera Resolution</div>
-              {(['1080p', '720p', '480p', '360p'] as const).map(res => (
-                <button
-                  key={res}
-                  onClick={() => handleCamResChange(res)}
-                  style={{
-                    display: 'block', width: '100%', textAlign: 'left',
-                    background: camResolution === res ? `${C.accent}25` : 'none',
-                    border: 'none', borderRadius: 6, padding: '6px 10px', cursor: 'pointer',
-                    color: camResolution === res ? C.accent : C.text, fontSize: 12, fontWeight: camResolution === res ? 600 : 400,
-                    marginBottom: 2,
-                  }}
-                >
-                  {res === '1080p' ? '1080p — Full HD' : res === '720p' ? '720p — HD' : res === '480p' ? '480p — SD' : '360p — Low'}
-                  {conf.videoActive && !conf.videoOff && camResolution === res && (
-                    <span style={{ color: C.textMuted, fontSize: 10, marginLeft: 6 }}>active</span>
-                  )}
-                </button>
-              ))}
-              {conf.videoActive && !conf.videoOff && (
-                <div style={{ color: C.textMuted, fontSize: 10, marginTop: 8, lineHeight: 1.4, borderTop: `1px solid ${C.separator}`, paddingTop: 8 }}>
-                  Applies immediately.
-                </div>
-              )}
-            </div>
+                marginBottom: 8, background: '#1e1f22',
+                border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10,
+                padding: '6px 8px', display: 'flex', gap: 2, zIndex: 9999,
+                boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
+              }}>
+                {['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👏'].map(emoji => (
+                  <button key={emoji}
+                    onClick={() => { conf.sendReaction(emoji); setShowReactionPicker(false) }}
+                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, padding: '4px 6px', borderRadius: 6 }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </div>
-        {['👍', '😂', '🎉', '❤️'].map(emoji => (
-          <button key={emoji} onClick={() => conf.sendReaction(emoji)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, padding: '4px 2px', borderRadius: 6, transition: 'transform 0.1s' }}
-            onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.3)' }}
-            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)' }}>
-            {emoji}
-          </button>
-        ))}
-        {/* Soundboard button */}
+        {/* Soundboard button — same 40×40 footprint as the rest. */}
         <button
           onClick={() => { setShowSoundboard(v => !v); if (!showSoundboard) conf.loadSoundboardSounds() }}
           title="Soundboard"
           style={{
             background: showSoundboard ? `${C.accent}30` : 'rgba(255,255,255,0.06)',
             border: 'none', borderRadius: 8, cursor: 'pointer',
-            padding: '7px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: showSoundboard ? C.accent : C.textMuted, transition: 'background 0.15s',
+            width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: showSoundboard ? C.accent : '#9ca3af', transition: 'background 0.15s',
           }}
         >
-          <Music size={15} />
+          <Music size={18} />
         </button>
         <div style={{ width: 1, height: 24, background: C.separator, margin: '0 4px' }} />
         <button onClick={conf.handleLeave} title={isVcMode ? 'Leave Voice Channel' : 'Leave Call'}

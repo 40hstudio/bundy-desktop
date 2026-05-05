@@ -3,6 +3,7 @@ import { ApiConfig, Auth, Task, TaskProject, UserInfo } from '../../types'
 import { C } from '../../theme'
 import { Modal, Button, FormField, Input, Textarea, Select } from '../shared'
 import { apiFetch } from '../../api/client'
+import { QueuedWriteError } from '../../api/writeQueue'
 
 export default function CreateTaskModal({ config, auth, projects, selectedProjectId, onClose, onCreated }: {
   config: ApiConfig; auth: Auth
@@ -31,11 +32,12 @@ export default function CreateTaskModal({ config, auth, projects, selectedProjec
   async function handleCreate() {
     if (!title.trim()) { setError('Title is required'); return }
     setSaving(true); setError(null)
+    const titleTrimmed = title.trim()
     try {
       const data = await apiFetch<{ task: Task }>('/api/tasks', {
         method: 'POST',
         body: {
-          title: title.trim(),
+          title: titleTrimmed,
           description: description.trim() || null,
           status, priority,
           projectId: projectId || null,
@@ -45,7 +47,33 @@ export default function CreateTaskModal({ config, auth, projects, selectedProjec
       })
       onCreated(data.task)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create task')
+      if (err instanceof QueuedWriteError) {
+        // Offline — apiFetch already enqueued the POST and patched the
+        // /api/tasks list cache via optimisticCache.ts. Treat this as
+        // success: synthesise an optimistic Task so the parent panel can
+        // render it immediately, close the modal, and let the queue
+        // replay land the real record when network returns.
+        const tempId = err.item.tempId ?? err.item.id
+        const optimistic = {
+          id: tempId,
+          title: titleTrimmed,
+          description: description.trim() || null,
+          status, priority,
+          dueDate: dueDate || null,
+          startDate: startDate || null,
+          estimatedHours: null,
+          createdBy: auth.userId,
+          projectId: projectId || null,
+          assigneeId: null,
+          project: null,
+          section: null,
+          assignee: null,
+          _count: { comments: 0, subtasks: 0 },
+        } satisfies Task
+        onCreated(optimistic)
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to create task')
+      }
     } finally { setSaving(false) }
   }
 

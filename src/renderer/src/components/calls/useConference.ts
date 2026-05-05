@@ -18,6 +18,8 @@ import {
   createLocalVideoTrack,
 } from 'livekit-client'
 import { ApiConfig, Auth, UserInfo } from '../../types'
+import { xhrUploadJson } from '../../api/xhrUpload'
+import { trackUpload } from '../../stores/uploadProgressStore'
 
 // ─── Types (keep identical to mesh version) ─────────────────────────────
 
@@ -94,6 +96,12 @@ export default function useConference({
 
   // ─── Soundboard ───────────────────────────────────────────────────────
   const [soundboardSounds, setSoundboardSounds] = useState<SoundboardSound[]>([])
+  // v1.5.2208 — who's currently playing a soundboard clip. Keyed by
+  // participant identity (== userId) → { name: friendly clip name,
+  // emoji, expiresAt }. Auto-clears once the badge times out so we
+  // don't have to reach across the network for an "I stopped" signal.
+  const [peerSoundboardPlays, setPeerSoundboardPlays] =
+    useState<Map<string, { name: string; emoji?: string; expiresAt: number }>>(new Map())
 
   // ─── Refs ─────────────────────────────────────────────────────────────
   const roomRef = useRef<Room | null>(null)
@@ -108,6 +116,8 @@ export default function useConference({
   const connectedAtRef = useRef(0)
   const reactionIdRef = useRef(0)
   const durationTimer = useRef<NodeJS.Timeout | null>(null)
+  // v1.5.2111 — periodic ghost-peer pruner; see RoomEvent setup for usage.
+  const ghostReconcilerRef = useRef<NodeJS.Timeout | null>(null)
   const deafenedRef = useRef(deafened)
   deafenedRef.current = deafened
   const peerVolumesRef = useRef(peerVolumes)
@@ -424,17 +434,24 @@ export default function useConference({
         }
       })
 
-      room.on(RoomEvent.TrackMuted, (_pub, participant) => {
+      room.on(RoomEvent.TrackMuted, (pub, participant) => {
         if (participant instanceof RemoteParticipant) {
           updatePeerUI(participant)
           updateSidebarPreview()
+        } else if (participant === room.localParticipant && pub.source === Track.Source.Microphone) {
+          // Local microphone mute changed (server-driven, push-to-talk
+          // release, etc.) — sync the React state so the icon never lies
+          // about the actual track state. v1.5.2107.
+          if (mountedRef.current) setMuted(true)
         }
       })
 
-      room.on(RoomEvent.TrackUnmuted, (_pub, participant) => {
+      room.on(RoomEvent.TrackUnmuted, (pub, participant) => {
         if (participant instanceof RemoteParticipant) {
           updatePeerUI(participant)
           updateSidebarPreview()
+        } else if (participant === room.localParticipant && pub.source === Track.Source.Microphone) {
+          if (mountedRef.current) setMuted(false)
         }
       })
 
@@ -512,6 +529,18 @@ export default function useConference({
           } else if (msg.type === 'soundboard' && msg.soundUrl) {
             // Another participant triggered a soundboard sound — play locally
             playSoundUrl(msg.soundUrl, msg.volume ?? 1.0)
+            // v1.5.2208 — flag the originating participant as "currently
+            // playing X" so the caller card can show a badge. Defaults to
+            // 4s; the participant doesn't broadcast a stop signal so we
+            // expire on a timer.
+            const expiresAt = Date.now() + 4000
+            const playName = (msg.soundName as string | undefined) || 'Soundboard'
+            const playEmoji = msg.soundEmoji as string | undefined
+            setPeerSoundboardPlays(prev => {
+              const next = new Map(prev)
+              next.set(participant.identity, { name: playName, emoji: playEmoji, expiresAt })
+              return next
+            })
           }
         } catch { /* ignore non-JSON data */ }
       })
@@ -523,13 +552,59 @@ export default function useConference({
       connectedAtRef.current = Date.now()
       if (ctrl.signal.aborted) { room.disconnect(); return }
 
+      // v1.5.2111 — periodic ghost-peer reconciler. ParticipantDisconnected
+      // is reliable in the happy path, but if a peer crashes / loses network
+      // / closes the laptop without disconnecting cleanly, LiveKit takes a
+      // beat to evict them. This sweep prunes any local peer whose identity
+      // is no longer in `room.remoteParticipants`.
+      if (ghostReconcilerRef.current) clearInterval(ghostReconcilerRef.current)
+      ghostReconcilerRef.current = setInterval(() => {
+        if (!mountedRef.current || cleanedUpRef.current) return
+        const r = roomRef.current
+        if (!r) return
+        const live = new Set<string>()
+        for (const [, p] of r.remoteParticipants) live.add(p.identity)
+        // Identify ghosts in our peers map
+        for (const key of Array.from(peersRef.current.keys())) {
+          const baseId = key.includes(':screen') ? key.slice(0, key.indexOf(':screen')) : key
+          if (baseId === auth.userId) continue
+          if (!live.has(baseId)) {
+            console.log('[Conference/LK] reconciler pruning ghost peer:', key)
+            removePeerUI(baseId)
+          }
+        }
+      }, 10_000)
+
+      // Unlock the shared soundboard AudioContext using the user's
+      // "Join" gesture so subsequent soundboard plays — including ones
+      // triggered by *other* participants via data channel — aren't
+      // blocked by the autoplay policy.
+      try {
+        const ctx = getSoundboardCtx()
+        if (ctx && ctx.state === 'suspended') await ctx.resume()
+      } catch { /* ignore */ }
+
       // 5. Publish local audio track
       try {
+        // v1.5.2111 — strengthen noise suppression hints. Chromium's default
+        // NS is weak for keyboard/chatter; layering the Google-extension flags
+        // engages the more aggressive Web RTC audio pipeline that catches
+        // low-rumble + typing detection. `voiceIsolation` is Safari-only.
+        // For deeper NS we'd need @livekit/krisp-noise-filter (paid).
         const audioTrack = await createLocalAudioTrack({
           autoGainControl: true,
           noiseSuppression: true,
           echoCancellation: true,
-        })
+          voiceIsolation: true,
+          // Browser-specific extended constraints — ignored where unsupported.
+          ...({
+            googHighpassFilter: true,
+            googTypingNoiseDetection: true,
+            googAutoGainControl: true,
+            googNoiseSuppression: true,
+            googEchoCancellation: true,
+          } as Record<string, boolean>),
+        } as Parameters<typeof createLocalAudioTrack>[0])
         await room.localParticipant.publishTrack(audioTrack)
         localStream.current = new MediaStream([audioTrack.mediaStreamTrack])
         console.log('[Conference/LK] audio track published successfully')
@@ -590,6 +665,11 @@ export default function useConference({
     if (cleanedUpRef.current) return
     cleanedUpRef.current = true
 
+    if (ghostReconcilerRef.current) {
+      clearInterval(ghostReconcilerRef.current)
+      ghostReconcilerRef.current = null
+    }
+
     const room = roomRef.current
     if (room) {
       room.disconnect()
@@ -617,17 +697,34 @@ export default function useConference({
 
   // ─── Controls ─────────────────────────────────────────────────────────
 
-  function toggleMute() {
+  // v1.5.2107 — make mute idempotent + race-free.
+  //
+  // Old toggleMute had two failure modes:
+  //   1. If the audio track wasn't published yet (still in init or
+  //      capture failed), `getTrackPublication(Microphone)` returned
+  //      undefined and the if-block silently no-op'd while still
+  //      flipping React state. UI would show muted but the track was
+  //      unaffected — and after that the local state diverged.
+  //   2. The mute state was driven by a React state ref that didn't
+  //      track LiveKit's actual track-mute state, so server-side
+  //      events or rapid clicks could leave the UI lying.
+  //
+  // Fix: route through `setMicrophoneEnabled` (LiveKit's idempotent
+  // API that handles "track not ready" internally and creates one if
+  // needed) and let `RoomEvent.TrackMuted/Unmuted` for the local
+  // participant drive the React `muted` state. We still update React
+  // state optimistically below so the icon flips immediately.
+  async function toggleMute() {
     const room = roomRef.current
+    const desired = !mutedRef.current
+    setMuted(desired)
+    signalFetch({ action: 'conference-mute', channelId, muted: desired }).catch(() => {})
     if (!room) return
-    const newMuted = !mutedRef.current
-    const micPub = room.localParticipant.getTrackPublication(Track.Source.Microphone)
-    if (micPub) {
-      if (newMuted) micPub.mute()
-      else micPub.unmute()
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!desired)
+    } catch (err) {
+      console.error('[Conference/LK] setMicrophoneEnabled failed:', err)
     }
-    setMuted(newMuted)
-    signalFetch({ action: 'conference-mute', channelId, muted: newMuted }).catch(() => {})
   }
 
   function toggleDeafen() {
@@ -642,7 +739,8 @@ export default function useConference({
       room.localParticipant.publishData(msg, { reliable: true }).catch(() => {})
     }
     if (newDeafened && !mutedRef.current) {
-      toggleMute()
+      // Fire-and-forget — toggleMute is async since v1.5.2107.
+      void toggleMute()
     }
   }
 
@@ -655,16 +753,28 @@ export default function useConference({
 
     try {
       if (!videoActive) {
-        const resKey = localStorage.getItem('bundy_cam_resolution') ?? '1080p'
-        const resMap: Record<string, { width: number; height: number; frameRate: number }> = {
-          '1080p': { width: 1920, height: 1080, frameRate: 30 },
-          '720p': { width: 1280, height: 720, frameRate: 30 },
-          '480p': { width: 854, height: 480, frameRate: 30 },
-          '360p': { width: 640, height: 360, frameRate: 30 },
+        // v1.5.2208 — let the camera publish at its native resolution
+        // up to 4K. The width/height fields are passed to getUserMedia as
+        // `ideal` constraints, so a 1080p webcam stays at 1080p and a 4K
+        // webcam goes to 2160p — no artificial cap. Bitrate scales with
+        // pixel area so each tier is publishable on a normal LAN.
+        const resKey = (localStorage.getItem('bundy_cam_resolution') ?? '4k') as '4k' | '1440p' | '1080p' | '720p' | '480p' | '360p'
+        const resMap: Record<string, { width: number; height: number; frameRate: number; bitrate: number }> = {
+          '4k':    { width: 3840, height: 2160, frameRate: 30, bitrate: 12_000_000 },
+          '1440p': { width: 2560, height: 1440, frameRate: 30, bitrate: 6_000_000 },
+          '1080p': { width: 1920, height: 1080, frameRate: 30, bitrate: 3_000_000 },
+          '720p':  { width: 1280, height: 720,  frameRate: 30, bitrate: 1_700_000 },
+          '480p':  { width: 854,  height: 480,  frameRate: 30, bitrate: 700_000 },
+          '360p':  { width: 640,  height: 360,  frameRate: 30, bitrate: 400_000 },
         }
-        const resolution = resMap[resKey] ?? resMap['1080p']
+        const resolution = resMap[resKey] ?? resMap['4k']
         const videoTrack = await createLocalVideoTrack({ resolution })
-        await room.localParticipant.publishTrack(videoTrack)
+        // Bump publish bitrate so 1080p doesn't get encoded down to a
+        // muddy 1.7 Mbps default — LiveKit otherwise picks a conservative
+        // value that looks blurry on widescreen monitors.
+        await room.localParticipant.publishTrack(videoTrack, {
+          videoEncoding: { maxBitrate: resolution.bitrate, maxFramerate: resolution.frameRate },
+        })
         localStream.current?.addTrack(videoTrack.mediaStreamTrack)
         if (localVideo.current) {
           localVideo.current.srcObject = new MediaStream([videoTrack.mediaStreamTrack])
@@ -734,9 +844,28 @@ export default function useConference({
     if (!room) return
     setScreenSources(null)
     try {
+      // Ask Electron desktopCapturer for native-resolution video at
+      // 30 fps. The default mandatory constraints with no width/height
+      // cap topped out around 720p, which is why screen share looked
+      // blurry on widescreen displays. 2560x1440 covers most laptop +
+      // external displays; LiveKit will downscale if the source is
+      // smaller than that.
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } } as any,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
+            // v1.5.2111 — bumped from 2560×1440 to 3840×2160 to capture native
+            // resolution on Retina / 4K displays. LiveKit's encoder downscales
+            // if needed; capturing higher fidelity = sharper after encode.
+            minWidth: 1280, maxWidth: 3840,
+            minHeight: 720, maxHeight: 2160,
+            // v1.5.2111 — 15 fps is plenty for screen content (mostly static)
+            // and lets the same bitrate budget produce far sharper frames.
+            maxFrameRate: 15,
+          },
+        } as any,
       })
       screenShareStream.current = stream
       const screenTrack = stream.getVideoTracks()[0]
@@ -748,9 +877,16 @@ export default function useConference({
         signalFetch({ action: 'conference-screen-share', channelId, sharing: false }).catch(() => {})
       }
 
+      // v1.5.2111 — VP9 codec for screen share. VP9 is dramatically more
+      // efficient for the kind of content screen share produces (UI + text +
+      // mostly static frames) compared to VP8 (LiveKit default). Combined
+      // with simulcast=false + 15fps + 5 Mbps target, text/UI stay sharp.
       await room.localParticipant.publishTrack(screenTrack, {
         source: Track.Source.ScreenShare,
         name: 'screen',
+        simulcast: false,
+        videoCodec: 'vp9',
+        videoEncoding: { maxBitrate: 5_000_000, maxFramerate: 15 },
       })
       setScreenSharing(true)
       signalFetch({ action: 'conference-video', channelId, videoOff: false }).catch(() => {})
@@ -773,6 +909,25 @@ export default function useConference({
   }
 
   // ─── Soundboard ───────────────────────────────────────────────────────
+  //
+  // Soundboard sounds are decoded + played via a shared AudioContext
+  // instead of `new Audio()` so the browser doesn't block playback on
+  // *remote* clients (the remote user hasn't gestured for the specific
+  // sound, only for joining the call). The context is unlocked once at
+  // connect time using the user's "Join" gesture, then sounds play
+  // freely for the rest of the session.
+
+  const sharedSoundboardCtxRef = useRef<AudioContext | null>(null)
+  function getSoundboardCtx(): AudioContext | null {
+    try {
+      if (!sharedSoundboardCtxRef.current) {
+        sharedSoundboardCtxRef.current = new AudioContext()
+      }
+      const ctx = sharedSoundboardCtxRef.current
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
+      return ctx
+    } catch { return null }
+  }
 
   async function playSoundUrl(url: string, volume = 1.0) {
     try {
@@ -781,14 +936,19 @@ export default function useConference({
         headers: { Authorization: `Bearer ${config.token}` },
       })
       if (!res.ok) return
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
-      const audio = new Audio(blobUrl)
-      audio.volume = Math.max(0, Math.min(1, volume))
-      audio.onended = () => URL.revokeObjectURL(blobUrl)
-      audio.onerror = () => URL.revokeObjectURL(blobUrl)
-      audio.play().catch(() => URL.revokeObjectURL(blobUrl))
-    } catch { /* ignore */ }
+      const buf = await res.arrayBuffer()
+      const ctx = getSoundboardCtx()
+      if (!ctx) return
+      const audioBuffer = await ctx.decodeAudioData(buf.slice(0))
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      const gain = ctx.createGain()
+      gain.gain.value = Math.max(0, Math.min(1, volume))
+      source.connect(gain).connect(ctx.destination)
+      source.start(0)
+    } catch (err) {
+      console.error('[soundboard] play failed:', err)
+    }
   }
 
   async function loadSoundboardSounds() {
@@ -804,22 +964,24 @@ export default function useConference({
   }
 
   async function uploadSoundboardSound(name: string, file: File, emoji?: string, volume?: number): Promise<boolean> {
+    const tracker = trackUpload({ name: name || file.name, surface: 'soundboard', total: file.size })
     try {
       const fd = new FormData()
       fd.append('name', name)
       fd.append('file', file)
       if (emoji) fd.append('emoji', emoji)
       if (volume !== undefined) fd.append('volume', String(volume))
-      const res = await fetch(`${config.apiBase}/api/soundboard`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}` },
-        body: fd,
-        signal: AbortSignal.timeout(30_000),
-      })
-      if (!res.ok) return false
+      await xhrUploadJson(
+        `${config.apiBase}/api/soundboard`, config.token, fd,
+        (loaded, total) => tracker.onProgress(total > 0 ? (loaded / total) * 100 : 0),
+      )
       await loadSoundboardSounds()
+      tracker.success()
       return true
-    } catch { return false }
+    } catch (err) {
+      tracker.fail(err instanceof Error ? err.message : String(err))
+      return false
+    }
   }
 
   async function deleteSoundboardSound(id: string): Promise<boolean> {
@@ -838,13 +1000,46 @@ export default function useConference({
   function playSoundboardForAll(soundId: string, soundUrl: string, volume = 1.0) {
     // Play locally
     playSoundUrl(soundUrl, volume)
+    // v1.5.2208 — look up the metadata so the badge can show what was
+    // played, not just "Soundboard". Broadcast the same payload so peers
+    // can render the same badge text on our card.
+    const meta = soundboardSounds.find(s => s.id === soundId)
+    const soundName = meta?.name ?? 'Soundboard'
+    const soundEmoji = meta?.emoji ?? undefined
+    // Tag self so our own card shows the badge too.
+    setPeerSoundboardPlays(prev => {
+      const next = new Map(prev)
+      next.set(auth.userId, { name: soundName, emoji: soundEmoji, expiresAt: Date.now() + 4000 })
+      return next
+    })
     // Broadcast to all participants via data channel
     const room = roomRef.current
     if (room) {
-      const msg = new TextEncoder().encode(JSON.stringify({ type: 'soundboard', soundId, soundUrl, volume }))
+      const msg = new TextEncoder().encode(JSON.stringify({
+        type: 'soundboard', soundId, soundUrl, volume, soundName, soundEmoji,
+      }))
       room.localParticipant.publishData(msg, { reliable: true }).catch(() => {})
     }
   }
+
+  // v1.5.2208 — periodic sweep that drops expired soundboard-play badges.
+  // Cheap (typically empty Map) and runs only while the conference hook
+  // is mounted.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setPeerSoundboardPlays(prev => {
+        if (prev.size === 0) return prev
+        const now = Date.now()
+        let mutated = false
+        const next = new Map(prev)
+        for (const [k, v] of prev) {
+          if (v.expiresAt <= now) { next.delete(k); mutated = true }
+        }
+        return mutated ? next : prev
+      })
+    }, 500)
+    return () => window.clearInterval(id)
+  }, [])
 
   function previewSound(soundUrl: string, volume = 1.0) {
     playSoundUrl(soundUrl, volume)
@@ -871,13 +1066,15 @@ export default function useConference({
     if (videoTogglingRef.current) return
     videoTogglingRef.current = true
     try {
-      const resMap: Record<string, { width: number; height: number; frameRate: number }> = {
-        '1080p': { width: 1920, height: 1080, frameRate: 30 },
-        '720p': { width: 1280, height: 720, frameRate: 30 },
-        '480p': { width: 854, height: 480, frameRate: 30 },
-        '360p': { width: 640, height: 360, frameRate: 30 },
+      const resMap: Record<string, { width: number; height: number; frameRate: number; bitrate: number }> = {
+        '4k':    { width: 3840, height: 2160, frameRate: 30, bitrate: 12_000_000 },
+        '1440p': { width: 2560, height: 1440, frameRate: 30, bitrate: 6_000_000 },
+        '1080p': { width: 1920, height: 1080, frameRate: 30, bitrate: 3_000_000 },
+        '720p':  { width: 1280, height: 720,  frameRate: 30, bitrate: 1_700_000 },
+        '480p':  { width: 854,  height: 480,  frameRate: 30, bitrate: 700_000 },
+        '360p':  { width: 640,  height: 360,  frameRate: 30, bitrate: 400_000 },
       }
-      const resolution = resMap[resKey] ?? resMap['1080p']
+      const resolution = resMap[resKey] ?? resMap['4k']
       // Unpublish current camera track
       const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera)
       if (camPub?.track) {
@@ -886,7 +1083,9 @@ export default function useConference({
       }
       // Create new track at the requested resolution
       const videoTrack = await createLocalVideoTrack({ resolution })
-      await room.localParticipant.publishTrack(videoTrack)
+      await room.localParticipant.publishTrack(videoTrack, {
+        videoEncoding: { maxBitrate: resolution.bitrate, maxFramerate: resolution.frameRate },
+      })
       // Replace localStream with a fresh reference so video elements re-attach
       const audioTracks = localStream.current?.getAudioTracks() ?? []
       localStream.current = new MediaStream([...audioTracks, videoTrack.mediaStreamTrack])
@@ -998,11 +1197,19 @@ export default function useConference({
     initConference(ctrl)
     loadSoundboardSounds()
     durationTimer.current = setInterval(() => setCallDuration(d => d + 1), 1000)
+    // Wave C-3 — tag the activity heartbeat with the joined VC so the
+    // daily rollup credits time-spent-in-voice toward work hours. Only
+    // applies when the conference is bound to a persistent VC (channelId
+    // starts with "vc_"); ad-hoc DM/group calls don't have a stable VC id.
+    if (channelId.startsWith('vc_')) {
+      window.electronAPI.setCurrentVoiceChannel?.(channelId.slice(3))
+    }
     return () => {
       mountedRef.current = false
       ctrl.abort()
       cleanupAll(true)
       if (durationTimer.current) clearInterval(durationTimer.current)
+      window.electronAPI.setCurrentVoiceChannel?.(null)
     }
   }, [])
 
@@ -1078,7 +1285,7 @@ export default function useConference({
     callReactions, screenSources, screenSharePeers,
     showInvite, inviteUsers,
     pushToTalk,
-    soundboardSounds,
+    soundboardSounds, peerSoundboardPlays,
 
     toggleMute, toggleDeafen, toggleVideo, changeVideoResolution,
     toggleScreenShare, startScreenShare, dismissScreenSources,

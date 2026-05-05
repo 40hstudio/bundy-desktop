@@ -70,17 +70,25 @@ export default function FeedbackViewer({
   linkId,
   config,
   onBack,
+  focusPinId,
 }: {
   linkId: string
   config: ApiConfig
   onBack: () => void
+  /** When set, scroll + pulse the matching pin once after pins load (P3.20). */
+  focusPinId?: string | null
 }) {
   const [link, setLink] = useState<FeedbackLinkDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // P2.17 — parent task this link belongs to (if any)
+  const [parentTask, setParentTask] = useState<{ id: string; title: string; projectName: string | null; env: 'staging' | 'production'; status: string } | null>(null)
   const [breakpoint, setBreakpoint] = useState<Breakpoint>('desktop')
   const [pins, setPins] = useState<Pin[]>([])
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null)
+  // P3.21 — bulk select for pin operations.
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
+  const bulkMode = bulkSelected.size > 0
   const [isPlacing, setIsPlacing] = useState(false)
   const [iframeLoaded, setIframeLoaded] = useState(false)
 
@@ -88,6 +96,14 @@ export default function FeedbackViewer({
   const [newPinPos, setNewPinPos] = useState<{ xPercent: number; yAbsolute: number } | null>(null)
   const [newPinBody, setNewPinBody] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // P3.27 + P4.33 — public-token sharing modal.
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [tokens, setTokens] = useState<Array<{ id: string; token: string; expiresAt: string | null; viewerEmail: string | null; createdAt: string }>>([])
+  const [tokensLoading, setTokensLoading] = useState(false)
+  const [newTokenEmail, setNewTokenEmail] = useState('')
+  const [newTokenExpiry, setNewTokenExpiry] = useState<'7d' | '30d' | '90d' | 'never'>('30d')
+  const [tokenJustCopied, setTokenJustCopied] = useState<string | null>(null)
 
   // Comment panel
   const [showPanel, setShowPanel] = useState(true)
@@ -124,6 +140,64 @@ export default function FeedbackViewer({
       }
     }
     load()
+    return () => { cancelled = true }
+  }, [linkId, apiFetch])
+
+  // P3.27 — load active public tokens for this link when the modal opens.
+  useEffect(() => {
+    if (!showShareModal) return
+    setTokensLoading(true)
+    apiFetch(`/api/report/links/${linkId}/public-tokens`)
+      .then((res) => res.ok ? res.json() : { tokens: [] })
+      .then((data) => setTokens(data.tokens))
+      .finally(() => setTokensLoading(false))
+  }, [showShareModal, linkId, apiFetch])
+
+  const createToken = useCallback(async () => {
+    let expiresAt: string | null = null
+    if (newTokenExpiry !== 'never') {
+      const days = newTokenExpiry === '7d' ? 7 : newTokenExpiry === '30d' ? 30 : 90
+      expiresAt = new Date(Date.now() + days * 24 * 3600_000).toISOString()
+    }
+    const res = await apiFetch(`/api/report/links/${linkId}/public-tokens`, {
+      method: 'POST', body: JSON.stringify({ expiresAt, viewerEmail: newTokenEmail.trim() || undefined }),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      setTokens((prev) => [data.token, ...prev])
+      setNewTokenEmail('')
+    }
+  }, [apiFetch, linkId, newTokenEmail, newTokenExpiry])
+
+  const revokeToken = useCallback(async (tokenId: string) => {
+    const res = await apiFetch(`/api/report/public-tokens/${tokenId}`, { method: 'DELETE' })
+    if (res.ok) setTokens((prev) => prev.filter((t) => t.id !== tokenId))
+  }, [apiFetch])
+
+  // P3.20 — when a focusPinId is provided (e.g. from a chat preview card),
+  // select + scroll to that pin once pins are loaded. The selected pin row in
+  // the sidebar gets a pulse via CSS transition because selectedPinId drives
+  // its style.
+  useEffect(() => {
+    if (!focusPinId || pins.length === 0) return
+    const target = pins.find(p => p.id === focusPinId)
+    if (!target) return
+    if (target.breakpoint !== breakpoint) setBreakpoint(target.breakpoint as Breakpoint)
+    setSelectedPinId(focusPinId)
+    // Defer scroll until the iframe + sidebar render the pin.
+    const t = setTimeout(() => {
+      document.querySelector(`[data-pin-id="${focusPinId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 250)
+    return () => clearTimeout(t)
+  }, [focusPinId, pins, breakpoint])
+
+  // P2.17 — fetch parent task once per link.
+  useEffect(() => {
+    let cancelled = false
+    apiFetch(`/api/report/links/${linkId}/parent-task`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (!cancelled) setParentTask(data?.task ?? null) })
+      .catch(() => {})
     return () => { cancelled = true }
   }, [linkId, apiFetch])
 
@@ -250,6 +324,23 @@ export default function FeedbackViewer({
 
         <div style={{ fontSize: 13, fontWeight: 600, color: C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {link.title}
+          {parentTask && (
+            <button
+              title={`${parentTask.env === 'staging' ? 'Staging' : 'Production'} link of "${parentTask.title}" — click to open task`}
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: parentTask.id } }))
+              }}
+              style={{
+                marginLeft: 8, fontSize: 10, fontWeight: 500, padding: '2px 6px',
+                borderRadius: 4, border: `1px solid ${C.border}`, background: C.bgHover,
+                color: C.textMuted, cursor: 'pointer', verticalAlign: 'middle',
+              }}>
+              ↳ Task: {parentTask.title.length > 30 ? parentTask.title.slice(0, 30) + '…' : parentTask.title}
+              <span style={{ marginLeft: 6, fontSize: 9, color: parentTask.env === 'staging' ? '#f59e0b' : '#22c55e' }}>
+                {parentTask.env}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Breakpoint switcher */}
@@ -318,6 +409,13 @@ export default function FeedbackViewer({
           onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
           <ExternalLink size={14} />
+        </button>
+
+        {/* P3.27 — public share */}
+        <button onClick={() => setShowShareModal(true)} title="Share publicly with a token" style={toolBtn}
+          onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+          <Send size={14} />
         </button>
       </div>
 
@@ -498,11 +596,63 @@ export default function FeedbackViewer({
               display: 'flex', alignItems: 'center', gap: 8,
             }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: C.text, flex: 1 }}>
-                Comments ({allBreakpointPins.length})
+                {bulkMode ? `${bulkSelected.size} selected` : `Comments (${allBreakpointPins.length})`}
               </span>
-              {/* Status filter */}
-              <StatusFilterDropdown value={statusFilter} onChange={setStatusFilter} />
+              {!bulkMode && <StatusFilterDropdown value={statusFilter} onChange={setStatusFilter} />}
+              {bulkMode && (
+                <button onClick={() => setBulkSelected(new Set())} title="Clear selection"
+                  style={{ background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer' }}>
+                  <X size={14} />
+                </button>
+              )}
             </div>
+
+            {/* P3.21 — Bulk action toolbar (visible only when pins are bulk-selected) */}
+            {bulkMode && (
+              <div style={{
+                padding: '8px 12px', display: 'flex', flexWrap: 'wrap', gap: 6,
+                borderBottom: `1px solid ${C.border}`, background: C.bgHover,
+              }}>
+                {(['todo', 'in-progress', 'review', 'done'] as const).map((status) => (
+                  <button key={status}
+                    onClick={async () => {
+                      const ids = [...bulkSelected]
+                      const res = await apiFetch('/api/report/pins/bulk', {
+                        method: 'POST', body: JSON.stringify({ pinIds: ids, action: 'status', status }),
+                      })
+                      if (res.ok) {
+                        setPins((prev) => prev.map((p) => bulkSelected.has(p.id) ? { ...p, status } : p))
+                        setBulkSelected(new Set())
+                      }
+                    }}
+                    style={{
+                      padding: '4px 8px', fontSize: 10, fontWeight: 500,
+                      background: STATUS_CONFIG[status].color, color: '#fff',
+                      border: 'none', borderRadius: 4, cursor: 'pointer',
+                    }}>
+                    {STATUS_CONFIG[status].label}
+                  </button>
+                ))}
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Delete ${bulkSelected.size} pin(s)?`)) return
+                    const ids = [...bulkSelected]
+                    const res = await apiFetch('/api/report/pins/bulk', {
+                      method: 'POST', body: JSON.stringify({ pinIds: ids, action: 'delete' }),
+                    })
+                    if (res.ok) {
+                      setPins((prev) => prev.filter((p) => !bulkSelected.has(p.id)))
+                      setBulkSelected(new Set())
+                    }
+                  }}
+                  style={{
+                    padding: '4px 8px', fontSize: 10, fontWeight: 500, color: '#fff',
+                    background: '#ef4444', border: 'none', borderRadius: 4, cursor: 'pointer', marginLeft: 'auto',
+                  }}>
+                  Delete
+                </button>
+              </div>
+            )}
 
             {/* Pin list */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
@@ -517,17 +667,30 @@ export default function FeedbackViewer({
                   const num = getPinNumber(pin)
                   const sc = STATUS_CONFIG[pin.status] || STATUS_CONFIG.todo
                   const isSelected = pin.id === selectedPinId
+                  const isBulkSelected = bulkSelected.has(pin.id)
                   return (
                     <div key={pin.id}
-                      onClick={() => setSelectedPinId(isSelected ? null : pin.id)}
+                      data-pin-id={pin.id}
+                      onClick={(e) => {
+                        // P3.21 — shift/cmd-click toggles into bulk-select mode.
+                        if (e.shiftKey || e.metaKey || e.ctrlKey || bulkMode) {
+                          setBulkSelected((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(pin.id)) next.delete(pin.id); else next.add(pin.id)
+                            return next
+                          })
+                          return
+                        }
+                        setSelectedPinId(isSelected ? null : pin.id)
+                      }}
                       style={{
                         padding: 10, borderRadius: 8, marginBottom: 6, cursor: 'pointer',
-                        background: isSelected ? `${sc.color}15` : 'transparent',
-                        border: isSelected ? `1px solid ${sc.color}40` : `1px solid transparent`,
+                        background: isBulkSelected ? `${C.accent}25` : isSelected ? `${sc.color}15` : 'transparent',
+                        border: isBulkSelected ? `1px solid ${C.accent}` : isSelected ? `1px solid ${sc.color}40` : `1px solid transparent`,
                         transition: 'all 0.15s',
                       }}
-                      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.bgHover }}
-                      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}>
+                      onMouseEnter={e => { if (!isSelected && !isBulkSelected) e.currentTarget.style.background = C.bgHover }}
+                      onMouseLeave={e => { if (!isSelected && !isBulkSelected) e.currentTarget.style.background = 'transparent' }}>
                       {/* Pin header */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                         <div style={{
@@ -613,6 +776,100 @@ export default function FeedbackViewer({
           </div>
         )}
       </div>
+
+      {/* P3.27 + P4.33 — Public-share token modal */}
+      {showShareModal && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setShowShareModal(false)}>
+          <div style={{
+            background: C.bgFloating, borderRadius: 12, padding: '20px 24px', width: 520, maxHeight: '80vh',
+            border: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <Send size={16} style={{ color: C.accent }} />
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>Share publicly</div>
+              <button onClick={() => setShowShareModal(false)} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer' }}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 14, lineHeight: 1.5 }}>
+              Public tokens let an unauthenticated client view this feedback link (read-only). Share the URL via email — anyone with the link can see pins until the token expires or is revoked.
+            </div>
+
+            {/* Create form */}
+            <div style={{ borderTop: `1px solid ${C.separator}`, paddingTop: 12, marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 6 }}>Create new token</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  value={newTokenEmail}
+                  onChange={(e) => setNewTokenEmail(e.target.value)}
+                  placeholder="reviewer@client.com (optional)"
+                  style={{
+                    flex: 1, padding: '6px 10px', fontSize: 12, color: C.text,
+                    background: C.bgInput, border: `1px solid ${C.border}`, borderRadius: 6, outline: 'none',
+                  }}
+                />
+                <select
+                  value={newTokenExpiry}
+                  onChange={(e) => setNewTokenExpiry(e.target.value as '7d' | '30d' | '90d' | 'never')}
+                  style={{
+                    padding: '6px 10px', fontSize: 12, color: C.text,
+                    background: C.bgInput, border: `1px solid ${C.border}`, borderRadius: 6,
+                  }}>
+                  <option value="7d">7d</option>
+                  <option value="30d">30d</option>
+                  <option value="90d">90d</option>
+                  <option value="never">never</option>
+                </select>
+                <button onClick={createToken}
+                  style={{
+                    padding: '6px 12px', fontSize: 12, fontWeight: 500,
+                    background: C.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer',
+                  }}>Create</button>
+              </div>
+            </div>
+
+            {/* Token list */}
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {tokensLoading && <Loader size={16} style={{ color: C.textMuted, animation: 'spin 1s linear infinite' }} />}
+              {!tokensLoading && tokens.length === 0 && (
+                <div style={{ fontSize: 12, color: C.textMuted, padding: '12px 0' }}>No active tokens.</div>
+              )}
+              {tokens.map((t) => {
+                const url = `${config.apiBase.replace(/\/api$/, '')}/report/feedback/${linkId}?token=${t.token}`
+                const expired = t.expiresAt && new Date(t.expiresAt) < new Date()
+                return (
+                  <div key={t.id} style={{
+                    padding: '8px 0', borderBottom: `1px solid ${C.separator}`,
+                    display: 'flex', flexDirection: 'column', gap: 4,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <code style={{ fontSize: 10, color: C.textMuted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {url}
+                      </code>
+                      <button onClick={() => {
+                        navigator.clipboard.writeText(url)
+                        setTokenJustCopied(t.id)
+                        setTimeout(() => setTokenJustCopied(null), 1500)
+                      }} style={{ padding: '3px 8px', fontSize: 10, background: C.bgHover, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, cursor: 'pointer' }}>
+                        {tokenJustCopied === t.id ? 'Copied!' : 'Copy'}
+                      </button>
+                      <button onClick={() => revokeToken(t.id)} style={{ padding: '3px 8px', fontSize: 10, background: 'transparent', color: C.danger, border: `1px solid ${C.border}`, borderRadius: 4, cursor: 'pointer' }}>
+                        Revoke
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 10, color: C.textMuted }}>
+                      {t.viewerEmail ? `${t.viewerEmail} · ` : ''}
+                      {expired ? <span style={{ color: '#ef4444' }}>expired</span> :
+                        t.expiresAt ? `expires ${new Date(t.expiresAt).toLocaleDateString()}` : 'no expiry'}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

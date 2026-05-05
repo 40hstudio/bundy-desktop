@@ -10,7 +10,7 @@ export interface PendingScreenshot {
   imageBase64: string
   displayIndex: number
   capturedAt: string
-  format: 'png' | 'jpeg'
+  format: 'png' | 'jpeg' | 'webp'
 }
 
 export interface PendingActivitySummary {

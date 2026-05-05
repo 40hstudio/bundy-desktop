@@ -1,30 +1,27 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Trash2, Check, Link, Edit2, AlignLeft, MessageSquare,
-  Activity, ChevronRight, Loader, AlertCircle, Paperclip, FileText,
+  Activity, ChevronRight, Loader, AlertCircle, Paperclip,
   Calendar, GitBranch, Users,
-  Plus, CornerDownRight, Flag, Globe, ExternalLink, BarChart2,
-  Smile, Quote, MessageCircle
+  Plus, Flag, Globe, ExternalLink, BarChart2,
 } from 'lucide-react'
 import {
   ApiConfig, Auth, Task, TaskProject, TaskComment,
   TaskActivityItem, TaskAttachment, UserInfo
 } from '../../types'
+import { useLightboxClaim } from '../../utils/lightboxClaim'
 import AttachmentSlider from '../shared/AttachmentSlider'
-import TaskDescriptionEditor from './TaskDescriptionEditor'
+import DocumentEditor from '../report/DocumentEditor'
 import { C, neu } from '../../theme'
-import { timeAgo } from '../../utils/format'
-import { renderMessageContent, linkifyText, isImageUrl, extractUrls, TASK_LINK_RE, REPORT_LINK_RE, FEEDBACK_LINK_RE } from '../../utils/markdown'
 import { Avatar } from '../shared/Avatar'
-import { OgPreview } from '../messages/OgPreview'
-import { MessageInput } from '../messages/MessageInput'
-import { TaskLinkCard } from '../messages/TaskLinkCard'
-import { ReportLinkCard } from '../messages/ReportLinkCard'
-import { FeedbackLinkCard } from '../messages/FeedbackLinkCard'
-import { EmojiPicker } from '../messages/EmojiPicker'
+import { DiscussionPanel } from '../messages/DiscussionPanel'
 import { TASK_STATUS_LABELS, TASK_STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'
-
-const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
+import { apiFetch as sharedApiFetch } from '../../api/client'
+import { QueuedWriteError } from '../../api/writeQueue'
+import { tryDirectR2Upload } from '../../api/r2Upload'
+import { xhrUploadJson } from '../../api/xhrUpload'
+import { trackUpload } from '../../stores/uploadProgressStore'
+import { TaskActivity } from './TaskActivity'
 
 export default function TaskDetailDrawer({ taskId, config, auth, projects, focusCommentId, onClose, onUpdated, onDeleted, onRefresh }: {
   taskId: string; config: ApiConfig; auth: Auth
@@ -40,15 +37,22 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
   const [loadError, setLoadError] = useState<string | null>(null)
   const [comments, setComments] = useState<TaskComment[]>([])
   const [activities, setActivities] = useState<TaskActivityItem[]>([])
-  const [commentText, setCommentText] = useState('')
-  const [addingComment, setAddingComment] = useState(false)
-  const [replyTo, setReplyTo] = useState<TaskComment | null>(null)
   const [savingField, setSavingField] = useState<string | null>(null)
   const [users, setUsers] = useState<UserInfo[]>([])
   const [editingTitle, setEditingTitle] = useState(false)
   const [editTitle, setEditTitle] = useState('')
-  const [editingDesc, setEditingDesc] = useState(false)
-  const [editDesc, setEditDesc] = useState('')
+  // Description save debouncer — DocumentEditor fires onUpdate on every
+  // keystroke; this collapses bursts to one PATCH per 1.5s window. Flushed
+  // on task switch / drawer close so a pending edit doesn't bleed across.
+  const descSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    return () => {
+      if (descSaveTimerRef.current) {
+        clearTimeout(descSaveTimerRef.current)
+        descSaveTimerRef.current = null
+      }
+    }
+  }, [taskId])
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
@@ -56,33 +60,36 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
   const [activeTab, setActiveTab] = useState<'detail' | 'discussion' | 'activity'>('detail')
   const [attachments, setAttachments] = useState<TaskAttachment[]>([])
   const attachInputRef = useRef<HTMLInputElement>(null)
-  const discussionEndRef = useRef<HTMLDivElement>(null)
-  const lastCommentCountRef = useRef(0)
   const [uploadingAttach, setUploadingAttach] = useState(false)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const [lightboxName, setLightboxName] = useState<string>('')
+
+  // Inline images dispatch `bundy-open-lightbox`. The drawer overlays
+  // the DMs / Tasks pane below, so its lightbox should win. Push a
+  // claim onto the shared stack — last-mounted overlay handles the
+  // event regardless of registration order, and the stack restores
+  // automatically on unmount.
+  useLightboxClaim((detail) => {
+    setLightboxUrl(detail.url)
+    setLightboxName(detail.filename)
+  })
   const [copiedLink, setCopiedLink] = useState(false)
   const [viewTaskId, setViewTaskId] = useState(taskId)
   const [parentStack, setParentStack] = useState<string[]>([])
-  const [subtaskContext, setSubtaskContext] = useState<{ id: string; title: string } | null>(null)
-  const [hoveredCommentId, setHoveredCommentId] = useState<string | null>(null)
-  const [emojiPickerCommentId, setEmojiPickerCommentId] = useState<string | null>(null)
-  const [fullEmojiPickerCommentId, setFullEmojiPickerCommentId] = useState<string | null>(null)
-  const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
-  const [editingCommentBody, setEditingCommentBody] = useState('')
   const [editingEnvLink, setEditingEnvLink] = useState<'staging' | 'production' | null>(null)
   const [envLinkValue, setEnvLinkValue] = useState('')
-  const [threadParentId, setThreadParentId] = useState<string | null>(null)
-  const [copiedCommentId, setCopiedCommentId] = useState<string | null>(null)
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apiFetch = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
+    const method = (opts?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT'
+    const headers = (opts?.headers ?? {}) as Record<string, string>
+    const hasBody = opts?.body !== undefined && opts?.body !== null
+    return sharedApiFetch(path, {
+      method,
+      rawBody: hasBody ? (opts!.body as BodyInit) : undefined,
+      headers: hasBody ? { 'Content-Type': 'application/json', ...headers } : headers,
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
+  }, [])
 
   useEffect(() => {
     setLoadingDetail(true)
@@ -99,56 +106,19 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
       setActivities(taskData.task.activities ?? [])
       setAttachments(taskData.task.attachments ?? [])
       setEditTitle(taskData.task.title)
-      setEditDesc(taskData.task.description ?? '')
       setUsers(userData.users)
       // Load discussion from root task (one discussion per project task)
       const rootId = taskData.task.parentTaskId ?? viewTaskId
       if (taskData.task.parentTaskId) {
-        setSubtaskContext({ id: viewTaskId, title: taskData.task.title })
         try {
           const rootData = await apiFetch(`/api/tasks/${rootId}`) as { task: Task }
           setComments(rootData.task.comments ?? [])
         } catch { setComments([]) }
       } else {
-        setSubtaskContext(null)
         setComments(taskData.task.comments ?? [])
       }
     }).catch((err) => { setLoadError(err?.message ?? 'Failed to load task') }).finally(() => setLoadingDetail(false))
   }, [viewTaskId, apiFetch, focusCommentId])
-
-  // Auto-scroll the discussion to the latest message when opening the tab,
-  // when comments first load, and when a new comment is added.
-  // Skipped if focusCommentId is set (deep-link scroll takes priority).
-  useEffect(() => {
-    if (loadingDetail) return
-    if (activeTab !== 'discussion') return
-    if (focusCommentId) return // deep-link scroll handles its own positioning
-    const newCount = comments.length
-    const isInitialOrAppended = newCount > 0 && (
-      lastCommentCountRef.current === 0 || newCount > lastCommentCountRef.current
-    )
-    lastCommentCountRef.current = newCount
-    if (!isInitialOrAppended) return
-    const t = setTimeout(() => {
-      discussionEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    }, 60)
-    return () => clearTimeout(t)
-  }, [activeTab, comments.length, focusCommentId, loadingDetail])
-
-  // Scroll to and briefly highlight a deep-linked comment after data loads.
-  // Empty-string focusCommentId means "discussion tab only, no scroll".
-  useEffect(() => {
-    if (!focusCommentId || focusCommentId === '' || loadingDetail || activeTab !== 'discussion') return
-    const t = setTimeout(() => {
-      const el = document.querySelector(`[data-comment-id="${focusCommentId}"]`) as HTMLElement | null
-      if (!el) return
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el.style.transition = 'background 0.4s ease'
-      el.style.background = `${C.accent}22`
-      setTimeout(() => { el.style.background = '' }, 1800)
-    }, 120)
-    return () => clearTimeout(t)
-  }, [focusCommentId, loadingDetail, activeTab, comments.length])
 
   // Push focus to the activity engine so the next heartbeat tags this task (P2.10).
   // Cleared on unmount or task switch — main process treats null as "no task in focus".
@@ -157,8 +127,16 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
     return () => { window.electronAPI?.setCurrentTask?.(null) }
   }, [viewTaskId])
 
-  // Live updates from SSE: refresh silently when this task (or its root) changes.
-  // Avoids the "drawer stays stale until close+reopen" UX bug.
+  // Live updates from SSE. After the discussion-channel migration, new
+  // comments arrive via `bundy-channel-message` (full payload — splice
+  // into state, no refetch) on the task's discussion channel. Edits
+  // and deletes work the same way. `bundy-task-updated` still triggers
+  // a silent refetch for non-comment task changes (status / priority /
+  // attachments etc).
+  // Use the server-resolved channel id — already accounts for the
+  // subtask-rolls-up-to-parent rule. Falling back to the local
+  // relation in case the response shape is older.
+  const discussionChannelId = detail?.discussionChannelId ?? detail?.discussionChannel?.id ?? null
   useEffect(() => {
     const rootId = detail?.parentTaskId ?? viewTaskId
     function silentRefresh(reason: string): void {
@@ -183,17 +161,105 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
         silentRefresh('update')
       }
     }
-    function onTaskComment(e: Event): void {
-      const detail = (e as CustomEvent).detail as { mainTaskId?: string } | undefined
-      if (detail?.mainTaskId === rootId) silentRefresh('comment')
+
+    // Channel-message → splice into comments state directly. Adapter
+    // mirrors the server's taskCommentAdapter — pulls the attachment
+    // chip out of content if present, swaps sender→user.
+    const ATTACH_LINE_RE = /^!?\[(?:📎\s)?([^\]]+?)\]\((https?:\/\/\S+?)\)\s*$/
+    type ChannelMsgPayload = {
+      channelId: string; id: string; senderId: string
+      senderName: string; senderAvatar: string | null
+      content: string; createdAt: string; editedAt: string | null
+      parentMessageId: string | null
     }
+    function payloadToComment(p: ChannelMsgPayload): TaskComment {
+      const lines = p.content.split('\n')
+      let attachmentUrl: string | null = null
+      let attachmentName: string | null = null
+      const bodyLines: string[] = []
+      for (const line of lines) {
+        const m = ATTACH_LINE_RE.exec(line)
+        if (m && !attachmentUrl) { attachmentName = m[1]; attachmentUrl = m[2] }
+        else bodyLines.push(line)
+      }
+      return {
+        id: p.id,
+        body: bodyLines.join('\n').trim(),
+        createdAt: p.createdAt,
+        editedAt: p.editedAt,
+        attachmentUrl,
+        attachmentName,
+        parentCommentId: p.parentMessageId,
+        user: {
+          id: p.senderId,
+          username: p.senderName,
+          alias: null,
+          avatarUrl: p.senderAvatar,
+        },
+        reactions: [],
+        replies: [],
+      }
+    }
+    function onChannelMessage(e: Event): void {
+      const payload = (e as CustomEvent).detail as ChannelMsgPayload | undefined
+      if (!payload || !discussionChannelId || payload.channelId !== discussionChannelId) return
+      // De-dupe — the actor's own send already optimistically inserted.
+      setComments(prev => {
+        const c = payloadToComment(payload)
+        if (c.parentCommentId) {
+          const exists = prev.some(p => p.id === c.parentCommentId && (p.replies ?? []).some(r => r.id === c.id))
+          if (exists) return prev
+          return prev.map(p => p.id === c.parentCommentId
+            ? { ...p, replies: [...(p.replies ?? []), c] }
+            : p)
+        }
+        if (prev.some(p => p.id === c.id)) return prev
+        return [...prev, c]
+      })
+    }
+    function onChannelMessageEdit(e: Event): void {
+      const payload = (e as CustomEvent).detail as { channelId: string; messageId: string; content: string; editedAt: string } | undefined
+      if (!payload || !discussionChannelId || payload.channelId !== discussionChannelId) return
+      // Re-extract body+attachment from the new content.
+      const lines = payload.content.split('\n')
+      let attachmentUrl: string | null = null
+      let attachmentName: string | null = null
+      const bodyLines: string[] = []
+      for (const line of lines) {
+        const m = ATTACH_LINE_RE.exec(line)
+        if (m && !attachmentUrl) { attachmentName = m[1]; attachmentUrl = m[2] }
+        else bodyLines.push(line)
+      }
+      const body = bodyLines.join('\n').trim()
+      setComments(prev => prev.map(p => {
+        if (p.id === payload.messageId) return { ...p, body, attachmentUrl, attachmentName, editedAt: payload.editedAt }
+        if (p.replies?.some(r => r.id === payload.messageId)) {
+          return { ...p, replies: p.replies!.map(r => r.id === payload.messageId ? { ...r, body, attachmentUrl, attachmentName, editedAt: payload.editedAt } : r) }
+        }
+        return p
+      }))
+    }
+    function onChannelMessageDelete(e: Event): void {
+      const payload = (e as CustomEvent).detail as { channelId: string; messageId: string } | undefined
+      if (!payload || !discussionChannelId || payload.channelId !== discussionChannelId) return
+      setComments(prev => prev
+        .filter(p => p.id !== payload.messageId)
+        .map(p => p.replies?.some(r => r.id === payload.messageId)
+          ? { ...p, replies: p.replies!.filter(r => r.id !== payload.messageId) }
+          : p))
+    }
+
     window.addEventListener('bundy-task-updated', onTaskUpdated)
-    window.addEventListener('bundy-task-comment-added', onTaskComment)
+    window.addEventListener('bundy-channel-message', onChannelMessage)
+    window.addEventListener('bundy-channel-message-edit', onChannelMessageEdit)
+    window.addEventListener('bundy-channel-message-delete', onChannelMessageDelete)
     return () => {
       window.removeEventListener('bundy-task-updated', onTaskUpdated)
-      window.removeEventListener('bundy-task-comment-added', onTaskComment)
+      window.removeEventListener('bundy-channel-message', onChannelMessage)
+      window.removeEventListener('bundy-channel-message-edit', onChannelMessageEdit)
+      window.removeEventListener('bundy-channel-message-delete', onChannelMessageDelete)
     }
-  }, [viewTaskId, detail?.parentTaskId, apiFetch])
+  }, [viewTaskId, detail?.parentTaskId, discussionChannelId, apiFetch])
 
   async function patchTask(data: Record<string, unknown>, fieldName?: string) {
     if (!detail) return
@@ -218,48 +284,6 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
     setEditingTitle(false)
   }
 
-  async function saveDesc() {
-    const d = editDesc.trim()
-    if (!detail || d === (detail.description ?? '')) { setEditingDesc(false); return }
-    await patchTask({ description: d || null }, 'description')
-    setEditingDesc(false)
-  }
-
-  // Root task ID for discussion (one discussion per project task)
-  const discussionTaskId = detail?.parentTaskId ?? viewTaskId
-  const threadComment = threadParentId ? comments.find(c => c.id === threadParentId) ?? null : null
-
-  async function addComment() {
-    if (!commentText.trim()) return
-    setAddingComment(true)
-    const parentId = replyTo?.id ?? null
-    let body = commentText.trim()
-    if (subtaskContext && !parentId) {
-      body = `> [Subtask: ${subtaskContext.title}](/tasks/${subtaskContext.id})\n\n${body}`
-      setSubtaskContext(null)
-    }
-    try {
-      const d = await apiFetch(`/api/tasks/${discussionTaskId}/comments`, {
-        method: 'POST', body: JSON.stringify({ body, parentCommentId: parentId }),
-      }) as { comment: TaskComment }
-      if (parentId) setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
-      else setComments(prev => [...prev, d.comment])
-      setCommentText(''); setReplyTo(null)
-      onRefresh?.()
-    } catch (err) { console.error('[TaskDetail] addComment failed:', err) } finally { setAddingComment(false) }
-  }
-
-  async function handleTaskUpload(file: File): Promise<{ url: string; filename: string }> {
-    const fd = new FormData()
-    fd.append('file', file)
-    const res = await fetch(`${config.apiBase}/api/tasks/${discussionTaskId}/attachments`, {
-      method: 'POST', headers: { Authorization: `Bearer ${config.token}` }, body: fd,
-    })
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
-    const d = await res.json() as { attachment: { url: string; name: string } }
-    return { url: d.attachment.url, filename: d.attachment.name }
-  }
-
   async function deleteTask() {
     setDeleting(true)
     try {
@@ -268,92 +292,53 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
     } catch (err) { console.error('[TaskDetail] delete failed:', err) } finally { setDeleting(false) }
   }
 
-  // ─── Discussion helpers ────────────────────────────────────────────────────
-
-  function groupReactions(reactions: NonNullable<TaskComment['reactions']>) {
-    const map = new Map<string, { emoji: string; count: number; users: string[]; reacted: boolean }>()
-    for (const r of reactions) {
-      const existing = map.get(r.emoji)
-      if (existing) {
-        existing.count++
-        existing.users.push(r.user.alias ?? r.user.username)
-        if (r.userId === auth.userId) existing.reacted = true
-      } else {
-        map.set(r.emoji, { emoji: r.emoji, count: 1, users: [r.user.alias ?? r.user.username], reacted: r.userId === auth.userId })
-      }
-    }
-    return Array.from(map.values())
-  }
-
-  async function toggleReaction(commentId: string, emoji: string) {
-    try {
-      const res = await apiFetch(`/api/tasks/${discussionTaskId}/comments/${commentId}/reactions`, {
-        method: 'POST', body: JSON.stringify({ emoji }),
-      })
-      const action = res.action as 'added' | 'removed'
-      const updateComment = (c: TaskComment): TaskComment => {
-        if (c.id !== commentId) {
-          if (c.replies) return { ...c, replies: c.replies.map(updateComment) }
-          return c
-        }
-        const reactions = [...(c.reactions ?? [])]
-        if (action === 'added') {
-          reactions.push({ id: '', emoji, userId: auth.userId, user: { id: auth.userId, username: auth.username, alias: null } })
-        } else {
-          const idx = reactions.findIndex(r => r.emoji === emoji && r.userId === auth.userId)
-          if (idx >= 0) reactions.splice(idx, 1)
-        }
-        return { ...c, reactions }
-      }
-      setComments(prev => prev.map(updateComment))
-    } catch { /* offline */ }
-    setEmojiPickerCommentId(null)
-    setFullEmojiPickerCommentId(null)
-  }
-
-  async function editComment(commentId: string) {
-    const body = editingCommentBody.trim()
-    if (!body) return
-    try {
-      await apiFetch(`/api/tasks/${discussionTaskId}/comments/${commentId}`, {
-        method: 'PATCH', body: JSON.stringify({ body }),
-      })
-      const updateComment = (c: TaskComment): TaskComment => {
-        if (c.id === commentId) return { ...c, body, editedAt: new Date().toISOString() }
-        if (c.replies) return { ...c, replies: c.replies.map(updateComment) }
-        return c
-      }
-      setComments(prev => prev.map(updateComment))
-    } catch (err) { console.error('[TaskDetail] editComment failed:', err) }
-    setEditingCommentId(null)
-    setEditingCommentBody('')
-  }
-
-  async function deleteComment(commentId: string) {
-    try {
-      await apiFetch(`/api/tasks/${discussionTaskId}/comments/${commentId}`, { method: 'DELETE' })
-      setComments(prev => {
-        // Try removing as top-level comment
-        const filtered = prev.filter(c => c.id !== commentId)
-        if (filtered.length < prev.length) return filtered
-        // Try removing from replies
-        return prev.map(c => c.replies ? { ...c, replies: c.replies.filter(r => r.id !== commentId) } : c)
-      })
-    } catch (err) { console.error('[TaskDetail] deleteComment failed:', err) }
-  }
-
   async function createSubtask() {
     if (!newSubtaskTitle.trim() || !detail) return
+    const titleTrimmed = newSubtaskTitle.trim()
     setAddingSubtask(true)
     try {
       const d = await apiFetch('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ title: newSubtaskTitle.trim(), parentTaskId: viewTaskId, projectId: detail.projectId }),
+        body: JSON.stringify({ title: titleTrimmed, parentTaskId: viewTaskId, projectId: detail.projectId }),
       }) as { task: Task }
       setDetail(prev => prev ? { ...prev, subtasks: [...(prev.subtasks ?? []), d.task], _count: { ...prev._count, subtasks: prev._count.subtasks + 1 } } : prev)
       onUpdated({ ...detail, _count: { ...detail._count, subtasks: detail._count.subtasks + 1 } })
       setNewSubtaskTitle('')
-    } catch (err) { console.error('[TaskDetail] createSubtask failed:', err) } finally { setAddingSubtask(false) }
+    } catch (err) {
+      if (err instanceof QueuedWriteError) {
+        // Offline — apiFetch already enqueued the POST and patched the
+        // single-task IndexedDB cache via optimisticCache.ts. Surface the
+        // optimistic record in the drawer so the user sees their subtask
+        // immediately; the queued write will replay when the network returns.
+        const tempId = err.item.tempId ?? err.item.id
+        const optimistic = {
+          id: tempId,
+          title: titleTrimmed,
+          description: null,
+          status: 'todo',
+          priority: 'medium',
+          dueDate: null,
+          estimatedHours: null,
+          createdBy: auth.userId,
+          projectId: detail.projectId ?? null,
+          assigneeId: null,
+          parentTaskId: viewTaskId,
+          project: null,
+          section: null,
+          assignee: null,
+          _count: { comments: 0, subtasks: 0 },
+        } satisfies Task
+        setDetail(prev => prev ? {
+          ...prev,
+          subtasks: [...(prev.subtasks ?? []), optimistic],
+          _count: { ...prev._count, subtasks: prev._count.subtasks + 1 },
+        } : prev)
+        onUpdated({ ...detail, _count: { ...detail._count, subtasks: detail._count.subtasks + 1 } })
+        setNewSubtaskTitle('')
+      } else {
+        console.error('[TaskDetail] createSubtask failed:', err)
+      }
+    } finally { setAddingSubtask(false) }
   }
 
   async function toggleSubtask(subId: string, currentStatus: string) {
@@ -372,16 +357,34 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
   async function uploadAttachment(file: File) {
     if (file.size > 15 * 1024 * 1024) { alert('File must be under 15MB'); return }
     setUploadingAttach(true)
+    const tracker = trackUpload({ name: file.name, surface: 'task', total: file.size })
     try {
+      // Phase 3 — try direct-to-R2 first; fall back to multipart on 501 / error.
+      const r2 = await tryDirectR2Upload({
+        signEndpoint: `/api/tasks/${viewTaskId}/attachments/sign`,
+        signBody: {},
+        file,
+        onProgress: (pct) => tracker.onProgress(pct),
+      })
+      if (r2.ok) {
+        const attachment = (r2.data as { attachment: TaskAttachment }).attachment
+        setAttachments(prev => [...prev, attachment])
+        tracker.success()
+        return
+      }
       const fd = new FormData()
       fd.append('file', file)
-      const res = await fetch(`${config.apiBase}/api/tasks/${viewTaskId}/attachments`, {
-        method: 'POST', headers: { Authorization: `Bearer ${config.token}` }, body: fd,
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const d = await res.json() as { attachment: TaskAttachment }
+      const d = await xhrUploadJson<{ attachment: TaskAttachment }>(
+        `${config.apiBase}/api/tasks/${viewTaskId}/attachments`,
+        config.token, fd,
+        (loaded, total) => tracker.onProgress(total > 0 ? (loaded / total) * 100 : 0),
+      )
       setAttachments(prev => [...prev, d.attachment])
-    } catch (err) { console.error('[TaskDetail] uploadAttachment failed:', err) } finally { setUploadingAttach(false) }
+      tracker.success()
+    } catch (err) {
+      console.error('[TaskDetail] uploadAttachment failed:', err)
+      tracker.fail(err instanceof Error ? err.message : String(err))
+    } finally { setUploadingAttach(false) }
   }
 
   async function deleteAttachment(attId: string) {
@@ -611,12 +614,21 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
               <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <AlignLeft size={10} /> Description
               </div>
-              <TaskDescriptionEditor
-                value={detail.description}
-                onSave={(html) => patchTask({ description: html || null }, 'description')}
+              {/* Same DocumentEditor used by the Report tab — keyed by `task-{id}`
+                  so the Y.js sync namespace is distinct from Report-document docs. */}
+              <DocumentEditor
+                key={viewTaskId}
+                content={detail.description ?? ''}
+                onUpdate={(html) => {
+                  if (descSaveTimerRef.current) clearTimeout(descSaveTimerRef.current)
+                  descSaveTimerRef.current = setTimeout(() => {
+                    patchTask({ description: html || null }, 'description')
+                  }, 1500)
+                }}
                 apiBase={config.apiBase}
                 token={config.token}
-                taskId={viewTaskId}
+                collabKey={`task-${viewTaskId}`}
+                user={{ id: auth.userId, name: auth.username, avatar: auth.avatarUrl }}
               />
             </div>
             {/* Attachments */}
@@ -862,6 +874,18 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
                         {subDone && <Check size={10} color="#fff" />}
                       </button>
                       <span style={{ flex: 1, fontSize: 12, color: C.text, textDecoration: subDone ? 'line-through' : 'none', opacity: subDone ? 0.5 : 1 }}>{sub.title}</span>
+                      {sub.dueDate && (
+                        <span
+                          title={`Due ${new Date(sub.dueDate).toLocaleDateString()}`}
+                          style={{
+                            fontSize: 10, color: new Date(sub.dueDate) < new Date() && !subDone ? C.danger : C.textMuted,
+                            display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0,
+                          }}
+                        >
+                          <Calendar size={10} />
+                          {new Date(sub.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                      )}
                       <span style={{ fontSize: 9, fontWeight: 600, color: TASK_STATUS_COLORS[sub.status] ?? C.textMuted, background: (TASK_STATUS_COLORS[sub.status] ?? C.textMuted) + '18', borderRadius: 8, padding: '1px 6px', flexShrink: 0 }}>
                         {TASK_STATUS_LABELS[sub.status] ?? sub.status}
                       </span>
@@ -871,7 +895,7 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
                         </span>
                       )}
                       {sub.assignee && <Avatar url={sub.assignee.avatarUrl} name={sub.assignee.alias ?? sub.assignee.username} size={18} />}
-                      <button onClick={(e) => { e.stopPropagation(); setSubtaskContext({ id: sub.id, title: sub.title }); setActiveTab('discussion') }}
+                      <button onClick={(e) => { e.stopPropagation(); openSubtask(sub.id); setActiveTab('discussion') }}
                         title="Discuss this subtask"
                         style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, opacity: 0.5 }}>
                         <MessageSquare size={11} />
@@ -900,643 +924,28 @@ export default function TaskDetailDrawer({ taskId, config, auth, projects, focus
           </div>
         )}
 
-        {activeTab === 'discussion' && threadComment && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Thread sub-view header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexShrink: 0 }}>
-              <button onClick={() => { setThreadParentId(null); setReplyTo(null) }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, padding: '4px 0', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600, fontFamily: 'inherit' }}>
-                <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Back
-              </button>
-              <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Thread</span>
-            </div>
-            {/* Parent comment */}
-            <div style={{ padding: '8px 10px', background: C.bgInput, borderRadius: 8, marginBottom: 10, flexShrink: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <Avatar url={threadComment.user.avatarUrl} name={threadComment.user.alias ?? threadComment.user.username} size={22} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{threadComment.user.alias ?? threadComment.user.username}</span>
-                <span style={{ fontSize: 10, color: C.textMuted }}>{new Date(threadComment.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>
-              </div>
-              <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, paddingLeft: 28 }}>{renderMessageContent(threadComment.body)}</div>
-              {groupReactions(threadComment.reactions ?? []).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6, paddingLeft: 28 }}>
-                  {groupReactions(threadComment.reactions ?? []).map(r => (
-                    <button key={r.emoji} onClick={() => toggleReaction(threadComment.id, r.emoji)} title={r.users.join(', ')}
-                      style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 12, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 12 }}>
-                      <span>{r.emoji}</span><span style={{ fontSize: 10, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 0, overflowY: 'auto', minHeight: 0 }}>
-              {(threadComment.replies ?? []).length === 0 && <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 16, fontSize: 12 }}>No replies yet</div>}
-              {(threadComment.replies ?? []).map((r, ri) => {
-                const prevReply = (threadComment.replies ?? [])[ri - 1]
-                const rDate = new Date(r.createdAt)
-                const rTimeDiff = prevReply ? rDate.getTime() - new Date(prevReply.createdAt).getTime() : Infinity
-                const rShowHeader = !prevReply || prevReply.user.id !== r.user.id || rTimeDiff > 5 * 60 * 1000
-                const rIsHovered = hoveredCommentId === r.id
-                const rIsMe = r.user.id === auth.userId
-                const rIsEditing = editingCommentId === r.id
-                const rGrouped = groupReactions(r.reactions ?? [])
-                const rIsImage = r.attachmentName && r.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(r.attachmentName)
-                return (
-                  <div key={r.id}
-                    onMouseEnter={() => setHoveredCommentId(r.id)}
-                    onMouseLeave={() => { setHoveredCommentId(null); if (emojiPickerCommentId === r.id && fullEmojiPickerCommentId !== r.id) setEmojiPickerCommentId(null) }}
-                    style={{ display: 'flex', padding: rShowHeader ? '6px 4px 3px' : '1px 4px', position: 'relative', gap: 8, borderRadius: 6, background: rIsHovered ? `${C.text}06` : 'transparent' }}
-                  >
-                    {rShowHeader ? (
-                      <div style={{ width: 28, flexShrink: 0 }}><Avatar url={r.user.avatarUrl} name={r.user.alias ?? r.user.username} size={28} /></div>
-                    ) : (
-                      <div style={{ width: 28, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-                        {rIsHovered && <span style={{ fontSize: 9, color: C.textMuted, lineHeight: '18px', whiteSpace: 'nowrap' }}>{rDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>}
-                      </div>
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {rShowHeader && (
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 1 }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{r.user.alias ?? r.user.username}</span>
-                          <span style={{ fontSize: 10, color: C.textMuted }}>{rDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>
-                          {r.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
-                        </div>
-                      )}
-                      {rIsEditing ? (
-                        <div style={{ marginTop: 2 }}>
-                          <textarea value={editingCommentBody} onChange={e => setEditingCommentBody(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editComment(r.id) } if (e.key === 'Escape') { setEditingCommentId(null); setEditingCommentBody('') } }}
-                            autoFocus rows={2}
-                            style={{ width: '100%', resize: 'vertical', ...neu(true), padding: '6px 8px', fontSize: 12, color: C.text, border: `1px solid ${C.accent}`, borderRadius: 6, outline: 'none', fontFamily: 'inherit', lineHeight: 1.5, boxSizing: 'border-box' }} />
-                          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>Enter to save · Escape to cancel</div>
-                        </div>
-                      ) : (
-                        <>
-                          {r.body && <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{renderMessageContent(r.body)}</div>}
-                          {!rShowHeader && r.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
-                        </>
-                      )}
-                      {r.attachmentName && r.attachmentUrl && (
-                        rIsImage ? (
-                          <img src={`${config.apiBase}${r.attachmentUrl}`} alt={r.attachmentName}
-                            onClick={() => { setLightboxUrl(`${config.apiBase}${r.attachmentUrl}`); setLightboxName(r.attachmentName!) }}
-                            style={{ maxWidth: 200, maxHeight: 150, borderRadius: 8, marginTop: 6, cursor: 'pointer', objectFit: 'cover', display: 'block' }} />
-                        ) : (
-                          <button onClick={() => window.electronAPI.openExternal(`${config.apiBase}${r.attachmentUrl}`)}
-                            style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
-                            <FileText size={11} /> {r.attachmentName}
-                          </button>
-                        )
-                      )}
-                      {rGrouped.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                          {rGrouped.map(rx => (
-                            <button key={rx.emoji} onClick={() => toggleReaction(r.id, rx.emoji)} title={rx.users.join(', ')}
-                              style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 12, border: `1px solid ${rx.reacted ? C.accent : C.separator}`, background: rx.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 12 }}>
-                              <span>{rx.emoji}</span><span style={{ fontSize: 10, fontWeight: 600, color: rx.reacted ? C.accent : C.textMuted }}>{rx.count}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {rIsHovered && !rIsEditing && (
-                      <div style={{ position: 'absolute', top: -14, right: 8, display: 'flex', gap: 0, background: C.bgInput, borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '1px 2px', zIndex: 10 }}>
-                        {[{
-                          icon: <Smile size={14} />, title: 'React',
-                          onClick: () => setEmojiPickerCommentId(emojiPickerCommentId === r.id ? null : r.id), color: C.textSecondary,
-                        }, ...(rIsMe ? [{
-                          icon: <Edit2 size={14} />, title: 'Edit',
-                          onClick: () => { setEditingCommentId(r.id); setEditingCommentBody(r.body) },
-                          color: C.textSecondary, show: (Date.now() - new Date(r.createdAt).getTime()) < 12 * 60 * 60 * 1000,
-                        }, {
-                          icon: <Trash2 size={14} />, title: 'Delete',
-                          onClick: () => deleteComment(r.id), color: C.danger, show: true,
-                        }] : [])].filter((b: any) => b.show !== false).map((btn: any, bi) => (
-                          <button key={bi} onClick={btn.onClick} title={btn.title}
-                            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${C.text}12` }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
-                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px', color: btn.color, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            {btn.icon}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {emojiPickerCommentId === r.id && fullEmojiPickerCommentId !== r.id && (
-                      <div style={{ position: 'absolute', top: -40, right: 8, display: 'flex', gap: 2, background: C.bgInput, borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '4px 6px', zIndex: 20 }}>
-                        {QUICK_EMOJIS.map(e => (
-                          <button key={e} onClick={() => toggleReaction(r.id, e)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: '2px 4px', borderRadius: 6 }}
-                            onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                            onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'none' }}>{e}</button>
-                        ))}
-                        <button onClick={() => setFullEmojiPickerCommentId(r.id)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 6px', borderRadius: 6, color: C.textMuted, display: 'flex', alignItems: 'center' }}>
-                          <Plus size={14} />
-                        </button>
-                      </div>
-                    )}
-                    {fullEmojiPickerCommentId === r.id && (
-                      <div style={{ position: 'absolute', top: -44, right: 8, zIndex: 30 }}>
-                        <EmojiPicker
-                          onSelect={(emoji) => { toggleReaction(r.id, emoji); setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                          onClose={() => { setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'discussion' && !threadComment && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Viewing parent task discussion banner (when on subtask) */}
-            {detail?.parentTaskId && !subtaskContext && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', ...neu(), borderRadius: 8, marginBottom: 8, fontSize: 11, color: C.textMuted, borderLeft: `3px solid ${C.separator}` }}>
-                <MessageSquare size={10} />
-                <span>Showing project discussion (shared across all subtasks)</span>
-              </div>
-            )}
-            {/* Subtask context banner */}
-            {subtaskContext && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', ...neu(), borderRadius: 8, marginBottom: 8, fontSize: 11, color: C.accent, borderLeft: `3px solid ${C.accent}` }}>
-                <GitBranch size={10} />
-                <span style={{ flex: 1 }}>Discussing subtask: <strong>{subtaskContext.title}</strong></span>
-                <button onClick={() => setSubtaskContext(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 0 }}><X size={10} /></button>
-              </div>
-            )}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginBottom: 12 }}>
-              {comments.length === 0 && <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 20, fontSize: 12 }}>No messages yet — start the discussion!</div>}
-              {/* Flatten comments for grouping: top-level + inline replies */}
-              {comments.map((c, ci) => {
-                const prevComment = comments[ci - 1]
-                const msgDate = new Date(c.createdAt)
-                const prevDate = prevComment ? new Date(prevComment.createdAt) : null
-                const showDateSep = !prevDate || msgDate.toDateString() !== prevDate.toDateString()
-                const todayDate = new Date()
-                const yesterdayDate = new Date(todayDate); yesterdayDate.setDate(yesterdayDate.getDate() - 1)
-                let dateLabel = msgDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-                if (msgDate.toDateString() === todayDate.toDateString()) dateLabel = 'Today'
-                else if (msgDate.toDateString() === yesterdayDate.toDateString()) dateLabel = 'Yesterday'
-
-                const timeDiff = prevComment ? msgDate.getTime() - new Date(prevComment.createdAt).getTime() : Infinity
-                const showHeader = !prevComment || prevComment.user.id !== c.user.id || timeDiff > 5 * 60 * 1000 || showDateSep
-
-                const isHovered = hoveredCommentId === c.id
-                const isMe = c.user.id === auth.userId
-                const isEditing = editingCommentId === c.id
-                const grouped = groupReactions(c.reactions ?? [])
-                const isImage = c.attachmentName && c.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(c.attachmentName)
-                const taskLinkMatch = c.body?.match(/\[(?:Sub)?[Tt]ask: (.+?)\]\(\/tasks\/(\w+)\)/)
-
-                return (
-                  <div key={c.id} data-comment-id={c.id}>
-                    {/* Date separator */}
-                    {showDateSep && (
-                      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 0 6px', gap: 10 }}>
-                        <div style={{ flex: 1, height: 1, background: C.separator }} />
-                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textSecondary, whiteSpace: 'nowrap', padding: '2px 10px', border: `1px solid ${C.separator}`, borderRadius: 12, background: C.lgBg }}>{dateLabel}</span>
-                        <div style={{ flex: 1, height: 1, background: C.separator }} />
-                      </div>
-                    )}
-                    {/* Message row */}
-                    <div
-                      onMouseEnter={() => setHoveredCommentId(c.id)}
-                      onMouseLeave={() => { setHoveredCommentId(null); if (emojiPickerCommentId === c.id && fullEmojiPickerCommentId !== c.id) setEmojiPickerCommentId(null) }}
-                      style={{ display: 'flex', padding: showHeader ? '6px 4px 3px' : '1px 4px', position: 'relative', gap: 8, borderRadius: 6, background: isHovered ? `${C.text}06` : 'transparent' }}
-                    >
-                      {/* Avatar or hover timestamp */}
-                      {showHeader ? (
-                        <div style={{ width: 28, flexShrink: 0 }}>
-                          <Avatar url={c.user.avatarUrl} name={c.user.alias ?? c.user.username} size={28} />
-                        </div>
-                      ) : (
-                        <div style={{ width: 28, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-                          {isHovered && (
-                            <span style={{ fontSize: 9, color: C.textMuted, lineHeight: '18px', whiteSpace: 'nowrap' }}>
-                              {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {/* Name + time header */}
-                        {showHeader && (
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 1 }}>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{c.user.alias ?? c.user.username}</span>
-                            <span style={{ fontSize: 10, color: C.textMuted }}>
-                              {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                            </span>
-                            {c.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
-                          </div>
-                        )}
-                        {/* Subtask link marker */}
-                        {taskLinkMatch && (
-                          <div
-                            onClick={() => {
-                              const tid = taskLinkMatch[2]
-                              if (tid) { setParentStack(prev => [...prev, viewTaskId]); setViewTaskId(tid) }
-                            }}
-                            style={{
-                              borderLeft: `3px solid ${C.accent}`, padding: '4px 8px', marginTop: 4, marginBottom: 4,
-                              background: C.accent + '08', borderRadius: '0 4px 4px 0', cursor: 'pointer',
-                              fontSize: 11, color: C.accent, fontWeight: 500,
-                              display: 'flex', alignItems: 'center', gap: 4,
-                            }}>
-                            <GitBranch size={10} /> {taskLinkMatch[1]}
-                          </div>
-                        )}
-                        {/* Message body or edit box */}
-                        {isEditing ? (
-                          <div style={{ marginTop: 2 }}>
-                            <textarea
-                              value={editingCommentBody}
-                              onChange={e => setEditingCommentBody(e.target.value)}
-                              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editComment(c.id) } if (e.key === 'Escape') { setEditingCommentId(null); setEditingCommentBody('') } }}
-                              autoFocus rows={3}
-                              style={{ width: '100%', resize: 'vertical', ...neu(true), padding: '6px 8px', fontSize: 12, color: C.text, border: `1px solid ${C.accent}`, borderRadius: 6, outline: 'none', fontFamily: 'inherit', lineHeight: 1.5, boxSizing: 'border-box' }}
-                            />
-                            <div style={{ display: 'flex', gap: 6, marginTop: 4, fontSize: 10, color: C.textMuted }}>
-                              <span>Enter to save · Escape to cancel</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            {c.body && (() => {
-                              const cleanBody = c.body.replace(/^>.*\n\n/gm, '')
-                              const allUrls = extractUrls(cleanBody)
-                              const TASK_URL_RE = /\/tasks\/[a-z0-9]+$/i
-                              const REPORT_URL_RE = /\/report\/[a-z0-9]+\/[a-z0-9]+/i
-                              const FEEDBACK_URL_RE = /\/report\/feedback\/[a-z0-9]+/i
-                              const plainUrls = allUrls.filter(u => !isImageUrl(u) && !FEEDBACK_URL_RE.test(u) && !REPORT_URL_RE.test(u) && !TASK_URL_RE.test(u))
-                              const feedbackLinks = allUrls.map(u => FEEDBACK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                              const reportLinks = allUrls.filter(u => !FEEDBACK_URL_RE.test(u)).map(u => REPORT_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                              const taskLinkCards = allUrls.map(u => TASK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                              return (
-                                <>
-                                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginTop: showHeader ? 0 : 0 }}>
-                                    {renderMessageContent(cleanBody)}
-                                  </div>
-                                  {plainUrls.slice(0, 2).map(u => <OgPreview key={u} url={u} config={config} />)}
-                                  {feedbackLinks.map((m, fi) => {
-                                    const matchedUrl = allUrls.find(u => FEEDBACK_LINK_RE.test(u)) || ''
-                                    return <FeedbackLinkCard key={`f${fi}`} linkId={m[1]} pinId={m[2] || null} fullUrl={matchedUrl} config={config} />
-                                  })}
-                                  {reportLinks.map((m, ri) => <ReportLinkCard key={`r${ri}`} clientId={m[1]} projectId={m[2]} itemType={m[3] || null} itemId={m[4] || null} config={config} />)}
-                                  {taskLinkCards.map((m, ti) => <TaskLinkCard key={`t${ti}`} taskId={m[1]} config={config} />)}
-                                </>
-                              )
-                            })()}
-                            {!showHeader && c.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
-                          </>
-                        )}
-                        {/* Attachment */}
-                        {c.attachmentName && c.attachmentUrl && (
-                          isImage ? (
-                            <img src={`${config.apiBase}${c.attachmentUrl}`} alt={c.attachmentName}
-                              onClick={() => { setLightboxUrl(`${config.apiBase}${c.attachmentUrl}`); setLightboxName(c.attachmentName!) }}
-                              style={{ maxWidth: 200, maxHeight: 150, borderRadius: 8, marginTop: 6, cursor: 'pointer', objectFit: 'cover', display: 'block' }}
-                            />
-                          ) : (
-                            <button onClick={() => window.electronAPI.openExternal(`${config.apiBase}${c.attachmentUrl}`)}
-                              style={{ fontSize: 11, color: C.accent, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
-                              <FileText size={11} /> {c.attachmentName}
-                            </button>
-                          )
-                        )}
-                        {/* Emoji reactions */}
-                        {grouped.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                            {grouped.map(r => (
-                              <button key={r.emoji} onClick={() => toggleReaction(c.id, r.emoji)} title={r.users.join(', ')}
-                                style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 12, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 12 }}>
-                                <span>{r.emoji}</span>
-                                <span style={{ fontSize: 10, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {/* Thread preview */}
-                        {(c.replies?.length ?? 0) > 0 && (
-                          <button onClick={() => { setThreadParentId(c.id); setReplyTo(c) }}
-                            style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, background: 'transparent', border: `1px solid transparent`, cursor: 'pointer', padding: '4px 6px', borderRadius: 6, width: '100%', transition: 'background 0.15s, border-color 0.15s', fontFamily: 'inherit' }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = C.bgInput; (e.currentTarget as HTMLElement).style.borderColor = C.separator }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>
-                            <div style={{ display: 'flex', flexShrink: 0 }}>
-                              {[...new Map((c.replies ?? []).map(r => [r.user.id, r.user])).values()].slice(0, 3).map((u, ri) => (
-                                <div key={u.id} style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${C.lgBg}`, marginLeft: ri === 0 ? 0 : -6, zIndex: 3 - ri, position: 'relative', overflow: 'hidden', background: C.bgInput }}>
-                                  <Avatar url={u.avatarUrl} name={u.alias ?? u.username} size={16} />
-                                </div>
-                              ))}
-                            </div>
-                            <span style={{ color: C.accent, fontSize: 12, fontWeight: 700 }}>{c.replies!.length} {c.replies!.length === 1 ? 'reply' : 'replies'}</span>
-                            <span style={{ color: C.textMuted, fontSize: 11 }}>View thread</span>
-                            <ChevronRight size={12} color={C.textMuted} style={{ marginLeft: 'auto' }} />
-                          </button>
-                        )}
-                      </div>
-                      {/* Hover toolbar */}
-                      {isHovered && !isEditing && (
-                        <div style={{ position: 'absolute', top: -14, right: 8, display: 'flex', gap: 0, background: C.bgInput, borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '1px 2px', zIndex: 10 }}>
-                          {[{
-                            icon: <Smile size={14} />, title: 'React',
-                            onClick: () => setEmojiPickerCommentId(emojiPickerCommentId === c.id ? null : c.id), color: C.textSecondary,
-                          }, {
-                            icon: <CornerDownRight size={14} />, title: 'View thread',
-                            onClick: () => { setThreadParentId(c.id); setReplyTo(c) }, color: C.textSecondary,
-                          }, {
-                            icon: copiedCommentId === c.id ? <Check size={14} /> : <Link size={14} />, title: copiedCommentId === c.id ? 'Copied!' : 'Copy link',
-                            onClick: () => {
-                              const url = `${config.apiBase}/tasks/${discussionTaskId}?comment=${c.id}`
-                              navigator.clipboard.writeText(url).catch(() => window.electronAPI?.writeClipboard?.(url))
-                              setCopiedCommentId(c.id); setTimeout(() => setCopiedCommentId(null), 1500)
-                            }, color: copiedCommentId === c.id ? C.success : C.textSecondary,
-                          }, {
-                            icon: <Quote size={14} />, title: 'Quote',
-                            onClick: () => {
-                              const senderName = c.user.alias ?? c.user.username
-                              const quoted = c.body.split('\n').map(l => `> ${l}`).join('\n')
-                              const quoteBlock = `> **${senderName}**\n${quoted}\n\n`
-                              setCommentText(prev => quoteBlock + prev)
-                            }, color: C.textSecondary,
-                          }, ...(isMe ? [{
-                            icon: <Edit2 size={14} />, title: 'Edit',
-                            onClick: () => { setEditingCommentId(c.id); setEditingCommentBody(c.body) },
-                            color: C.textSecondary,
-                            show: (Date.now() - new Date(c.createdAt).getTime()) < 12 * 60 * 60 * 1000,
-                          }, {
-                            icon: <Trash2 size={14} />, title: 'Delete',
-                            onClick: () => deleteComment(c.id), color: C.danger, show: true,
-                          }] : [])].filter((b: any) => b.show !== false).map((btn: any, bi) => (
-                            <button key={bi} onClick={btn.onClick} title={btn.title}
-                              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${C.text}12` }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
-                              style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px', color: btn.color, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.1s' }}>
-                              {btn.icon}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {/* Quick emoji picker */}
-                      {emojiPickerCommentId === c.id && fullEmojiPickerCommentId !== c.id && (
-                        <div style={{ position: 'absolute', top: -40, right: 8, display: 'flex', gap: 2, background: C.bgInput, borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '4px 6px', zIndex: 20 }}>
-                          {QUICK_EMOJIS.map(e => (
-                            <button key={e} onClick={() => toggleReaction(c.id, e)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: '2px 4px', borderRadius: 6 }}
-                              onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                              onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'none' }}>
-                              {e}
-                            </button>
-                          ))}
-                          <button onClick={() => setFullEmojiPickerCommentId(c.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 6px', borderRadius: 6, color: C.textMuted, display: 'flex', alignItems: 'center' }}
-                            onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                            onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'none' }}
-                            title="More emojis">
-                            <Plus size={14} />
-                          </button>
-                        </div>
-                      )}
-                      {/* Full emoji picker */}
-                      {fullEmojiPickerCommentId === c.id && (
-                        <div style={{ position: 'absolute', top: -44, right: 8, zIndex: 30 }}>
-                          <EmojiPicker
-                            onSelect={(emoji) => { toggleReaction(c.id, emoji); setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                            onClose={() => { setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                    {/* Threaded replies are now shown in the thread sub-view */}
-                    {false && (c.replies ?? []).length > 0 && (
-                      <div style={{ marginLeft: 36, marginTop: 4, borderLeft: `2px solid ${C.separator}`, paddingLeft: 8, display: 'flex', flexDirection: 'column' }}>
-                        {c.replies!.map((r, ri) => {
-                          const rIsImage = r.attachmentName && r.attachmentUrl && /\.(jpg|jpeg|png|gif|webp|avif|bmp|svg)$/i.test(r.attachmentName)
-                          const prevReply = c.replies![ri - 1]
-                          const rDate = new Date(r.createdAt)
-                          const rTimeDiff = prevReply ? rDate.getTime() - new Date(prevReply.createdAt).getTime() : Infinity
-                          const rShowHeader = !prevReply || prevReply.user.id !== r.user.id || rTimeDiff > 5 * 60 * 1000
-                          const rIsHovered = hoveredCommentId === r.id
-                          const rIsMe = r.user.id === auth.userId
-                          const rIsEditing = editingCommentId === r.id
-                          const rGrouped = groupReactions(r.reactions ?? [])
-                          return (
-                            <div key={r.id}
-                              onMouseEnter={() => setHoveredCommentId(r.id)}
-                              onMouseLeave={() => { setHoveredCommentId(null); if (emojiPickerCommentId === r.id && fullEmojiPickerCommentId !== r.id) setEmojiPickerCommentId(null) }}
-                              style={{ display: 'flex', padding: rShowHeader ? '4px 4px 2px' : '1px 4px', position: 'relative', gap: 6, borderRadius: 6, background: rIsHovered ? `${C.text}06` : 'transparent' }}
-                            >
-                              {rShowHeader ? (
-                                <div style={{ width: 22, flexShrink: 0 }}>
-                                  <Avatar url={r.user.avatarUrl} name={r.user.alias ?? r.user.username} size={22} />
-                                </div>
-                              ) : (
-                                <div style={{ width: 22, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-                                  {rIsHovered && (
-                                    <span style={{ fontSize: 8, color: C.textMuted, lineHeight: '16px', whiteSpace: 'nowrap' }}>
-                                      {rDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                {rShowHeader && (
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 1 }}>
-                                    <span style={{ fontSize: 11, fontWeight: 700, color: C.text }}>{r.user.alias ?? r.user.username}</span>
-                                    <span style={{ fontSize: 9, color: C.textMuted }}>
-                                      {rDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                                    </span>
-                                    {r.editedAt && <span style={{ fontSize: 9, color: C.textMuted }}>(edited)</span>}
-                                  </div>
-                                )}
-                                {rIsEditing ? (
-                                  <div style={{ marginTop: 2 }}>
-                                    <textarea
-                                      value={editingCommentBody}
-                                      onChange={e => setEditingCommentBody(e.target.value)}
-                                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editComment(r.id) } if (e.key === 'Escape') { setEditingCommentId(null); setEditingCommentBody('') } }}
-                                      autoFocus rows={2}
-                                      style={{ width: '100%', resize: 'vertical', ...neu(true), padding: '4px 6px', fontSize: 11, color: C.text, border: `1px solid ${C.accent}`, borderRadius: 6, outline: 'none', fontFamily: 'inherit', lineHeight: 1.5, boxSizing: 'border-box' }}
-                                    />
-                                    <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Enter to save · Escape to cancel</div>
-                                  </div>
-                                ) : (
-                                  <>
-                                    {r.body && (
-                                      <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>
-                                        {renderMessageContent(r.body)}
-                                      </div>
-                                    )}
-                                    {!rShowHeader && r.editedAt && <span style={{ fontSize: 9, color: C.textMuted }}>(edited)</span>}
-                                  </>
-                                )}
-                                {r.attachmentName && r.attachmentUrl && (
-                                  rIsImage ? (
-                                    <img src={`${config.apiBase}${r.attachmentUrl}`} alt={r.attachmentName}
-                                      onClick={() => { setLightboxUrl(`${config.apiBase}${r.attachmentUrl}`); setLightboxName(r.attachmentName!) }}
-                                      style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, marginTop: 4, cursor: 'pointer', objectFit: 'cover', display: 'block' }}
-                                    />
-                                  ) : (
-                                    <button onClick={() => window.electronAPI.openExternal(`${config.apiBase}${r.attachmentUrl}`)}
-                                      style={{ fontSize: 10, color: C.accent, display: 'flex', alignItems: 'center', gap: 3, marginTop: 3, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
-                                      <FileText size={10} /> {r.attachmentName}
-                                    </button>
-                                  )
-                                )}
-                                {/* Reply reactions */}
-                                {rGrouped.length > 0 && (
-                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 3 }}>
-                                    {rGrouped.map(rx => (
-                                      <button key={rx.emoji} onClick={() => toggleReaction(r.id, rx.emoji)} title={rx.users.join(', ')}
-                                        style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '1px 5px', borderRadius: 10, border: `1px solid ${rx.reacted ? C.accent : C.separator}`, background: rx.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 11 }}>
-                                        <span>{rx.emoji}</span>
-                                        <span style={{ fontSize: 9, fontWeight: 600, color: rx.reacted ? C.accent : C.textMuted }}>{rx.count}</span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                              {/* Reply hover toolbar */}
-                              {rIsHovered && !rIsEditing && (
-                                <div style={{ position: 'absolute', top: -12, right: 4, display: 'flex', gap: 0, background: C.bgInput, borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '1px 2px', zIndex: 10 }}>
-                                  {[{
-                                    icon: <Smile size={12} />, title: 'React',
-                                    onClick: () => setEmojiPickerCommentId(emojiPickerCommentId === r.id ? null : r.id), color: C.textSecondary,
-                                  }, ...(rIsMe ? [{
-                                    icon: <Edit2 size={12} />, title: 'Edit',
-                                    onClick: () => { setEditingCommentId(r.id); setEditingCommentBody(r.body) },
-                                    color: C.textSecondary,
-                                    show: (Date.now() - new Date(r.createdAt).getTime()) < 12 * 60 * 60 * 1000,
-                                  }, {
-                                    icon: <Trash2 size={12} />, title: 'Delete',
-                                    onClick: () => deleteComment(r.id), color: C.danger, show: true,
-                                  }] : [])].filter((b: any) => b.show !== false).map((btn: any, bi) => (
-                                    <button key={bi} onClick={btn.onClick} title={btn.title}
-                                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${C.text}12` }}
-                                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
-                                      style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '3px 5px', color: btn.color, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.1s' }}>
-                                      {btn.icon}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                              {/* Reply quick emoji picker */}
-                              {emojiPickerCommentId === r.id && fullEmojiPickerCommentId !== r.id && (
-                                <div style={{ position: 'absolute', top: -38, right: 4, display: 'flex', gap: 2, background: C.bgInput, borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '4px 6px', zIndex: 20 }}>
-                                  {QUICK_EMOJIS.map(e => (
-                                    <button key={e} onClick={() => toggleReaction(r.id, e)}
-                                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 3px', borderRadius: 6 }}
-                                      onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                                      onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'none' }}>
-                                      {e}
-                                    </button>
-                                  ))}
-                                  <button onClick={() => setFullEmojiPickerCommentId(r.id)}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, padding: '2px 4px', borderRadius: 6, color: C.textMuted, display: 'flex', alignItems: 'center' }}
-                                    title="More emojis">
-                                    <Plus size={12} />
-                                  </button>
-                                </div>
-                              )}
-                              {fullEmojiPickerCommentId === r.id && (
-                                <div style={{ position: 'absolute', top: -44, right: 4, zIndex: 30 }}>
-                                  <EmojiPicker
-                                    onSelect={(emoji) => { toggleReaction(r.id, emoji); setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                                    onClose={() => { setFullEmojiPickerCommentId(null); setEmojiPickerCommentId(null) }}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-              {/* Sentinel for auto-scroll-to-latest on tab open + new message */}
-              <div ref={discussionEndRef} />
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'activity' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {activities.length === 0 && <div style={{ textAlign: 'center', color: C.textMuted, opacity: 0.4, padding: 20, fontSize: 12 }}>No activity yet</div>}
-            {activities.map(a => {
-              const actorName = a.user?.alias ?? a.user?.username ?? 'Someone'
-              const label = (() => {
-                if (a.type === 'created') return 'created this task'
-                if (a.type === 'status') return `changed status to ${TASK_STATUS_LABELS[a.newVal ?? ''] ?? a.newVal}`
-                if (a.type === 'priority') return `set priority to ${PRIORITY_LABELS[a.newVal ?? ''] ?? a.newVal}`
-                if (a.type === 'assigned') return a.newVal ? `assigned to ${a.newVal}` : 'unassigned'
-                if (a.type === 'due') return a.newVal ? `set due date to ${new Date(a.newVal).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'removed due date'
-                if (a.type === 'title') return `renamed to "${a.newVal}"`
-                if (a.type === 'section') return a.newVal ? `moved to section "${a.newVal}"` : 'removed from section'
-                if (a.type === 'comment') return `posted in discussion${a.newVal ? `: "${a.newVal.slice(0, 50)}${(a.newVal?.length ?? 0) > 50 ? '…' : ''}"` : ''}`
-                return `updated ${a.type}`
-              })()
-              return (
-                <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <Avatar url={a.user?.avatarUrl ?? null} name={actorName} size={22} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 12, color: C.text }}><span style={{ fontWeight: 700 }}>{actorName}</span>{' '}{label}</span>
-                    <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>{timeAgo(a.createdAt)}</div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Discussion input — fixed at bottom, outside scroll area */}
-      {activeTab === 'discussion' && (
-        <div style={{ flexShrink: 0, borderTop: `1px solid ${C.separator}` }}>
-          {replyTo && !threadComment && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: C.bgInput, fontSize: 11, color: C.textMuted }}>
-              <CornerDownRight size={10} />
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                Replying to <strong style={{ color: C.text }}>{replyTo.user.alias ?? replyTo.user.username}</strong>
-              </span>
-              <button onClick={() => setReplyTo(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 0 }}><X size={10} /></button>
-            </div>
-          )}
-          <MessageInput
-            placeholder={threadComment ? 'Reply in thread… (Shift+Enter for newline)' : 'Type a message… (Shift+Enter for newline)'}
+        {/* Architectural mirror: drawer's discussion now mounts the
+            same single-channel pane the DMs main pane uses. Same UI,
+            same realtime push, same state model — no more drift. */}
+        {activeTab === 'discussion' && discussionChannelId && (
+          <DiscussionPanel
+            channelId={discussionChannelId}
             config={config}
-            channelId=""
-            onTyping={() => {}}
-            input={commentText}
-            setInput={setCommentText}
-            sendFn={addComment}
-            sending={addingComment}
-            onUpload={handleTaskUpload}
-            onGifSelect={async (url) => {
-              const parentId = replyTo?.id ?? null
-              let body = url
-              if (subtaskContext && !parentId) {
-                body = `> [Subtask: ${subtaskContext.title}](/tasks/${subtaskContext.id})\n\n${body}`
-                setSubtaskContext(null)
-              }
-              try {
-                const d = await apiFetch(`/api/tasks/${discussionTaskId}/comments`, {
-                  method: 'POST', body: JSON.stringify({ body, parentCommentId: parentId }),
-                }) as { comment: TaskComment }
-                if (parentId) setComments(prev => prev.map(c => c.id === parentId ? { ...c, replies: [...(c.replies ?? []), d.comment] } : c))
-                else setComments(prev => [...prev, d.comment])
-                setReplyTo(null)
-                onRefresh?.()
-              } catch (err) {
-                console.error('[TaskDetail] sendGif failed:', err)
-              }
-            }}
-            hideSchedule
+            auth={auth}
+            subtaskContext={detail?.parentTaskId && detail
+              ? { id: detail.id, title: detail.title }
+              : null}
           />
-        </div>
-      )}
+        )}
+        {activeTab === 'discussion' && !discussionChannelId && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: C.textMuted, fontSize: 13 }}>
+            <Loader size={18} />
+          </div>
+        )}
+
+
+        {activeTab === 'activity' && <TaskActivity activities={activities} />}
+      </div>
 
       {/* Lightbox */}
       {lightboxUrl && (

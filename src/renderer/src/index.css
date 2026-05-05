@@ -551,3 +551,38 @@ input {
 .tiptap-editor .ProseMirror-gapcursor::after {
   border-top-color: var(--text);
 }
+
+/* ── Collaboration carets (P4.31) ──────────────────────────────────────── */
+/* Each peer's cursor inherits its colour from the inline `border-color` set by
+   CollaborationCaret. The label sits above the caret on hover — visible only
+   while the caret is active so it doesn't clutter the edit surface. */
+.tiptap-editor .collaboration-carets__caret {
+  position: relative;
+  border-left: 1px solid;
+  border-right: 1px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+  pointer-events: none;
+  word-break: normal;
+}
+.tiptap-editor .collaboration-carets__label {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: -apple-system, system-ui, sans-serif;
+  color: #fff;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  background-color: inherit;
+}
+.tiptap-editor .collaboration-carets__selection {
+  /* CollaborationCaret applies the user's color via inline `background-color`;
+     we just lower the alpha so the underlying text stays readable. */
+  opacity: 0.25;
+  pointer-events: none;
+}

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useCallback, useEffect, useMemo } from 'react'
 import {
   Check, Circle, Play, AlertCircle, ChevronRight, X, Loader,
   Activity, MessageSquare, User as UserIcon, RefreshCw,
@@ -6,9 +6,11 @@ import {
 import { C, card, neu } from '../../theme'
 import type { Auth, ApiConfig, BundyStatus, Task, PlanItem } from '../../types'
 import { useStatusTicker } from '../../hooks/useStatusTicker'
-import { formatMs, insertMarkdownAt } from '../../utils/format'
-import { simpleMarkdown } from '../../utils/markdown'
-import { sanitizeHtml } from '../../utils/sanitize'
+import { formatMs } from '../../utils/format'
+// simpleMarkdown + sanitizeHtml dropped along with the Preview tab in
+// v1.5.2108 — Tiptap is WYSIWYG so a separate preview is redundant.
+import { playSound } from '../../utils/sounds'
+import DocumentEditor from '../report/DocumentEditor'
 
 const ACTION_COLORS: Record<string, string> = {
   'clock-in': '#43B581',
@@ -34,7 +36,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 }
 
 export function HomePanel({
-  auth: _auth,
+  auth,
   config,
   onOpenTask,
 }: {
@@ -82,8 +84,11 @@ export function HomePanel({
   const [taskStatusUpdates, setTaskStatusUpdates] = useState<Record<string, string>>({})
   const [reportSubmitting, setReportSubmitting] = useState(false)
   const [reportError, setReportError] = useState('')
-  const [showPreview, setShowPreview] = useState(false)
-  const reportTextareaRef = useRef<HTMLTextAreaElement>(null)
+  // showPreview state retired in v1.5.2108 — Tiptap is WYSIWYG so a
+  // separate preview tab is redundant. The setter shim below keeps the
+  // existing close-handler call sites compiling without churn.
+  const setShowPreview = (_v: boolean) => { /* no-op (kept for back-compat) */ }
+  void setShowPreview
 
   const [permissions, setPermissions] = useState<{ screen: string; accessibility: boolean } | null>(null)
   const [actionError, setActionError] = useState('')
@@ -247,7 +252,13 @@ export function HomePanel({
       }
     }
     setActionError('')
-    new Audio('sounds/button-press.mp3').play().catch(() => {})
+    // Play a tracker-action-specific sound from the Material Design pack
+    // (warm celebrations for clock-in/out, calmer state-change tones for
+    // break start/end). Falls through silently if the user has muted.
+    if (action === 'clock-in') playSound('time.clock-in')
+    else if (action === 'clock-out') playSound('time.clock-out')
+    else if (action === 'break-start') playSound('time.break-start')
+    else if (action === 'break-end') playSound('time.break-end')
 
     // Optimistic UI update — change buttons IMMEDIATELY before IPC
     if (status) {
@@ -517,36 +528,15 @@ export function HomePanel({
                 No tasks due today.
               </div>
             ) : (
-              todayTasks.map((task, i) => (
-                <div
+              todayTasks.map((task, i) => config && (
+                <SubtaskRecapRow
                   key={task.id}
-                  onClick={() => onOpenTask?.(task.id)}
-                  style={{
-                    padding: '10px 4px', display: 'flex', alignItems: 'center', gap: 10,
-                    cursor: 'pointer', borderTop: i > 0 ? `1px solid ${C.separator}` : 'none',
-                    transition: 'background 0.12s', borderRadius: 4,
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-                  onMouseLeave={e => { e.currentTarget.style.background = '' }}
-                >
-                  <div style={{ color: TASK_STATUS_COLORS[task.status] ?? C.textMuted, flexShrink: 0 }}>
-                    {TASK_STATUS_ICONS[task.status] ?? <Circle size={14} />}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {task.title}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                      {task.project && (
-                        <span style={{ fontSize: 11, color: task.project.color || C.textMuted, fontWeight: 500 }}>{task.project.name}</span>
-                      )}
-                      <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: PRIORITY_COLORS[task.priority] ?? C.textMuted }}>
-                        {task.priority}
-                      </span>
-                    </div>
-                  </div>
-                  <ChevronRight size={14} color={C.textMuted} style={{ flexShrink: 0, opacity: 0.5 }} />
-                </div>
+                  task={task}
+                  showDivider={i > 0}
+                  config={config}
+                  onOpen={() => onOpenTask?.(task.id)}
+                  onStatusChanged={() => loadTasks()}
+                />
               ))
             )}
           </div>
@@ -780,24 +770,52 @@ export function HomePanel({
       {/* Clock-out Report Modal */}
       {showReportModal && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100,
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 100,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           WebkitAppRegion: 'no-drag',
+          backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
         } as React.CSSProperties}
           onClick={() => { setShowReportModal(false); setShowPreview(false) }}>
           <div onClick={e => e.stopPropagation()} style={{
-            ...neu(), width: 500, maxHeight: '80vh', overflowY: 'auto', padding: 24,
-            display: 'flex', flexDirection: 'column', gap: 16,
+            background: C.bgSecondary,
+            border: `1px solid ${C.separator}`,
+            borderRadius: 12,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            width: clockOutStep === 'report' ? 620 : 500,
+            maxHeight: '85vh', overflowY: 'auto',
+            display: 'flex', flexDirection: 'column',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>
-                {clockOutStep === 'tasks' ? '✅ Open Tasks' : clockOutStep === 'plan' ? '📋 Confirm Plan Status' : '🔴 Clock Out Report'}
-              </span>
+            {/* Cleaner header — typography-only title (no emoji), thin
+                separator below, X close in the corner. v1.5.2108. */}
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '18px 24px 14px', borderBottom: `1px solid ${C.separator}`,
+            }}>
+              <div>
+                <div style={{ fontSize: 11, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 700, marginBottom: 2 }}>
+                  {clockOutStep === 'tasks' ? 'Step 1 of 3' : clockOutStep === 'plan' ? 'Step 2 of 3' : 'Final step'}
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>
+                  {clockOutStep === 'tasks' ? 'Open tasks' : clockOutStep === 'plan' ? 'Confirm plan status' : "Today's clock-out report"}
+                </div>
+              </div>
               <button
                 onClick={() => { setShowReportModal(false); setShowPreview(false) }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}
-              ><X size={16} /></button>
+                aria-label="Close"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: C.textMuted, padding: 6, borderRadius: 6,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+              ><X size={18} /></button>
             </div>
+            {/* Body padding — applied to all step contents below.
+                The original modal used a single padding on the outer
+                box; we've moved it inside so the header + footer have
+                their own borders and the body can scroll. */}
+            <div style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
 
             {/* ─── Step 0: Open Tasks ─── */}
             {clockOutStep === 'tasks' && (
@@ -908,73 +926,61 @@ export function HomePanel({
             {/* ─── Step 2: Report Editor ─── */}
             {clockOutStep === 'report' && (
               <>
-                <div style={{ ...neu(true), display: 'flex', borderRadius: 4, padding: 3, gap: 3 }}>
-                  {(['Write', 'Preview'] as const).map(t => (
-                    <button key={t} onClick={() => setShowPreview(t === 'Preview')}
-                      style={{
-                        flex: 1, padding: '6px', fontSize: 12, fontWeight: 600, border: 'none', borderRadius: 8, cursor: 'pointer',
-                        ...(!showPreview === (t === 'Write') ? neu() : { background: 'transparent' }),
-                        color: !showPreview === (t === 'Write') ? C.text : C.textMuted,
-                      }}>{t}</button>
-                  ))}
+                {/* Helper line — clarifies what the user is filling out so
+                    we can drop the noisy Write/Preview tab toggle. The
+                    Tiptap editor is already WYSIWYG so a separate preview
+                    is redundant. v1.5.2108. */}
+                <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5 }}>
+                  What did you ship today? Use the toolbar for headings, lists, and links.
                 </div>
 
-                {!showPreview && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {([
-                      { label: 'B', prefix: '**', suffix: '**', title: 'Bold', style: { fontWeight: 700 } as React.CSSProperties },
-                      { label: 'I', prefix: '_', suffix: '_', title: 'Italic', style: { fontStyle: 'italic' } as React.CSSProperties },
-                      { label: '~~', prefix: '~~', suffix: '~~', title: 'Strikethrough', style: { textDecoration: 'line-through' } as React.CSSProperties },
-                      { label: 'H1', prefix: '# ', suffix: '', title: 'Heading 1', style: {} as React.CSSProperties },
-                      { label: 'H2', prefix: '## ', suffix: '', title: 'Heading 2', style: {} as React.CSSProperties },
-                      { label: '•', prefix: '\n- ', suffix: '', title: 'Bullet list', style: {} as React.CSSProperties },
-                      { label: '1.', prefix: '\n1. ', suffix: '', title: 'Numbered list', style: {} as React.CSSProperties },
-                      { label: '`c`', prefix: '`', suffix: '`', title: 'Inline code', style: { fontFamily: 'monospace' } as React.CSSProperties },
-                    ]).map(({ label, prefix, suffix, title, style: btnStyle }) => (
-                      <button key={title} title={title} onClick={() => {
-                        if (reportTextareaRef.current) insertMarkdownAt(reportTextareaRef.current, setReportContent, prefix, suffix)
-                      }}
-                        style={{ ...neu(), padding: '4px 8px', fontSize: 11, border: 'none', cursor: 'pointer', borderRadius: 6, fontFamily: 'SF Mono, Menlo, monospace', ...btnStyle }}>{label}</button>
-                    ))}
-                  </div>
-                )}
-
-                {!showPreview ? (
-                  <textarea
-                    ref={reportTextareaRef}
-                    value={reportContent}
-                    onChange={e => setReportContent(e.target.value)}
-                    onKeyDown={e => {
-                      const ta = e.currentTarget
-                      if (e.key === 'Tab') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '  ', ''); return }
-                      const mod = e.ctrlKey || e.metaKey
-                      if (mod && e.key === 'b') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '**', '**') }
-                      else if (mod && e.key === 'i') { e.preventDefault(); insertMarkdownAt(ta, setReportContent, '_', '_') }
-                    }}
-                    placeholder={"What did you work on today?\n\n- Task 1\n- Task 2\n\n## Notes\nAny blockers?"}
-                    rows={8}
-                    style={{
-                      width: '100%', borderRadius: 4, padding: 12, fontSize: 13, fontFamily: 'SF Mono, Menlo, monospace',
-                      ...neu(true), border: 'none', outline: 'none', color: C.text,
-                      resize: 'none', boxSizing: 'border-box', lineHeight: 1.6,
-                    }}
+                {/* Editor — solid border, comfortable min-height. The
+                    DocumentEditor brings its own Tiptap toolbar + content
+                    area; we just give it a clean frame. */}
+                <div style={{
+                  width: '100%',
+                  minHeight: 280,
+                  borderRadius: 8,
+                  border: `1px solid ${C.separator}`,
+                  background: C.bgPrimary,
+                  overflow: 'hidden',
+                  boxSizing: 'border-box',
+                  display: 'flex', flexDirection: 'column',
+                }}>
+                  <DocumentEditor
+                    content={reportContent}
+                    onUpdate={(html) => setReportContent(html)}
+                    apiBase={config?.apiBase}
+                    token={config?.token}
+                    user={{ id: auth.userId, name: auth.username, avatar: auth.avatarUrl ?? null }}
                   />
-                ) : (
-                  <div style={{ width: '100%', minHeight: 160, borderRadius: 4, padding: 12, fontSize: 13, ...neu(true), color: C.text, boxSizing: 'border-box', lineHeight: 1.6, overflowY: 'auto' }}
-                    dangerouslySetInnerHTML={{ __html: reportContent.trim() ? sanitizeHtml(simpleMarkdown(reportContent)) : '<span style="opacity:0.4">Nothing to preview yet…</span>' }}
-                  />
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <span style={{ fontSize: 11, color: C.textMuted }}>{reportContent.split(/\s+/).filter(Boolean).length} words</span>
                 </div>
 
-                {reportError && <div style={{ fontSize: 12, color: C.danger }}>{reportError}</div>}
+                {reportError && (
+                  <div style={{
+                    fontSize: 12, color: C.danger, fontWeight: 600,
+                    background: `${C.danger}12`, border: `1px solid ${C.danger}40`,
+                    padding: '8px 12px', borderRadius: 6,
+                  }}>{reportError}</div>
+                )}
 
-                <div style={{ display: 'flex', gap: 10 }}>
+                {/* Footer row — word count on the left, actions on the
+                    right. Cancel is a quiet ghost button; Submit is the
+                    accent action. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+                  <span style={{ fontSize: 11, color: C.textMuted, flex: 1 }}>
+                    {reportContent.split(/\s+/).filter(Boolean).length} words
+                  </span>
                   <button onClick={() => { planItems.length > 0 ? setClockOutStep('plan') : todayTasks.filter(t => t.status !== 'done').length > 0 ? setClockOutStep('tasks') : (setShowReportModal(false), setShowPreview(false)) }}
-                    style={{ flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer', fontSize: 13, color: C.textMuted }}>
-                    {planItems.length > 0 || todayTasks.filter(t => t.status !== 'done').length > 0 ? '← Back' : 'Cancel'}
+                    style={{
+                      padding: '8px 16px', border: `1px solid ${C.separator}`,
+                      background: 'transparent', borderRadius: 6, cursor: 'pointer',
+                      fontSize: 13, color: C.textSecondary, fontWeight: 600,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                  >
+                    {planItems.length > 0 || todayTasks.filter(t => t.status !== 'done').length > 0 ? 'Back' : 'Cancel'}
                   </button>
                   <button
                     onClick={async () => {
@@ -1005,15 +1011,18 @@ export function HomePanel({
                     }}
                     disabled={!reportContent.trim() || reportSubmitting}
                     style={{
-                      flex: 1, ...neu(), padding: '10px', border: 'none', cursor: 'pointer',
-                      fontSize: 13, fontWeight: 700, color: C.danger,
+                      padding: '8px 18px', border: 'none', borderRadius: 6, cursor: 'pointer',
+                      background: C.danger, color: '#fff',
+                      fontSize: 13, fontWeight: 700,
                       opacity: (!reportContent.trim() || reportSubmitting) ? 0.5 : 1,
+                      transition: 'opacity 0.15s, background 0.15s',
                     }}>
                     {reportSubmitting ? 'Submitting…' : 'Submit & Clock Out'}
                   </button>
                 </div>
               </>
             )}
+            </div>
           </div>
         </div>
       )}
@@ -1022,3 +1031,100 @@ export function HomePanel({
 }
 
 export default HomePanel
+
+/**
+ * Today's-recap row for an open subtask. Clicking the status icon cycles
+ * through todo → in-progress → review → done → todo (matches how Asana
+ * style boards step a card forward). Clicking the body opens the task
+ * detail drawer in the Tasks tab as before.
+ *
+ * The status PATCH is best-effort: if it fails (offline, etc.) the
+ * write queue catches it and replays on reconnect — the UI flips
+ * optimistically so the user sees their click land immediately.
+ */
+const STATUS_CYCLE: Record<string, string> = {
+  'todo': 'in-progress',
+  'in-progress': 'review',
+  'review': 'done',
+  'done': 'todo',
+  'blocked': 'in-progress',
+}
+
+function SubtaskRecapRow({
+  task, showDivider, config, onOpen, onStatusChanged,
+}: {
+  task: Task
+  showDivider: boolean
+  config: ApiConfig
+  onOpen: () => void
+  onStatusChanged: () => void
+}) {
+  const [optimisticStatus, setOptimisticStatus] = useState<string | null>(null)
+  const status = optimisticStatus ?? task.status
+
+  async function cycleStatus(e: React.MouseEvent) {
+    e.stopPropagation()
+    const next = STATUS_CYCLE[status] ?? 'in-progress'
+    setOptimisticStatus(next)
+    try {
+      await fetch(`${config.apiBase}/api/tasks/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      })
+      onStatusChanged()
+    } catch {
+      // Rollback the optimistic flip — write queue isn't in this
+      // codepath since we use raw fetch here.
+      setOptimisticStatus(null)
+    }
+  }
+
+  return (
+    <div
+      onClick={onOpen}
+      style={{
+        padding: '10px 4px', display: 'flex', alignItems: 'center', gap: 10,
+        cursor: 'pointer', borderTop: showDivider ? `1px solid ${C.separator}` : 'none',
+        transition: 'background 0.12s', borderRadius: 4,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+      onMouseLeave={e => { e.currentTarget.style.background = '' }}
+    >
+      <button
+        onClick={cycleStatus}
+        title={`Status: ${status} — click to advance`}
+        style={{
+          color: TASK_STATUS_COLORS[status] ?? C.textMuted, flexShrink: 0,
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          padding: 4, borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        {TASK_STATUS_ICONS[status] ?? <Circle size={14} />}
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 13, fontWeight: 500, color: C.text,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          textDecoration: status === 'done' ? 'line-through' : 'none',
+          opacity: status === 'done' ? 0.6 : 1,
+        }}>
+          {task.title}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+          {task.project && (
+            <span style={{ fontSize: 11, color: task.project.color || C.textMuted, fontWeight: 500 }}>{task.project.name}</span>
+          )}
+          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: PRIORITY_COLORS[task.priority] ?? C.textMuted }}>
+            {task.priority}
+          </span>
+          <span style={{ fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginLeft: 'auto' }}>
+            {status === 'in-progress' ? 'In progress' : status}
+          </span>
+        </div>
+      </div>
+      <ChevronRight size={14} color={C.textMuted} style={{ flexShrink: 0, opacity: 0.5 }} />
+    </div>
+  )
+}

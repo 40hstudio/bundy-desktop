@@ -1,4 +1,4 @@
-import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData, SseTaskEvent } from '../../preload/index'
+import type { StoredAuth, BundyStatus, Permissions, DailyPlanData, PlanItemData, SseTaskEvent, SseReportEvent, SseCalendarEvent } from '../../preload/index'
 
 declare global {
   interface Window {
@@ -10,14 +10,21 @@ declare global {
       doAction: (action: string, note?: string) => Promise<BundyStatus | void>
       submitReport: (content: string) => Promise<void>
       checkPermissions: () => Promise<Permissions>
+      platform: NodeJS.Platform
       openAccessibilitySettings: () => Promise<void>
       openScreenRecordingSettings: () => Promise<void>
       openExternal: (url: string) => Promise<void>
       checkForUpdates: () => Promise<void>
       installUpdate: () => Promise<void>
       setBadgeCount: (count: number) => void
+      showNotification: (title: string, body: string) => Promise<void>
       setInCall: (value: boolean) => void
       setCurrentTask: (taskId: string | null) => void
+      reportError: (payload: { level: string; message: string; stack?: string; url?: string; userAgent?: string; timestamp: string }) => void
+      getErrorLogPath: () => Promise<string>
+      setCurrentReportDocument: (documentId: string | null) => void
+      setCurrentChannel: (channelId: string | null) => void
+      setCurrentVoiceChannel: (voiceChannelId: string | null) => void
       getVersion: () => Promise<string>
       getUpdateState: () => Promise<{ version: string | null; percent: number | null; downloaded: boolean }>
       onUpdateAvailable: (cb: (info: { version: string }) => void) => () => void
@@ -28,6 +35,8 @@ declare global {
       onPlanUpdate: (cb: (plan: DailyPlanData) => void) => () => void
       onTokenExpired: (cb: () => void) => () => void
       onTaskEvent: (cb: (event: SseTaskEvent) => void) => () => void
+      onReportEvent: (cb: (event: SseReportEvent) => void) => () => void
+      onCalendarEvent: (cb: (event: SseCalendarEvent) => void) => () => void
       sendCrashReport: (note: string) => Promise<void>
       openFullWindow: () => Promise<void>
       focusWindow: () => Promise<void>
@@ -52,6 +61,7 @@ declare global {
       onCallFloatAction: (cb: (action: Record<string, unknown>) => void) => () => void
       setCallFloatAlwaysOnTop: (onTop: boolean) => Promise<void>
       writeClipboard: (text: string) => void
+      getScreenSources: () => Promise<Array<{ id: string; name: string; thumbnail: string }>>
     }
   }
 }

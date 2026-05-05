@@ -1,21 +1,38 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Plus, ChevronRight, ChevronDown, FolderOpen, Building2, Briefcase,
+  ChevronRight, ChevronDown, FolderOpen, Building2, Briefcase,
   MoreHorizontal, Trash2, Pencil, FileText, Upload, Folder, File,
   ArrowLeft, Loader, Download, User, Grid, List, Columns, Image,
-  Link2, X, Clock, RotateCcw, AlertCircle, Globe,
+  Link2, X, Clock, RotateCcw, AlertCircle, Globe, ExternalLink,
 } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig, Auth } from '../../types'
 import { AuthImage } from '../messages/Attachments'
-import DocumentEditor from './DocumentEditor'
 import FeedbackViewer from './FeedbackViewer'
+import {
+  iconBtn24, iconBtnSmall, iconBtnTiny, toolbarBtn, rowStyle, menuItemStyle,
+  isImageFile, isVideoFile, isAudioFile, isPdfFile, isPreviewableFile,
+  FileThumbnail, fileTypeAccent,
+  InlineInput, ContextMenu, FileMenu,
+  actionColor, actionLabel, actionTextColor, actionTargetIcon,
+  formatTimeDetailed, recycleTypeColor, recycleTypeIcon,
+} from './reportShared'
+import { useActivityLog } from './useActivityLog'
+import { useRecycleBin } from './useRecycleBin'
+import { useReportMembers } from './useReportMembers'
+import { useReportTree } from './useReportTree'
+import { useReportSearch } from './useReportSearch'
+import { useReportDrag } from './useReportDrag'
+import { useReportMultiSelect } from './useReportMultiSelect'
+import { tryDirectR2Upload } from '../../api/r2Upload'
+import { xhrUploadJson } from '../../api/xhrUpload'
+import { trackUpload } from '../../stores/uploadProgressStore'
+import { useReportDocument } from './useReportDocument'
+import { ReportTree } from './ReportTree'
+import { ReportEditor } from './ReportEditor'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Project { id: string; name: string; order: number }
-interface Client { id: string; name: string; order: number; projects: Project[] }
 
 interface RFolder {
   id: string; name: string; parentId: string | null; order: number; createdAt: string
@@ -40,18 +57,7 @@ interface RLink {
   _count: { pins: number }
 }
 
-interface DocDetail {
-  id: string; title: string; content: string; folderId: string | null; projectId: string
-  createdAt: string; updatedAt: string
-  creator: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-  edits: { id: string; summary: string | null; createdAt: string; user: { id: string; username: string; alias: string | null; avatarUrl: string | null } }[]
-}
-
-interface Selection { clientId: string; projectId: string }
-
 type ViewMode = 'icons' | 'list' | 'columns' | 'gallery'
-type DragItem = { type: 'folder' | 'document' | 'file' | 'link'; id: string }
-type SelectableItem = { type: 'folder' | 'document' | 'file' | 'link'; id: string; name: string }
 
 interface ColumnEntry {
   parentId: string | null
@@ -62,13 +68,6 @@ interface ColumnEntry {
   selectedId: string | null
 }
 
-interface AuditLogEntry {
-  id: string; action: string; targetType: string; targetId: string; targetName: string
-  details: Record<string, unknown> | null; projectId: string | null; createdAt: string
-  projectName: string | null; clientName: string | null
-  user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-}
-
 interface RecycleBinItem {
   id: string; type: string; name: string; deletedAt: string; expiresAt: string
   expired: boolean; parent?: string
@@ -77,10 +76,21 @@ interface RecycleBinItem {
   deletedBy: { id: string; username: string; alias: string | null; avatarUrl: string | null } | null
 }
 
+// P3.25 — search results across the report tree.
+type SearchHit =
+  | { kind: 'client'; id: string; label: string; clientId: string }
+  | { kind: 'project'; id: string; label: string; clientId: string }
+  | { kind: 'folder'; id: string; label: string; projectId: string }
+  | { kind: 'document'; id: string; label: string; projectId: string; folderId: string | null; snippet?: string }
+  | { kind: 'file'; id: string; label: string; projectId: string; folderId: string | null }
+  | { kind: 'link'; id: string; label: string; projectId: string; folderId: string | null }
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SIDEBAR_W = 240
-const MAX_FILE_SIZE = 50 * 1024 * 1024
+// v1.5.2208 — bumped from 50MB to 500MB. R2 multipart cap is 5GB; the
+// signed-upload route streams direct-to-R2 so we don't pay for the
+// bandwidth twice.
+const MAX_FILE_SIZE = 500 * 1024 * 1024
 const VIEW_MODE_KEY = 'report-view-mode'
 
 // ─── Types for pending report navigation ──────────────────────────────────────
@@ -100,10 +110,29 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   pendingReport?: PendingReport | null
   onPendingReportHandled?: () => void
 }) {
-  const [clients, setClients] = useState<Client[]>([])
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [selection, setSelection] = useState<Selection | null>(null)
-  const [loading, setLoading] = useState(true)
+  // ── API helper (defined first; hooks below depend on it) ────────────────
+  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
+    const res = await fetch(`${config.apiBase}${path}`, {
+      ...opts,
+      headers: {
+        ...(opts?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        Authorization: `Bearer ${config.token}`,
+        ...opts?.headers,
+      },
+    })
+    return res
+  }, [config])
+
+  // Sidebar tree (clients/projects/expand/selection) lives in a hook —
+  // see useReportTree.ts. Same identifiers preserved via destructure.
+  const {
+    clients, setClients,
+    expanded, setExpanded,
+    selection, setSelection,
+    loading,
+    load: loadClients,
+    toggleExpand,
+  } = useReportTree(apiFetch)
 
   // inline editing
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -119,17 +148,25 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [folderPath, setFolderPath] = useState<{ id: string | null; name: string }[]>([])
   const [contentLoading, setContentLoading] = useState(false)
+  // Surfaced when /contents returns non-2xx OR throws. Without this the folder
+  // click looked silent — spinner cleared, view stayed on the old folder.
+  const [contentError, setContentError] = useState<string | null>(null)
 
-  // document editor
-  const [openDoc, setOpenDoc] = useState<DocDetail | null>(null)
-  // feedback link viewer
-  const [openLinkId, setOpenLinkId] = useState<string | null>(null)
-  const [linkUrlInput, setLinkUrlInput] = useState<string | null>(null)
-  const [docLoading, setDocLoading] = useState(false)
-  const [docSaving, setDocSaving] = useState(false)
-  const [docTitle, setDocTitle] = useState('')
-  const [docContent, setDocContent] = useState('')
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Document/link viewer state lives in useReportDocument. The parent
+  // wires onDocumentSaved → patches its `documents` list with the
+  // fresh title/updatedAt/edits the server returned.
+  const {
+    openDoc, setOpenDoc,
+    openLinkId, setOpenLinkId,
+    linkUrlInput, setLinkUrlInput,
+    docLoading, docSaving, docTitle, docContent,
+    openDocument,
+    handleDocContentChange, handleDocTitleChange,
+    closeIfOpen: closeDocIfOpen,
+    closeDoc,
+  } = useReportDocument(apiFetch, (doc) => {
+    setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, title: doc.title, updatedAt: doc.updatedAt, edits: doc.edits } : d))
+  })
 
   // file upload
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -140,17 +177,25 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     try { return (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || 'icons' } catch { return 'icons' }
   })
 
-  // drag-and-drop upload
-  const [dragOver, setDragOver] = useState(false)
-  const dragCounterRef = useRef(0)
-
-  // drag-to-move
-  const [draggingItem, setDraggingItem] = useState<DragItem | null>(null)
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
-  const [dropColIdx, setDropColIdx] = useState<number | null>(null)
+  // drag/drop state + stateless handlers — see useReportDrag.ts. The drop
+  // handlers (handleDrop / onFolderDrop / onColumnDrop) stay inline since
+  // they need the parent's content state.
+  const {
+    dragOver,
+    draggingItem, setDraggingItem,
+    dropTargetId, setDropTargetId,
+    dropColIdx, setDropColIdx,
+    handleDragEnter, handleDragLeave, handleDragOver,
+    onItemDragStart, onItemDragEnd,
+    resetDragOver,
+  } = useReportDrag()
 
   // share link
   const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  // Cross-project drop target highlighted in the tree (lives here so we
+  // can clear it from drop handlers without prop-drilling further).
+  const [treeDropTargetId, setTreeDropTargetId] = useState<string | null>(null)
 
   // column view
   const [subColumns, setSubColumns] = useState<ColumnEntry[]>([])
@@ -161,60 +206,74 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
   // gallery view
   const [galleryIdx, setGalleryIdx] = useState(0)
 
+  // search (P3.25) — debounced search + hits live in useReportSearch
+  const {
+    term: searchTerm, setTerm: setSearchTerm,
+    hits: searchHits,
+  } = useReportSearch(apiFetch)
+
   // lightbox
   const [lightboxFile, setLightboxFile] = useState<RFile | null>(null)
 
-  // Activity Log & Recycle Bin panels
-  const [showActivityLog, setShowActivityLog] = useState(false)
-  const [activityLogs, setActivityLogs] = useState<AuditLogEntry[]>([])
-  const [activityLoading, setActivityLoading] = useState(false)
-  const [activityPage, setActivityPage] = useState(1)
-  const [activityTotal, setActivityTotal] = useState(0)
-
-  const [showRecycleBin, setShowRecycleBin] = useState(false)
-  const [recycleBinItems, setRecycleBinItems] = useState<RecycleBinItem[]>([])
-  const [recycleBinLoading, setRecycleBinLoading] = useState(false)
-  const [recycleBinExpanded, setRecycleBinExpanded] = useState<Set<string>>(new Set())
+  // Activity Log + Recycle Bin + Members panels — extracted into hooks
+  // (P1-1 follow-up). Renamed-in-place via destructuring so the rest of
+  // this file's JSX keeps using the same identifiers.
 
   // Confirmation dialog
   const [confirmDelete, setConfirmDelete] = useState<{ name: string; action: () => void } | null>(null)
 
-  // Multi-select
-  const [selectedItems, setSelectedItems] = useState<Map<string, SelectableItem>>(new Map())
-  const [rubberBand, setRubberBand] = useState<{ startX: number; startY: number; x: number; y: number } | null>(null)
-  const contentAreaRef = useRef<HTMLDivElement>(null)
+  // Multi-select state + Cmd-click + rubber-band — see useReportMultiSelect.
+  const {
+    selectedItems, setSelectedItems,
+    rubberBand,
+    contentAreaRef,
+    isItemSelected, handleItemClick, onContentMouseDown,
+  } = useReportMultiSelect({
+    selectionId: selection?.projectId,
+    folderId: currentFolderId,
+    viewMode,
+  })
 
-  // ── API helper ──────────────────────────────────────────────────────────
-
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: {
-        ...(opts?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-        Authorization: `Bearer ${config.token}`,
-        ...opts?.headers,
-      },
-    })
-    return res
-  }, [config])
-
-  // ── Load clients ────────────────────────────────────────────────────────
-
-  const loadClients = useCallback(async () => {
-    const res = await apiFetch('/api/report/clients')
-    if (res.ok) {
-      const data = await res.json()
-      setClients(data.clients)
-    }
-    setLoading(false)
-  }, [apiFetch])
-
+  // Load clients on mount (the hook owns clients state; this just triggers it).
   useEffect(() => { loadClients() }, [loadClients])
 
-  // Poll for client/project updates every 5s so other users' changes appear quickly
+  const handleSearchHitOpen = useCallback((hit: SearchHit) => {
+    if (hit.kind === 'client') {
+      setExpanded((prev) => ({ ...prev, [hit.clientId]: true }))
+      return
+    }
+    if (hit.kind === 'project') {
+      const client = clients.find((c) => c.id === hit.clientId)
+      if (!client) return
+      setExpanded((prev) => ({ ...prev, [hit.clientId]: true }))
+      setSelection({ clientId: hit.clientId, projectId: hit.id })
+      loadContents(hit.id, null)
+      return
+    }
+    // folder / document / file / link — find owning client/project, then navigate.
+    const project = clients.flatMap((c) => c.projects.map((p) => ({ ...p, clientId: c.id }))).find((p) => p.id === hit.projectId)
+    if (!project) return
+    setExpanded((prev) => ({ ...prev, [project.clientId]: true }))
+    setSelection({ clientId: project.clientId, projectId: project.id })
+    if (hit.kind === 'folder') {
+      loadContents(project.id, hit.id)
+    } else {
+      loadContents(project.id, hit.folderId)
+    }
+  }, [clients])
+
+  // SSE-driven refresh: react to `bundy-report-tree-update` events emitted
+  // when any user creates / renames / moves / deletes a tree node. Replaces
+  // the 5s polling we used to do here. We still keep a slow keepalive poll
+  // (60s) as a safety net for missed events / SSE disconnects.
   useEffect(() => {
-    const id = setInterval(loadClients, 5000)
-    return () => clearInterval(id)
+    const onTreeUpdate = () => { loadClients() }
+    window.addEventListener('bundy-report-tree-update', onTreeUpdate)
+    const keepalive = setInterval(loadClients, 60_000)
+    return () => {
+      window.removeEventListener('bundy-report-tree-update', onTreeUpdate)
+      clearInterval(keepalive)
+    }
   }, [loadClients])
 
   // ── Handle pending report deep-link ─────────────────────────────────────
@@ -261,64 +320,55 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     }
   }, [pendingReport, loading, clients]) // eslint-disable-line
 
-  // ── Activity Log ────────────────────────────────────────────────────────
+  // ── Activity Log + Recycle Bin + Members hooks (P1-1 follow-up) ────────
 
-  const loadActivityLogs = useCallback(async (page = 1) => {
-    setActivityLoading(true)
-    const res = await apiFetch(`/api/report/audit-log?page=${page}&limit=50`)
-    if (res.ok) {
-      const data = await res.json()
-      setActivityLogs(data.logs)
-      setActivityTotal(data.total)
-      setActivityPage(data.page)
-    }
-    setActivityLoading(false)
-  }, [apiFetch])
+  const {
+    show: showActivityLog, setShow: setShowActivityLog,
+    logs: activityLogs, loading: activityLoading,
+    page: activityPage, total: activityTotal,
+    load: loadActivityLogs,
+  } = useActivityLog(apiFetch)
 
-  // ── Recycle Bin ─────────────────────────────────────────────────────────
+  const {
+    show: showRecycleBin, setShow: setShowRecycleBin,
+    items: recycleBinItems, loading: recycleBinLoading,
+    expanded: recycleBinExpanded, setExpanded: setRecycleBinExpanded,
+    load: loadRecycleBin,
+    restore: restoreItem,
+    permanentDelete: permanentDeleteItem,
+  } = useRecycleBin(apiFetch, () => {
+    loadClients() // refresh sidebar
+    if (selection) loadContents(selection.projectId, currentFolderId)
+  })
 
-  const loadRecycleBin = useCallback(async () => {
-    setRecycleBinLoading(true)
-    const res = await apiFetch('/api/report/recycle-bin')
-    if (res.ok) {
-      const data = await res.json()
-      setRecycleBinItems(data.items)
-    }
-    setRecycleBinLoading(false)
-  }, [apiFetch])
-
-  const restoreItem = useCallback(async (id: string, type: string) => {
-    const res = await apiFetch('/api/report/recycle-bin', {
-      method: 'POST', body: JSON.stringify({ id, type }),
-    })
-    if (res.ok) {
-      loadRecycleBin() // reload to reflect cascade restore of children
-      loadClients() // refresh sidebar
-      if (selection) loadContents(selection.projectId, currentFolderId)
-    }
-  }, [apiFetch, loadClients, loadRecycleBin, selection, currentFolderId]) // eslint-disable-line
-
-  const permanentDeleteItem = useCallback(async (id: string, type: string) => {
-    const res = await apiFetch(`/api/report/recycle-bin?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`, { method: 'DELETE' })
-    if (res.ok) {
-      loadRecycleBin() // reload to reflect cascade deletion of children
-    }
-  }, [apiFetch])
+  const {
+    show: showMembers, setShow: setShowMembers,
+    members, allUsers, loading: membersLoading,
+    load: loadMembers, add: addMember, remove: removeMember,
+  } = useReportMembers(apiFetch)
 
   // ── Load project contents ────────────────────────────────────────────────
 
   const loadContents = useCallback(async (projectId: string, folderId: string | null) => {
     setContentLoading(true)
+    setContentError(null)
     const qs = folderId ? `?folderId=${folderId}` : ''
-    const res = await apiFetch(`/api/report/projects/${projectId}/contents${qs}`)
-    if (res.ok) {
-      const data = await res.json()
-      setFolders(data.folders)
-      setDocuments(data.documents)
-      setFiles(data.files)
-      setLinks(data.links || [])
+    try {
+      const res = await apiFetch(`/api/report/projects/${projectId}/contents${qs}`)
+      if (res.ok) {
+        const data = await res.json()
+        setFolders(data.folders)
+        setDocuments(data.documents)
+        setFiles(data.files)
+        setLinks(data.links || [])
+      } else {
+        setContentError(`Failed to load (HTTP ${res.status})`)
+      }
+    } catch (err) {
+      setContentError(err instanceof Error ? err.message : 'Failed to load contents')
+    } finally {
+      setContentLoading(false)
     }
-    setContentLoading(false)
   }, [apiFetch])
 
   useEffect(() => {
@@ -335,14 +385,14 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   async function addClient() {
     const res = await apiFetch('/api/report/clients', {
-      method: 'POST', body: JSON.stringify({ name: 'New Client' }),
+      method: 'POST', body: JSON.stringify({ name: 'New Playground' }),
     })
     if (res.ok) {
       const { client } = await res.json()
       setClients(prev => [...prev, { ...client, projects: [] }])
       setExpanded(prev => ({ ...prev, [client.id]: true }))
       setEditingId(client.id)
-      setEditingValue('New Client')
+      setEditingValue('New Playground')
     }
   }
 
@@ -520,52 +570,13 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     }
   }
 
-  async function openDocument(docId: string) {
-    setDocLoading(true)
-    setOpenLinkId(null)
-    const res = await apiFetch(`/api/report/documents/${docId}`)
-    if (res.ok) {
-      const { document: doc } = await res.json()
-      setOpenDoc(doc)
-      setDocTitle(doc.title)
-      setDocContent(doc.content)
-    }
-    setDocLoading(false)
-  }
-
-  function handleDocContentChange(newContent: string) {
-    setDocContent(newContent)
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => saveDocument(newContent), 1500)
-  }
-
-  function handleDocTitleChange(newTitle: string) {
-    setDocTitle(newTitle)
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => saveDocument(undefined, newTitle), 1500)
-  }
-
-  async function saveDocument(content?: string, title?: string) {
-    if (!openDoc) return
-    setDocSaving(true)
-    const body: Record<string, string> = {}
-    if (content !== undefined) body.content = content
-    if (title !== undefined) body.title = title
-    const res = await apiFetch(`/api/report/documents/${openDoc.id}`, {
-      method: 'PATCH', body: JSON.stringify(body),
-    })
-    if (res.ok) {
-      const { document: doc } = await res.json()
-      setOpenDoc(doc)
-      setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, title: doc.title, updatedAt: doc.updatedAt, edits: doc.edits } : d))
-    }
-    setDocSaving(false)
-  }
+  // openDocument / handleDocContentChange / handleDocTitleChange / saveDocument
+  // live in useReportDocument.
 
   async function deleteDocument(docId: string) {
     setDocuments(prev => prev.filter(d => d.id !== docId))
     setSubColumns(prev => prev.map(sc => ({ ...sc, documents: sc.documents.filter(d => d.id !== docId) })))
-    if (openDoc?.id === docId) setOpenDoc(null)
+    closeDocIfOpen(docId)
     setMenuId(null)
     setCtxMenu(null)
     await apiFetch(`/api/report/documents/${docId}`, { method: 'DELETE' })
@@ -640,47 +651,120 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   async function uploadFileObj(file: globalThis.File) {
     if (!selection) return
-    if (file.size > MAX_FILE_SIZE) { alert('File must be under 50MB'); return }
+    if (file.size > MAX_FILE_SIZE) { alert('File must be under 500MB'); return }
     setUploading(true)
-    const formData = new FormData()
-    formData.append('file', file as Blob)
-    if (currentFolderId) formData.append('folderId', currentFolderId)
-    const res = await apiFetch(`/api/report/projects/${selection.projectId}/upload`, {
-      method: 'POST', body: formData,
+    const tracker = trackUpload({ name: file.name, surface: 'report', total: file.size })
+    // Phase 3 — try direct-to-R2 first; fall back to multipart on 501 / error.
+    const r2 = await tryDirectR2Upload({
+      signEndpoint: `/api/report/projects/${selection.projectId}/upload/sign`,
+      signBody: { folderId: currentFolderId ?? null },
+      file,
+      onProgress: (pct) => tracker.onProgress(pct),
     })
-    if (res.ok) {
-      const { file: uploaded } = await res.json()
+    if (r2.ok) {
+      const uploaded = (r2.data as { file: RFile }).file
       setFiles(prev => [uploaded, ...prev])
+      tracker.success()
+      setUploading(false)
+      return
+    }
+    // Multipart fallback — XHR so we can keep reporting progress.
+    try {
+      const uploaded = await xhrUploadJson<{ file: RFile }>(
+        `${config.apiBase}/api/report/projects/${selection.projectId}/upload`,
+        config.token,
+        (() => {
+          const fd = new FormData()
+          fd.append('file', file as Blob)
+          if (currentFolderId) fd.append('folderId', currentFolderId)
+          return fd
+        })(),
+        (loaded, total) => tracker.onProgress(total > 0 ? (loaded / total) * 100 : 0),
+      )
+      setFiles(prev => [uploaded.file, ...prev])
+      tracker.success()
+    } catch (err) {
+      tracker.fail(err instanceof Error ? err.message : String(err))
     }
     setUploading(false)
   }
 
-  function handleDragEnter(e: React.DragEvent) {
-    e.preventDefault(); e.stopPropagation()
-    dragCounterRef.current++
-    if (e.dataTransfer.types.includes('Files')) setDragOver(true)
-  }
-  function handleDragLeave(e: React.DragEvent) {
-    e.preventDefault(); e.stopPropagation()
-    dragCounterRef.current--
-    if (dragCounterRef.current === 0) setDragOver(false)
-  }
-  function handleDragOver(e: React.DragEvent) { e.preventDefault(); e.stopPropagation() }
+  // handleDragEnter/Leave/Over + onItemDragStart/End live in useReportDrag.
   async function handleDrop(e: React.DragEvent) {
     e.preventDefault(); e.stopPropagation()
-    setDragOver(false); dragCounterRef.current = 0
+    resetDragOver()
     const droppedFiles = Array.from(e.dataTransfer.files)
     for (const f of droppedFiles) await uploadFileObj(f)
   }
 
   // ── Drag-to-move items ──────────────────────────────────────────────────
 
-  function onItemDragStart(e: React.DragEvent, item: DragItem) {
-    setDraggingItem(item)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', JSON.stringify(item))
+  // P3.24 — Reorder a sibling list. Called when an item is dropped onto another
+  // item of the SAME kind in the same folder/project. If kinds differ or the
+  // ids are scoped differently, the caller should fall back to the move handler.
+  async function reorderSibling(kind: 'folder' | 'document' | 'file' | 'link', draggedId: string, targetId: string) {
+    if (draggedId === targetId) return false
+    const list = kind === 'folder' ? folders
+      : kind === 'document' ? documents
+      : kind === 'file' ? files
+      : links
+    const fromIdx = list.findIndex((x) => x.id === draggedId)
+    const toIdx = list.findIndex((x) => x.id === targetId)
+    if (fromIdx < 0 || toIdx < 0) return false
+    const next = [...list]
+    const [moved] = next.splice(fromIdx, 1)
+    next.splice(toIdx, 0, moved)
+    if (kind === 'folder') setFolders(next as RFolder[])
+    else if (kind === 'document') setDocuments(next as RDocument[])
+    else if (kind === 'file') setFiles(next as RFile[])
+    else setLinks(next as RLink[])
+    // Server persists the new order in one shot.
+    await apiFetch('/api/report/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ kind, ids: next.map((x) => x.id) }),
+    })
+    return true
   }
-  function onItemDragEnd() { setDraggingItem(null); setDropTargetId(null); setDropColIdx(null) }
+
+  // Move the currently-dragging item to another playground/project's root.
+  // Backend supports projectId on PATCH for files, folders, and documents
+  // (see bundy/src/app/api/report/{files,folders,documents}/[id]/route.ts).
+  async function moveToProject(targetClientId: string, targetProjectId: string) {
+    if (!draggingItem) return
+    const item = draggingItem
+    setDraggingItem(null)
+    setTreeDropTargetId(null)
+    if (!selection || targetProjectId === selection.projectId) return
+    if (item.type === 'link') return // links aren't supported across projects yet
+
+    // Optimistic — remove from current view
+    if (item.type === 'folder') setFolders(prev => prev.filter(f => f.id !== item.id))
+    else if (item.type === 'document') setDocuments(prev => prev.filter(d => d.id !== item.id))
+    else if (item.type === 'file') setFiles(prev => prev.filter(f => f.id !== item.id))
+    setSubColumns(prev => prev.map(sc => ({
+      ...sc,
+      folders: item.type === 'folder' ? sc.folders.filter(f => f.id !== item.id) : sc.folders,
+      documents: item.type === 'document' ? sc.documents.filter(d => d.id !== item.id) : sc.documents,
+      files: item.type === 'file' ? sc.files.filter(f => f.id !== item.id) : sc.files,
+    })))
+
+    const path =
+      item.type === 'folder' ? `/api/report/folders/${item.id}` :
+      item.type === 'document' ? `/api/report/documents/${item.id}` :
+      `/api/report/files/${item.id}`
+    const res = await apiFetch(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ projectId: targetProjectId, folderId: null }),
+    })
+    if (!res.ok) {
+      // Reload to revert optimistic remove on failure.
+      if (selection) loadContents(selection.projectId, currentFolderId)
+      return
+    }
+    // Open the destination project so the user sees the result.
+    setExpanded(prev => ({ ...prev, [targetClientId]: true }))
+    setSelection({ clientId: targetClientId, projectId: targetProjectId })
+  }
 
   function onFolderDragOver(e: React.DragEvent, folderId: string) {
     e.preventDefault(); e.stopPropagation()
@@ -702,11 +786,28 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
       // Upload directly into the target folder
       for (const f of Array.from(e.dataTransfer.files)) {
         if (!selection || f.size > MAX_FILE_SIZE) continue
-        const formData = new FormData()
-        formData.append('file', f as Blob)
-        formData.append('folderId', targetFolderId)
-        const res = await apiFetch(`/api/report/projects/${selection.projectId}/upload`, { method: 'POST', body: formData })
-        if (res.ok) { /* item goes into subfolder, no need to update current list */ }
+        const tracker = trackUpload({ name: f.name, surface: 'report', total: f.size })
+        // Phase 3 — try direct-to-R2 first; fall back to multipart on 501 / error.
+        const r2 = await tryDirectR2Upload({
+          signEndpoint: `/api/report/projects/${selection.projectId}/upload/sign`,
+          signBody: { folderId: targetFolderId },
+          file: f,
+          onProgress: (pct) => tracker.onProgress(pct),
+        })
+        if (r2.ok) { tracker.success(); continue }
+        try {
+          const fd = new FormData()
+          fd.append('file', f as Blob)
+          fd.append('folderId', targetFolderId)
+          await xhrUploadJson<{ file: RFile }>(
+            `${config.apiBase}/api/report/projects/${selection.projectId}/upload`,
+            config.token, fd,
+            (loaded, total) => tracker.onProgress(total > 0 ? (loaded / total) * 100 : 0),
+          )
+          tracker.success()
+        } catch (err) {
+          tracker.fail(err instanceof Error ? err.message : String(err))
+        }
       }
       return
     }
@@ -802,78 +903,9 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     setMenuId(null)
   }
 
-  // ── Multi-select ─────────────────────────────────────────────────────
-
-  const selKey = (type: string, id: string) => `${type}-${id}`
-
-  function handleItemClick(e: React.MouseEvent, item: SelectableItem) {
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault()
-      e.stopPropagation()
-      setSelectedItems(prev => {
-        const next = new Map(prev)
-        const k = selKey(item.type, item.id)
-        if (next.has(k)) next.delete(k); else next.set(k, item)
-        return next
-      })
-      return true // handled
-    }
-    // If we have multi-selection and click without Cmd, clear
-    if (selectedItems.size > 0) {
-      setSelectedItems(new Map())
-    }
-    return false // not handled — do normal action
-  }
-
-  function isItemSelected(type: string, id: string) {
-    return selectedItems.has(selKey(type, id))
-  }
-
-  // Clear multi-select on navigation/view change
-  useEffect(() => { setSelectedItems(new Map()) }, [selection?.projectId, currentFolderId, viewMode])
-
-  // Rubber-band selection
-  function onContentMouseDown(e: React.MouseEvent) {
-    // Only start rubber band on left click, no Cmd (Cmd+click is for toggle)
-    if (e.button !== 0 || e.metaKey || e.ctrlKey) return
-    // Don't start if clicking on an interactive element
-    const target = e.target as HTMLElement
-    if (target.closest('button') || target.closest('input') || target.closest('[draggable="true"]')) return
-    const rect = contentAreaRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const startX = e.clientX
-    const startY = e.clientY
-    setRubberBand({ startX, startY, x: startX, y: startY })
-    setSelectedItems(new Map())
-
-    const onMouseMove = (ev: MouseEvent) => {
-      setRubberBand({ startX, startY, x: ev.clientX, y: ev.clientY })
-      // Hit-test items
-      if (!contentAreaRef.current) return
-      const itemEls = contentAreaRef.current.querySelectorAll('[data-sel-type]')
-      const next = new Map<string, SelectableItem>()
-      const rx = Math.min(startX, ev.clientX), ry = Math.min(startY, ev.clientY)
-      const rw = Math.abs(ev.clientX - startX), rh = Math.abs(ev.clientY - startY)
-      itemEls.forEach(el => {
-        const r = el.getBoundingClientRect()
-        if (r.right > rx && r.left < rx + rw && r.bottom > ry && r.top < ry + rh) {
-          const type = el.getAttribute('data-sel-type') as 'folder' | 'document' | 'file' | 'link'
-          const id = el.getAttribute('data-sel-id')!
-          const name = el.getAttribute('data-sel-name')!
-          next.set(selKey(type, id), { type, id, name })
-        }
-      })
-      setSelectedItems(next)
-    }
-    const onMouseUp = () => {
-      setRubberBand(null)
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }
-
+  // selKey + handleItemClick + isItemSelected + onContentMouseDown live in
+  // useReportMultiSelect. bulkDeleteSelected stays here because it needs
+  // the per-type delete handlers below.
   async function bulkDeleteSelected() {
     const items = [...selectedItems.values()]
     if (items.length === 0) return
@@ -895,15 +927,58 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   // ── View mode ───────────────────────────────────────────────────────────
 
-  function changeViewMode(mode: ViewMode) {
+  async function changeViewMode(mode: ViewMode) {
+    const prevMode = viewMode
     setViewMode(mode)
     try { localStorage.setItem(VIEW_MODE_KEY, mode) } catch { /* */ }
+
+    // v1.5.2111 — when switching INTO Columns view from elsewhere while
+    // we're drilled into nested folders, reset col0 to project root and
+    // pre-populate subColumns with the path back to the current folder
+    // so the Finder-style cascade reflects the full structure.
+    if (mode === 'columns' && prevMode !== 'columns' && selection && folderPath.length > 0) {
+      const path = [...folderPath]
+      // Reset breadcrumb / current folder to root.
+      // Skip the reset-effect that would otherwise wipe the populated cols.
+      skipNextColumnResetRef.current = true
+      setCurrentFolderId(null)
+      setFolderPath([])
+      // Load root contents into col0.
+      await loadContents(selection.projectId, null)
+      // Walk the path, fetching each level's children.
+      const builtSubCols: ColumnEntry[] = []
+      for (const crumb of path) {
+        if (!crumb.id) continue
+        const res = await apiFetch(`/api/report/projects/${selection.projectId}/contents?folderId=${crumb.id}`)
+        if (!res.ok) break
+        const data = await res.json()
+        builtSubCols.push({
+          parentId: crumb.id,
+          folders: data.folders || [],
+          documents: data.documents || [],
+          files: data.files || [],
+          links: data.links || [],
+          selectedId: null,
+        })
+      }
+      setSubColumns(builtSubCols)
+      // Mark each column's selection as the next folder down so the
+      // visual breadcrumb-of-selections is preserved.
+      setCol0Selected(path[0]?.id ?? null)
+    }
   }
 
   // ── Column view management ──────────────────────────────────────────────
 
+  // v1.5.2111 — guard for the changeViewMode→Columns flow which deliberately
+  // populates subColumns and would otherwise be wiped by the reset effect.
+  const skipNextColumnResetRef = useRef(false)
   // Reset column/gallery state when navigation changes
   useEffect(() => {
+    if (skipNextColumnResetRef.current) {
+      skipNextColumnResetRef.current = false
+      return
+    }
     setSubColumns([]); setCol0Selected(null); setColPreview(null); setGalleryIdx(0)
   }, [selection?.projectId, currentFolderId])
 
@@ -1030,14 +1105,26 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
     URL.revokeObjectURL(url)
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
-
-  function toggleExpand(clientId: string) {
-    setExpanded(prev => ({ ...prev, [clientId]: !prev[clientId] }))
+  // P3.29 — open the file in the default browser. Uses the desktop-bridge so
+  // the user is auto-authenticated on the web side, otherwise the /uploads
+  // route would 401 in the browser.
+  function openFileInBrowser(file: RFile) {
+    const publicBase = config.apiBase
+    const target = file.url
+    const bridgeUrl = `${publicBase}/api/auth/desktop-bridge?token=${encodeURIComponent(config.token)}&redirect=${encodeURIComponent(target)}`
+    window.electronAPI.openExternal(bridgeUrl)
   }
 
-  const selectedClient = selection ? clients.find(c => c.id === selection.clientId) : null
-  const selectedProject = selectedClient?.projects.find(p => p.id === selection?.projectId)
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  const selectedClient = useMemo(
+    () => (selection ? clients.find(c => c.id === selection.clientId) ?? null : null),
+    [clients, selection],
+  )
+  const selectedProject = useMemo(
+    () => selectedClient?.projects.find(p => p.id === selection?.projectId) ?? null,
+    [selectedClient, selection],
+  )
 
   function formatSize(bytes: number) {
     if (bytes < 1024) return `${bytes} B`
@@ -1067,163 +1154,39 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden', height: '100%' }}>
-      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      <div style={{
-        width: SIDEBAR_W, flexShrink: 0,
-        borderRight: `1px solid ${C.separator}`,
-        background: 'rgba(22, 22, 22, 0.5)',
-        backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-      }}>
-        {/* Header */}
-        <div style={{
-          padding: '14px 16px 10px', borderBottom: `1px solid ${C.separator}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
-        }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: C.text, letterSpacing: 0.2 }}>Client Report</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <button onClick={() => { setShowActivityLog(true); loadActivityLogs(1) }} title="Activity Log" style={{ ...iconBtn24, color: C.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
-              <Clock size={14} />
-            </button>
-            {auth.role === 'admin' && (
-              <button onClick={() => { setShowRecycleBin(true); loadRecycleBin() }} title="Recycle Bin" style={{ ...iconBtn24, color: C.textMuted }}
-                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
-                <Trash2 size={14} />
-              </button>
-            )}
-            <button onClick={addClient} title="Add Client" style={{ ...iconBtn24, color: C.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.background = C.bgHover; e.currentTarget.style.color = C.text }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted }}>
-              <Plus size={16} />
-            </button>
-          </div>
-        </div>
 
-        {/* Client / Project tree */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '6px 0' }}>
-          {loading && (
-            <div style={{ padding: 24, display: 'flex', justifyContent: 'center' }}>
-              <Loader size={20} style={{ color: C.textMuted, animation: 'spin 1s linear infinite' }} />
-            </div>
-          )}
-
-          {!loading && clients.length === 0 && (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: C.textMuted }}>
-              <Building2 size={28} strokeWidth={1.2} style={{ opacity: 0.35, marginBottom: 8 }} />
-              <p style={{ fontSize: 12, lineHeight: 1.5 }}>No clients yet</p>
-              <button onClick={addClient} style={{
-                marginTop: 10, padding: '5px 12px', borderRadius: 6, border: 'none',
-                background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600,
-                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
-              }}>
-                <Plus size={12} /> Add Client
-              </button>
-            </div>
-          )}
-
-          {clients.map(client => {
-            const isExpanded = expanded[client.id] ?? false
-            return (
-              <div key={client.id}>
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 4,
-                  padding: '4px 8px', margin: '0 6px', borderRadius: 6,
-                  cursor: 'pointer', position: 'relative',
-                  background: menuId === client.id ? C.bgHover : 'transparent',
-                  transition: 'background 0.1s',
-                }}
-                  onClick={() => toggleExpand(client.id)}
-                  onMouseEnter={e => { if (menuId !== client.id) e.currentTarget.style.background = C.bgHover }}
-                  onMouseLeave={e => { if (menuId !== client.id) e.currentTarget.style.background = 'transparent' }}>
-                  <span style={{ color: C.textMuted, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                    {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </span>
-                  <Building2 size={14} style={{ color: C.textMuted, flexShrink: 0 }} />
-                  {editingId === client.id ? (
-                    <InlineInput value={editingValue} onChange={setEditingValue}
-                      onConfirm={() => renameClient(client.id, editingValue)} onCancel={() => setEditingId(null)} />
-                  ) : (
-                    <span onDoubleClick={e => { e.stopPropagation(); setEditingId(client.id); setEditingValue(client.name) }}
-                      style={{ flex: 1, fontSize: 12, fontWeight: 600, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '24px' }}>
-                      {client.name}
-                    </span>
-                  )}
-                  {editingId !== client.id && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                      <button onClick={e => { e.stopPropagation(); addProject(client.id) }} title="Add Project"
-                        style={iconBtnSmall} onMouseEnter={e => { e.currentTarget.style.color = C.text }}
-                        onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}>
-                        <Plus size={13} />
-                      </button>
-                      <button onClick={e => { e.stopPropagation(); setMenuId(menuId === client.id ? null : client.id) }}
-                        style={iconBtnSmall} onMouseEnter={e => { e.currentTarget.style.color = C.text }}
-                        onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}>
-                        <MoreHorizontal size={13} />
-                      </button>
-                    </div>
-                  )}
-                  {menuId === client.id && (
-                    <ContextMenu
-                      onRename={() => { setEditingId(client.id); setEditingValue(client.name); setMenuId(null) }}
-                      onDelete={() => { setMenuId(null); setConfirmDelete({ name: client.name, action: () => deleteClient(client.id) }) }} onClose={() => setMenuId(null)} />
-                  )}
-                </div>
-
-                {isExpanded && (
-                  <div style={{ marginLeft: 18 }}>
-                    {client.projects.length === 0 && (
-                      <div style={{ padding: '4px 8px 4px 22px', fontSize: 11, color: C.textMuted, fontStyle: 'italic' }}>No projects</div>
-                    )}
-                    {client.projects.map(project => {
-                      const isSelected = selection?.projectId === project.id
-                      return (
-                        <div key={project.id}
-                          onClick={() => setSelection({ clientId: client.id, projectId: project.id })}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            padding: '4px 8px 4px 22px', margin: '0 6px', borderRadius: 6,
-                            cursor: 'pointer', position: 'relative',
-                            background: isSelected ? C.sidebarActive : menuId === project.id ? C.bgHover : 'transparent',
-                            transition: 'background 0.1s',
-                          }}
-                          onMouseEnter={e => { if (!isSelected && menuId !== project.id) e.currentTarget.style.background = C.bgHover }}
-                          onMouseLeave={e => { if (!isSelected && menuId !== project.id) e.currentTarget.style.background = 'transparent' }}>
-                          <Briefcase size={13} style={{ color: isSelected ? C.accent : C.textMuted, flexShrink: 0 }} />
-                          {editingId === project.id ? (
-                            <InlineInput value={editingValue} onChange={setEditingValue}
-                              onConfirm={() => renameProject(client.id, project.id, editingValue)} onCancel={() => setEditingId(null)} />
-                          ) : (
-                            <span onDoubleClick={() => { setEditingId(project.id); setEditingValue(project.name) }}
-                              style={{ flex: 1, fontSize: 12, fontWeight: isSelected ? 600 : 400, color: isSelected ? C.text : C.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '24px' }}>
-                              {project.name}
-                            </span>
-                          )}
-                          {editingId !== project.id && (
-                            <button onClick={e => { e.stopPropagation(); setMenuId(menuId === project.id ? null : project.id) }}
-                              style={{ ...iconBtnSmall, opacity: isSelected || menuId === project.id ? 1 : 0, transition: 'opacity 0.1s' }}
-                              onMouseEnter={e => { e.currentTarget.style.color = C.text; e.currentTarget.style.opacity = '1' }}
-                              onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}>
-                              <MoreHorizontal size={13} />
-                            </button>
-                          )}
-                          {menuId === project.id && (
-                            <ContextMenu
-                              onRename={() => { setEditingId(project.id); setEditingValue(project.name); setMenuId(null) }}
-                              onDelete={() => { setMenuId(null); setConfirmDelete({ name: project.name, action: () => deleteProject(client.id, project.id) }) }} onClose={() => setMenuId(null)} />
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      <ReportTree
+        authRole={auth.role}
+        clients={clients}
+        expanded={expanded}
+        selection={selection}
+        loading={loading}
+        toggleExpand={toggleExpand}
+        setSelection={setSelection}
+        searchTerm={searchTerm}
+        setSearchTerm={setSearchTerm}
+        searchHits={searchHits}
+        onSearchHitOpen={handleSearchHitOpen}
+        editingId={editingId}
+        setEditingId={setEditingId}
+        editingValue={editingValue}
+        setEditingValue={setEditingValue}
+        menuId={menuId}
+        setMenuId={setMenuId}
+        onOpenActivityLog={() => { setShowActivityLog(true); loadActivityLogs(1) }}
+        onOpenRecycleBin={() => { setShowRecycleBin(true); loadRecycleBin() }}
+        addClient={addClient}
+        addProject={addProject}
+        renameClient={renameClient}
+        renameProject={renameProject}
+        onConfirmDelete={setConfirmDelete}
+        deleteClient={deleteClient}
+        deleteProject={deleteProject}
+        draggingItemId={draggingItem?.id ?? null}
+        treeDropTargetId={treeDropTargetId}
+        setTreeDropTargetId={setTreeDropTargetId}
+        onProjectDrop={moveToProject}
+      />
 
       {/* ── Content area ────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden', background: C.contentBg }}>
@@ -1235,76 +1198,22 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
             </div>
           </div>
         ) : openDoc ? (
-          /* ── Document Editor ──────────────────────────────────────────── */
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Editor toolbar */}
-            <div style={{
-              padding: '8px 16px', borderBottom: `1px solid ${C.separator}`,
-              display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, background: C.lgBg,
-            }}>
-              <button onClick={() => {
-                if (saveTimeoutRef.current) { clearTimeout(saveTimeoutRef.current); saveTimeoutRef.current = null }
-                setOpenDoc(null)
-                if (selection) loadContents(selection.projectId, currentFolderId)
-              }} style={{ ...iconBtn24, color: C.textMuted }}
-                onMouseEnter={e => { e.currentTarget.style.color = C.text }}
-                onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}>
-                <ArrowLeft size={16} />
-              </button>
-              <input value={docTitle}
-                onChange={e => handleDocTitleChange(e.target.value)}
-                style={{
-                  flex: 1, fontSize: 14, fontWeight: 600, background: 'transparent',
-                  border: 'none', outline: 'none', color: C.text, padding: '4px 0',
-                }}
-                placeholder="Document title..." />
-              <span style={{ fontSize: 11, color: C.textMuted, flexShrink: 0 }}>
-                {docSaving ? 'Saving...' : 'Saved'}
-              </span>
-            </div>
-
-            <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-              {/* Rich text editor */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {docLoading ? (
-                  <div style={{ display: 'flex', justifyContent: 'center', padding: 40, flex: 1 }}>
-                    <Loader size={20} style={{ color: C.textMuted, animation: 'spin 1s linear infinite' }} />
-                  </div>
-                ) : (
-                  <DocumentEditor
-                    content={docContent}
-                    onUpdate={handleDocContentChange}
-                    apiBase={config.apiBase}
-                    token={config.token}
-                    projectId={selection?.projectId}
-                  />
-                )}
-              </div>
-
-              {/* Edit history sidebar */}
-              <div style={{
-                width: 220, flexShrink: 0, borderLeft: `1px solid ${C.separator}`,
-                background: C.lgBg, overflowY: 'auto', padding: '12px 0',
-              }}>
-                <div style={{ padding: '0 12px 8px', fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                  Edit History
-                </div>
-                {openDoc.edits.length === 0 && (
-                  <div style={{ padding: '8px 12px', fontSize: 11, color: C.textMuted, fontStyle: 'italic' }}>No edits yet</div>
-                )}
-                {openDoc.edits.map(edit => (
-                  <div key={edit.id} style={{ padding: '6px 12px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                    <User size={12} style={{ color: C.textMuted, flexShrink: 0, marginTop: 2 }} />
-                    <div>
-                      <div style={{ fontSize: 11, color: C.text, fontWeight: 500 }}>{displayName(edit.user)}</div>
-                      <div style={{ fontSize: 10, color: C.textMuted }}>{timeAgo(edit.createdAt)}</div>
-                      {edit.summary && <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>{edit.summary}</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <ReportEditor
+            openDoc={openDoc}
+            docTitle={docTitle}
+            docContent={docContent}
+            docSaving={docSaving}
+            docLoading={docLoading}
+            config={config}
+            auth={auth}
+            selection={selection}
+            onTitleChange={handleDocTitleChange}
+            onContentChange={handleDocContentChange}
+            onClose={() => {
+              closeDoc()
+              if (selection) loadContents(selection.projectId, currentFolderId)
+            }}
+          />
         ) : openLinkId ? (
           /* ── Feedback Link Viewer ─────────────────────────────────────── */
           <FeedbackViewer linkId={openLinkId} config={config} onBack={() => { setOpenLinkId(null); if (selection) loadContents(selection.projectId, currentFolderId) }} />
@@ -1324,7 +1233,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                 <div style={{ textAlign: 'center', color: C.accent }}>
                   <Upload size={32} strokeWidth={1.5} style={{ marginBottom: 8, opacity: 0.7 }} />
                   <p style={{ fontSize: 14, fontWeight: 600 }}>Drop files to upload</p>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>50MB max per file</p>
+                  <p style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>500MB max per file</p>
                 </div>
               </div>
             )}
@@ -1333,9 +1242,12 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
             <div style={{
               padding: '10px 16px', borderBottom: `1px solid ${C.separator}`,
               display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, background: C.lgBg,
+              // v1.5.2111 — allow toolbar to scroll horizontally on small screens
+              // so action buttons stay reachable instead of being clipped.
+              overflowX: 'auto', overflowY: 'visible', whiteSpace: 'nowrap',
             }}>
               {/* Breadcrumb */}
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
+              <div style={{ flex: '1 1 auto', minWidth: 80, display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden' }}>
                 <button onClick={() => navigateToBreadcrumb(-1)}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: folderPath.length > 0 ? C.accent : C.text, fontSize: 13, fontWeight: 600, padding: 0, whiteSpace: 'nowrap' }}>
                   {selectedProject?.name}
@@ -1366,6 +1278,21 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                 ))}
               </div>
 
+              {/* v1.5.2111 — Export CSV button removed from top bar per UX feedback. */}
+
+              {/* Members modal trigger (P3.26) */}
+              <button onClick={() => {
+                if (!selection || !selectedProject) return
+                setShowMembers({ projectId: selection.projectId, projectName: selectedProject.name })
+                loadMembers(selection.projectId)
+              }}
+                title="Manage Members"
+                style={toolbarBtn}
+                onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                <User size={14} /> <span>Members</span>
+              </button>
+
               {/* Share project link */}
               <button onClick={() => copyShareLink('project')}
                 title="Copy Project Link"
@@ -1389,7 +1316,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
               <button onClick={createLink} title="New Feedback Link" style={toolbarBtn}
                 onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-                <Globe size={14} /> <span>Link</span>
+                <Globe size={14} /> <span>Feedback Link</span>
               </button>
               <button onClick={() => fileInputRef.current?.click()} title="Upload File" style={toolbarBtn}
                 onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
@@ -1415,6 +1342,16 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
               {contentLoading ? (
                 <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
                   <Loader size={20} style={{ color: C.textMuted, animation: 'spin 1s linear infinite' }} />
+                </div>
+              ) : contentError ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: 40, color: C.textMuted, fontSize: 12 }}>
+                  <AlertCircle size={20} style={{ color: C.danger }} />
+                  <div>{contentError}</div>
+                  <button
+                    onClick={() => selection && loadContents(selection.projectId, currentFolderId)}
+                    style={{ marginTop: 4, padding: '4px 12px', border: `1px solid ${C.separator}`, borderRadius: 6, background: 'transparent', color: C.textSecondary, fontSize: 11, cursor: 'pointer' }}>
+                    Retry
+                  </button>
                 </div>
               ) : (
                 <>
@@ -1482,6 +1419,15 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                         {documents.map(doc => (
                           <div key={doc.id} data-sel-type="document" data-sel-id={doc.id} data-sel-name={doc.title}
                             draggable onDragStart={e => onItemDragStart(e, { type: 'document', id: doc.id })} onDragEnd={onItemDragEnd}
+                            onDragOver={e => {
+                              if (draggingItem?.type === 'document' && draggingItem.id !== doc.id) { e.preventDefault(); e.stopPropagation() }
+                            }}
+                            onDrop={e => {
+                              if (draggingItem?.type === 'document' && draggingItem.id !== doc.id) {
+                                e.preventDefault(); e.stopPropagation()
+                                void reorderSibling('document', draggingItem.id, doc.id)
+                              }
+                            }}
                             onClick={e => handleItemClick(e, { type: 'document', id: doc.id, name: doc.title })}
                             onDoubleClick={() => openDocument(doc.id)}
                             onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'document', id: doc.id, x: e.clientX, y: e.clientY, name: doc.title }); setMenuId(null) }}
@@ -1519,6 +1465,16 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
 
                         {links.map(link => (
                           <div key={link.id} data-sel-type="link" data-sel-id={link.id} data-sel-name={link.title || link.url}
+                            draggable onDragStart={e => onItemDragStart(e, { type: 'link', id: link.id })} onDragEnd={onItemDragEnd}
+                            onDragOver={e => {
+                              if (draggingItem?.type === 'link' && draggingItem.id !== link.id) { e.preventDefault(); e.stopPropagation() }
+                            }}
+                            onDrop={e => {
+                              if (draggingItem?.type === 'link' && draggingItem.id !== link.id) {
+                                e.preventDefault(); e.stopPropagation()
+                                void reorderSibling('link', draggingItem.id, link.id)
+                              }
+                            }}
                             onClick={e => handleItemClick(e, { type: 'link', id: link.id, name: link.title || link.url })}
                             onDoubleClick={() => openFeedbackLink(link.id)}
                             onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'link', id: link.id, x: e.clientX, y: e.clientY, name: link.title || link.url }); setMenuId(null) }}
@@ -1526,7 +1482,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                               width: 110, padding: '12px 8px', borderRadius: 8, textAlign: 'center', cursor: 'pointer', position: 'relative',
                               background: isItemSelected('link', link.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
                               border: isItemSelected('link', link.id) ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
-                              transition: 'background 0.1s',
+                              transition: 'background 0.1s', opacity: draggingItem?.id === link.id ? 0.4 : 1,
                             }}
                             onMouseEnter={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = C.bgHover }}
                             onMouseLeave={e => { if (!isItemSelected('link', link.id)) e.currentTarget.style.background = 'transparent' }}>
@@ -1557,23 +1513,20 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                         {files.map(file => (
                           <div key={file.id} data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                             draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
-                            onClick={e => { if (handleItemClick(e, { type: 'file', id: file.id, name: file.name })) return; if (isImageFile(file)) setLightboxFile(file) }}
+                            onClick={e => { handleItemClick(e, { type: 'file', id: file.id, name: file.name }) }}
+                            onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
                             onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
                             style={{
-                              width: 110, padding: '12px 8px', borderRadius: 8, textAlign: 'center', cursor: isImageFile(file) ? 'pointer' : 'default', position: 'relative',
+                              width: 110, padding: '12px 8px', borderRadius: 8, textAlign: 'center', cursor: 'pointer', position: 'relative',
                               background: isItemSelected('file', file.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
                               border: isItemSelected('file', file.id) ? '1px solid rgba(59, 130, 246, 0.5)' : '1px solid transparent',
                               transition: 'background 0.1s', opacity: draggingItem?.id === file.id ? 0.4 : 1,
                             }}
                             onMouseEnter={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = C.bgHover }}
                             onMouseLeave={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = 'transparent' }}>
-                            {isImageFile(file) ? (
-                              <div style={{ width: 60, height: 48, margin: '0 auto 6px', borderRadius: 6, overflow: 'hidden', background: C.bgHover }}>
-                                <AuthImage src={`${config.apiBase}${file.url}`} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                              </div>
-                            ) : (
-                              <File size={36} style={{ color: C.textSecondary, marginBottom: 6 }} />
-                            )}
+                            <div style={{ width: 60, height: 48, margin: '0 auto 6px' }}>
+                              <FileThumbnail file={file} config={config} size={60} height={48} />
+                            </div>
                             <div style={{ fontSize: 11, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>
                             <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>{formatSize(file.size)}</div>
                             <button onClick={e => { e.stopPropagation(); setMenuId(menuId === file.id ? null : file.id) }}
@@ -1722,12 +1675,15 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                       {files.map(file => (
                         <div key={file.id} data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                           draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
-                          onClick={e => { if (handleItemClick(e, { type: 'file', id: file.id, name: file.name })) return; if (isImageFile(file)) setLightboxFile(file) }}
+                          onClick={e => { handleItemClick(e, { type: 'file', id: file.id, name: file.name }) }}
+                          onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
                           onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
-                          style={{ ...rowStyle, position: 'relative', opacity: draggingItem?.id === file.id ? 0.4 : 1, cursor: isImageFile(file) ? 'pointer' : 'default', background: isItemSelected('file', file.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent' }}
+                          style={{ ...rowStyle, position: 'relative', opacity: draggingItem?.id === file.id ? 0.4 : 1, cursor: 'pointer', background: isItemSelected('file', file.id) ? 'rgba(59, 130, 246, 0.18)' : 'transparent' }}
                           onMouseEnter={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = C.bgHover }}
                           onMouseLeave={e => { if (!isItemSelected('file', file.id)) e.currentTarget.style.background = 'transparent' }}>
-                          <File size={16} style={{ color: C.textSecondary, flexShrink: 0 }} />
+                          <div style={{ width: 28, height: 22, flexShrink: 0 }}>
+                            <FileThumbnail file={file} config={config} size={28} height={22} />
+                          </div>
                           <span style={{ flex: 1, fontSize: 13, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                             <span style={{ fontSize: 10, color: C.textMuted }}>{formatSize(file.size)}</span>
@@ -1764,7 +1720,9 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                       ...subColumns.map(sc => ({ folders: sc.folders, documents: sc.documents, files: sc.files, links: sc.links || [], selectedId: sc.selectedId })),
                     ]
                     return (
-                      <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+                      // v1.5.2111 — minWidth: 0 lets the inner scroller actually scroll
+                      // when the outer flex parent is narrow.
+                      <div style={{ display: 'flex', height: '100%', minWidth: 0, overflow: 'hidden' }}>
                         {/* Back button for root navigation */}
                         {currentFolderId && (
                           <div onClick={navigateUp}
@@ -1906,6 +1864,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   <div key={file.id}
                                     data-sel-type="file" data-sel-id={file.id} data-sel-name={file.name}
                                     onClick={e => { if (handleItemClick(e, { type: 'file', id: file.id, name: file.name })) return; handleColumnSelect(colIdx, 'file', file.id, file) }}
+                                    onDoubleClick={() => { if (isPreviewableFile(file)) setLightboxFile(file); else downloadFile(file) }}
                                     onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ type: 'file', id: file.id, x: e.clientX, y: e.clientY, name: file.name, item: file }); setMenuId(null) }}
                                     draggable onDragStart={e => onItemDragStart(e, { type: 'file', id: file.id })} onDragEnd={onItemDragEnd}
                                     style={{
@@ -1920,14 +1879,9 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                     }}
                                     onMouseEnter={e => { if (!isSel && !mSel) e.currentTarget.style.background = C.bgHover }}
                                     onMouseLeave={e => { if (!isSel && !mSel) e.currentTarget.style.background = 'transparent' }}>
-                                    {isImageFile(file) ? (
-                                      <div style={{ width: 14, height: 14, borderRadius: 2, overflow: 'hidden', flexShrink: 0 }}>
-                                        <AuthImage src={`${config.apiBase}${file.url}`} config={config}
-                                          style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                      </div>
-                                    ) : (
-                                      <File size={14} style={{ color: isSel ? '#fff' : C.textSecondary, flexShrink: 0 }} />
-                                    )}
+                                    <div style={{ width: 18, height: 14, flexShrink: 0 }}>
+                                      <FileThumbnail file={file} config={config} size={18} height={14} />
+                                    </div>
                                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
                                   </div>
                                 )
@@ -1946,15 +1900,45 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                             background: C.lgBg, overflowY: 'auto', padding: '20px 16px',
                             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
                           }}>
-                            {isImageFile(colPreview) ? (
-                              <div style={{ width: '100%', borderRadius: 8, overflow: 'hidden', cursor: 'pointer' }}
-                                onClick={() => setLightboxFile(colPreview)}>
-                                <AuthImage src={`${config.apiBase}${colPreview.url}`} config={config}
-                                  style={{ width: '100%', objectFit: 'contain', maxHeight: 200, display: 'block' }} />
-                              </div>
-                            ) : (
-                              <File size={48} style={{ color: C.textSecondary, opacity: 0.4 }} />
-                            )}
+                            {/* v1.5.2111 — file preview now branches on
+                                MIME so videos / audio / PDFs render inline
+                                instead of falling back to a generic icon. */}
+                            {(() => {
+                              const mime = (colPreview.mimeType || '').toLowerCase()
+                              const url = `${config.apiBase}${colPreview.url}`
+                              if (isImageFile(colPreview)) {
+                                return (
+                                  <div style={{ width: '100%', borderRadius: 8, overflow: 'hidden', cursor: 'pointer' }}
+                                    onClick={() => setLightboxFile(colPreview)}>
+                                    <AuthImage src={url} config={config}
+                                      style={{ width: '100%', objectFit: 'contain', maxHeight: 200, display: 'block' }} />
+                                  </div>
+                                )
+                              }
+                              if (mime.startsWith('video/')) {
+                                return (
+                                  <video controls preload="metadata"
+                                    src={url}
+                                    style={{ width: '100%', maxHeight: 200, borderRadius: 8, background: '#000' }} />
+                                )
+                              }
+                              if (mime.startsWith('audio/')) {
+                                return (
+                                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                    <File size={36} style={{ color: C.textSecondary, opacity: 0.4 }} />
+                                    <audio controls src={url} style={{ width: '100%' }} />
+                                  </div>
+                                )
+                              }
+                              if (mime === 'application/pdf') {
+                                return (
+                                  <div style={{ width: '100%', height: 200, borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                                    <iframe src={url} style={{ width: '100%', height: '100%', border: 'none' }} title={colPreview.name} />
+                                  </div>
+                                )
+                              }
+                              return <File size={48} style={{ color: C.textSecondary, opacity: 0.4 }} />
+                            })()}
                             <div style={{ width: '100%' }}>
                               <div style={{ fontSize: 13, fontWeight: 600, color: C.text, wordBreak: 'break-word', textAlign: 'center' }}>
                                 {colPreview.name}
@@ -2049,21 +2033,31 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                   </div>
                                 </div>
                               )}
-                              {sel && sel.kind === 'file' && (
-                                isImageFile(sel.data as RFile) ? (
+                              {sel && sel.kind === 'file' && (() => {
+                                const f = sel.data as RFile
+                                if (isImageFile(f)) return (
                                   <div style={{ maxWidth: '100%', maxHeight: '100%', padding: 12, cursor: 'pointer' }}
-                                    onClick={() => setLightboxFile(sel.data as RFile)}>
-                                    <AuthImage src={`${config.apiBase}${(sel.data as RFile).url}`} config={config}
+                                    onClick={() => setLightboxFile(f)}>
+                                    <AuthImage src={`${config.apiBase}${f.url}`} config={config}
                                       style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 4, display: 'block' }} />
                                   </div>
-                                ) : (
-                                  <div style={{ textAlign: 'center' }}>
-                                    <File size={80} style={{ color: C.textSecondary, opacity: 0.5 }} />
-                                    <div style={{ fontSize: 14, color: C.text, marginTop: 8, fontWeight: 500 }}>{(sel.data as RFile).name}</div>
-                                    <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{formatSize((sel.data as RFile).size)}</div>
+                                )
+                                if (isPreviewableFile(f)) return (
+                                  <div style={{ maxWidth: '100%', maxHeight: '100%', padding: 12, cursor: 'pointer', textAlign: 'center' }}
+                                    onClick={() => setLightboxFile(f)}>
+                                    <File size={80} style={{ color: C.accent, opacity: 0.7 }} />
+                                    <div style={{ fontSize: 14, color: C.text, marginTop: 8, fontWeight: 500 }}>{f.name}</div>
+                                    <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>Click to preview · {formatSize(f.size)}</div>
                                   </div>
                                 )
-                              )}
+                                return (
+                                  <div style={{ textAlign: 'center' }}>
+                                    <File size={80} style={{ color: C.textSecondary, opacity: 0.5 }} />
+                                    <div style={{ fontSize: 14, color: C.text, marginTop: 8, fontWeight: 500 }}>{f.name}</div>
+                                    <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{formatSize(f.size)}</div>
+                                  </div>
+                                )
+                              })()}
                               {sel && sel.kind === 'link' && (
                                 <div style={{ textAlign: 'center', cursor: 'pointer' }}
                                   onDoubleClick={() => openFeedbackLink(sel.data.id)}>
@@ -2092,7 +2086,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                       if (item.kind === 'folder') navigateToFolder(item.data.id, (item.data as RFolder).name)
                                       else if (item.kind === 'document') openDocument(item.data.id)
                                       else if (item.kind === 'link') openFeedbackLink(item.data.id)
-                                      else if (item.kind === 'file' && isImageFile(item.data as RFile)) setLightboxFile(item.data as RFile)
+                                      else if (item.kind === 'file' && isPreviewableFile(item.data as RFile)) setLightboxFile(item.data as RFile)
                                     }}
                                     onContextMenu={e => {
                                       e.preventDefault(); e.stopPropagation()
@@ -2118,12 +2112,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
                                     {item.kind === 'document' && <FileText size={24} style={{ color: C.accent }} />}
                                     {item.kind === 'link' && <Globe size={24} style={{ color: '#a78bfa' }} />}
                                     {item.kind === 'file' && (
-                                      isImageFile(item.data as RFile) ? (
-                                        <AuthImage src={`${config.apiBase}${(item.data as RFile).url}`} config={config}
-                                          style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                      ) : (
-                                        <File size={24} style={{ color: C.textSecondary }} />
-                                      )
+                                      <FileThumbnail file={item.data as RFile} config={config} size={64} height={52} />
                                     )}
                                   </div>
                                 )
@@ -2287,11 +2276,18 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
             {ctxMenu.type === 'file' && (
               <>
                 {ctxMenu.item && (
-                  <button onClick={() => { downloadFile(ctxMenu.item); setCtxMenu(null) }} style={menuItemStyle}
-                    onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-                    <Download size={13} /> Download
-                  </button>
+                  <>
+                    <button onClick={() => { openFileInBrowser(ctxMenu.item!); setCtxMenu(null) }} style={menuItemStyle}
+                      onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                      <ExternalLink size={13} /> Open in browser
+                    </button>
+                    <button onClick={() => { downloadFile(ctxMenu.item); setCtxMenu(null) }} style={menuItemStyle}
+                      onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                      <Download size={13} /> Download
+                    </button>
+                  </>
                 )}
                 <button onClick={() => { copyShareLink('file', ctxMenu.id); setCtxMenu(null) }} style={menuItemStyle}
                   onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
@@ -2624,8 +2620,7 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
             </button>
           </div>
           <div onClick={e => e.stopPropagation()} style={{ maxWidth: '90vw', maxHeight: '90vh', cursor: 'default' }}>
-            <AuthImage src={`${config.apiBase}${lightboxFile.url}`} config={config}
-              style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 6 }} />
+            <LightboxBody file={lightboxFile} config={config} />
             <div style={{ textAlign: 'center', marginTop: 8, color: '#fff', fontSize: 13, opacity: 0.8 }}>
               {lightboxFile.name}
               <span style={{ marginLeft: 10, opacity: 0.5 }}>{formatSize(lightboxFile.size)}</span>
@@ -2728,239 +2723,128 @@ export default function ReportPanel({ config, auth, pendingReport, onPendingRepo
         </>,
         document.body
       )}
+
+      {/* ── Project Members Modal (P3.26) ───────────────────────────────── */}
+      {showMembers && createPortal(
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 260, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+            onClick={() => setShowMembers(null)} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 261,
+            background: C.bgFloating, borderRadius: 12, padding: '20px 24px', width: 480, maxHeight: '70vh',
+            boxShadow: C.shadowHigh, border: `1px solid ${C.separator}`, display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <User size={18} style={{ color: C.accent }} />
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>Members of {showMembers.projectName}</div>
+              <button onClick={() => setShowMembers(null)} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer' }}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 12, lineHeight: 1.4 }}>
+              A project with no members is world-readable. Add at least one member to make it private; admins always have access.
+            </div>
+            {membersLoading ? (
+              <Loader size={16} style={{ color: C.textMuted, animation: 'spin 1s linear infinite' }} />
+            ) : (
+              <>
+                <div style={{ overflowY: 'auto', flex: 1, marginBottom: 14 }}>
+                  {members.length === 0 && (
+                    <div style={{ fontSize: 12, color: C.textMuted, padding: '12px 0' }}>No members yet.</div>
+                  )}
+                  {members.map((m) => (
+                    <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+                      {m.user.avatarUrl
+                        ? <img src={m.user.avatarUrl} style={{ width: 28, height: 28, borderRadius: '50%' }} alt="" />
+                        : <div style={{ width: 28, height: 28, borderRadius: '50%', background: C.bgHover }} />}
+                      <div style={{ flex: 1, fontSize: 12, color: C.text }}>
+                        {m.user.alias || m.user.username}
+                        <span style={{ marginLeft: 8, fontSize: 10, color: C.textMuted }}>{m.role}</span>
+                      </div>
+                      <button onClick={() => removeMember(m.user.id)} style={{
+                        padding: '4px 10px', fontSize: 11, color: C.danger, background: 'transparent',
+                        border: `1px solid ${C.separator}`, borderRadius: 6, cursor: 'pointer',
+                      }}>Remove</button>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ borderTop: `1px solid ${C.separator}`, paddingTop: 12 }}>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 6 }}>Add member</div>
+                  <select
+                    onChange={(e) => {
+                      const userId = e.target.value
+                      if (!userId) return
+                      addMember(userId, 'reviewer')
+                      e.currentTarget.value = ''
+                    }}
+                    style={{
+                      width: '100%', padding: '8px 10px', borderRadius: 6,
+                      border: `1px solid ${C.separator}`, background: C.bgInput, color: C.text, fontSize: 12,
+                    }}>
+                    <option value="">Pick a user…</option>
+                    {allUsers
+                      .filter((u) => !members.some((m) => m.user.id === u.id))
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>{u.alias || u.username}</option>
+                      ))}
+                  </select>
+                </div>
+              </>
+            )}
+          </div>
+        </>,
+        document.body
+      )}
     </div>
   )
 }
 
-// ─── Shared components & styles ───────────────────────────────────────────────
+// v1.5.2207 — lightbox supports more than just images. Token-protected
+// /api/uploads/* URLs need a bearer-fetch → object URL hop because <video>
+// / <audio> tags don't carry the auth header on their own.
+function LightboxBody({ file, config }: { file: RFile; config: ApiConfig }) {
+  const isVideo = isVideoFile(file)
+  const isAudio = isAudioFile(file)
+  const isPdf = isPdfFile(file)
+  const src = `${config.apiBase}${file.url}`
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+  useEffect(() => {
+    if (isImageFile(file)) return
+    let revoke: string | null = null
+    let cancelled = false
+    fetch(src, { headers: { Authorization: `Bearer ${config.token}` } })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob() })
+      .then(blob => { if (!cancelled) { const u = URL.createObjectURL(blob); revoke = u; setBlobUrl(u) } })
+      .catch(() => { if (!cancelled) setError(true) })
+    return () => { cancelled = true; if (revoke) URL.revokeObjectURL(revoke) }
+  }, [src, config.token, file, isVideo, isAudio, isPdf])
 
-const iconBtn24: React.CSSProperties = {
-  width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', transition: 'all 0.15s',
-}
-
-const iconBtnSmall: React.CSSProperties = {
-  background: 'none', border: 'none', padding: 2, cursor: 'pointer',
-  color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  borderRadius: 4, flexShrink: 0,
-}
-
-const iconBtnTiny: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.5)', border: 'none', padding: 3, cursor: 'pointer',
-  color: '#ccc', display: 'flex', alignItems: 'center', justifyContent: 'center',
-  borderRadius: 4, flexShrink: 0, transition: 'opacity 0.15s',
-}
-
-const toolbarBtn: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px',
-  borderRadius: 6, border: 'none', background: 'transparent',
-  color: C.textSecondary, fontSize: 12, cursor: 'pointer', transition: 'background 0.1s',
-  whiteSpace: 'nowrap',
-}
-
-const rowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 10, padding: '7px 16px',
-  cursor: 'default', transition: 'background 0.1s',
-}
-
-const menuItemStyle: React.CSSProperties = {
-  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-  padding: '6px 10px', borderRadius: 6, border: 'none',
-  background: 'transparent', color: C.text, fontSize: 12,
-  cursor: 'pointer', textAlign: 'left',
-}
-
-function isImageFile(file: { mimeType: string | null; name: string }) {
-  if (file.mimeType?.startsWith('image/')) return true
-  return /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp)$/i.test(file.name)
-}
-
-function InlineInput({ value, onChange, onConfirm, onCancel }: {
-  value: string; onChange: (v: string) => void; onConfirm: () => void; onCancel: () => void
-}) {
-  return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
-      <input autoFocus value={value}
-        onChange={e => onChange(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter') onConfirm(); if (e.key === 'Escape') onCancel() }}
-        onBlur={onConfirm}
-        style={{
-          flex: 1, fontSize: 12, padding: '2px 6px', borderRadius: 4,
-          border: `1px solid ${C.accent}`, background: C.bgInput, color: C.text,
-          outline: 'none', minWidth: 0,
-        }} />
+  if (isImageFile(file)) {
+    return <AuthImage src={src} config={config}
+      style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 6 }} />
+  }
+  if (error) {
+    return <div style={{ color: '#fff', padding: 24 }}>Could not load preview.</div>
+  }
+  if (!blobUrl) {
+    return <div style={{ color: '#fff', padding: 24, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <Loader size={16} /> Loading…
     </div>
-  )
-}
-
-function ContextMenu({ onRename, onDelete, onShare, onClose }: {
-  onRename: () => void; onDelete: () => void; onShare?: () => void; onClose: () => void
-}) {
-  return (
-    <>
-      <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={onClose} />
-      <div style={{
-        position: 'absolute', right: 0, top: '100%', zIndex: 100,
-        background: C.bgFloating, border: `1px solid ${C.separator}`,
-        borderRadius: 8, padding: 4, minWidth: 140, boxShadow: C.shadowHigh,
-      }}>
-        <button onClick={onRename} style={menuItemStyle}
-          onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-          <Pencil size={13} /> Rename
-        </button>
-        {onShare && (
-          <button onClick={onShare} style={menuItemStyle}
-            onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-            <Link2 size={13} /> Copy Link
-          </button>
-        )}
-        <button onClick={onDelete} style={{ ...menuItemStyle, color: C.danger }}
-          onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-          <Trash2 size={13} /> Delete
-        </button>
-      </div>
-    </>
-  )
-}
-
-function FileMenu({ onDownload, onShare, onDelete, onClose }: {
-  onDownload: () => void; onShare?: () => void; onDelete: () => void; onClose: () => void
-}) {
-  return (
-    <>
-      <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={onClose} />
-      <div style={{
-        position: 'absolute', right: 0, top: '100%', zIndex: 100,
-        background: C.bgFloating, border: `1px solid ${C.separator}`,
-        borderRadius: 8, padding: 4, minWidth: 140, boxShadow: C.shadowHigh,
-      }}>
-        <button onClick={onDownload} style={menuItemStyle}
-          onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-          <Download size={13} /> Download
-        </button>
-        {onShare && (
-          <button onClick={onShare} style={menuItemStyle}
-            onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-            <Link2 size={13} /> Copy Link
-          </button>
-        )}
-        <button onClick={onDelete} style={{ ...menuItemStyle, color: C.danger }}
-          onMouseEnter={e => { e.currentTarget.style.background = C.bgHover }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
-          <Trash2 size={13} /> Delete
-        </button>
-      </div>
-    </>
-  )
-}
-
-// ─── Activity Log Helpers ─────────────────────────────────────────────────────
-
-function actionColor(action: string) {
-  switch (action) {
-    case 'create': return 'rgba(74,222,128,0.15)'
-    case 'delete': return 'rgba(239,68,68,0.15)'
-    case 'rename': return 'rgba(96,165,250,0.15)'
-    case 'move': return 'rgba(168,85,247,0.15)'
-    case 'upload': return 'rgba(59,130,246,0.15)'
-    case 'edit': return 'rgba(251,191,36,0.15)'
-    case 'restore': return 'rgba(45,212,191,0.15)'
-    default: return 'rgba(255,255,255,0.06)'
   }
-}
-
-function actionIcon(action: string) {
-  const s = 13
-  const style: React.CSSProperties = {}
-  switch (action) {
-    case 'create': return <Plus size={s} style={{ ...style, color: '#4ade80' }} />
-    case 'delete': return <Trash2 size={s} style={{ ...style, color: '#ef4444' }} />
-    case 'rename': return <Pencil size={s} style={{ ...style, color: '#60a5fa' }} />
-    case 'move': return <ArrowLeft size={s} style={{ ...style, color: '#a855f7', transform: 'rotate(180deg)' }} />
-    case 'upload': return <Upload size={s} style={{ ...style, color: '#3b82f6' }} />
-    case 'edit': return <FileText size={s} style={{ ...style, color: '#fbbf24' }} />
-    case 'restore': return <RotateCcw size={s} style={{ ...style, color: '#2dd4bf' }} />
-    default: return <Clock size={s} style={{ ...style, color: C.textMuted }} />
+  if (isVideo) {
+    return <video controls autoPlay src={blobUrl}
+      style={{ maxWidth: '90vw', maxHeight: '85vh', borderRadius: 6, background: '#000' }} />
   }
-}
-
-function actionLabel(action: string) {
-  switch (action) {
-    case 'create': return 'created'
-    case 'delete': return 'deleted'
-    case 'rename': return 'renamed'
-    case 'move': return 'moved'
-    case 'upload': return 'uploaded'
-    case 'edit': return 'edited'
-    case 'restore': return 'restored'
-    default: return action
+  if (isAudio) {
+    return <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 24 }}>
+      <File size={48} style={{ color: '#fff', opacity: 0.6 }} />
+      <audio controls autoPlay src={blobUrl} style={{ width: 360, maxWidth: '90vw' }} />
+    </div>
   }
-}
-
-function actionTextColor(action: string) {
-  switch (action) {
-    case 'create': return '#4ade80'
-    case 'delete': return '#ef4444'
-    case 'rename': return '#60a5fa'
-    case 'move': return '#a855f7'
-    case 'upload': return '#3b82f6'
-    case 'edit': return '#fbbf24'
-    case 'restore': return '#2dd4bf'
-    default: return C.textMuted
+  if (isPdf) {
+    return <iframe src={blobUrl} title={file.name}
+      style={{ width: '90vw', height: '85vh', border: 'none', borderRadius: 6, background: '#fff' }} />
   }
-}
-
-function actionTargetIcon(targetType: string) {
-  const s = 11
-  const style: React.CSSProperties = { opacity: 0.6, verticalAlign: 'middle', marginRight: 2 }
-  switch (targetType) {
-    case 'client': return <Building2 size={s} style={{ ...style, color: '#fbbf24' }} />
-    case 'project': return <Briefcase size={s} style={{ ...style, color: '#60a5fa' }} />
-    case 'folder': return <Folder size={s} style={{ ...style, color: '#3b82f6' }} />
-    case 'document': return <FileText size={s} style={{ ...style, color: '#a855f7' }} />
-    case 'file': return <File size={s} style={{ ...style, color: '#6b7280' }} />
-    default: return null
-  }
-}
-
-function formatTimeDetailed(dateStr: string) {
-  const d = new Date(dateStr)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-  if (diffDays === 0) return `Today at ${time}`
-  if (diffDays === 1) return `Yesterday at ${time}`
-  if (diffDays < 7) return `${d.toLocaleDateString('en-US', { weekday: 'short' })} at ${time}`
-  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${time}`
-}
-
-// ─── Recycle Bin Helpers ──────────────────────────────────────────────────────
-
-function recycleTypeColor(type: string) {
-  switch (type) {
-    case 'client': return 'rgba(251,191,36,0.12)'
-    case 'project': return 'rgba(96,165,250,0.12)'
-    case 'folder': return 'rgba(59,130,246,0.12)'
-    case 'document': return 'rgba(168,85,247,0.12)'
-    case 'file': return 'rgba(107,114,128,0.12)'
-    default: return 'rgba(255,255,255,0.06)'
-  }
-}
-
-function recycleTypeIcon(type: string) {
-  const s = 15
-  switch (type) {
-    case 'client': return <Building2 size={s} style={{ color: '#fbbf24' }} />
-    case 'project': return <Briefcase size={s} style={{ color: '#60a5fa' }} />
-    case 'folder': return <Folder size={s} style={{ color: '#3b82f6' }} />
-    case 'document': return <FileText size={s} style={{ color: '#a855f7' }} />
-    case 'file': return <File size={s} style={{ color: '#6b7280' }} />
-    default: return <File size={s} style={{ color: C.textMuted }} />
-  }
+  return <div style={{ color: '#fff', padding: 24 }}>No preview available.</div>
 }

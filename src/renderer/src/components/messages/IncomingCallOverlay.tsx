@@ -20,7 +20,9 @@ export function IncomingCallOverlay({
   onAccept: () => void; onReject: () => void
 }) {
   useEffect(() => {
-    const audio = new Audio('sounds/incoming-call.mp3')
+    // Looping ringtone — keep raw Audio() so we can pause on cleanup.
+    // File swapped to the Material Design ringtone for family consistency.
+    const audio = new Audio('sounds/material/ringtone_minimal.ogg')
     audio.loop = true
     audio.volume = 0.6
     audio.play().catch(() => {})

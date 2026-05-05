@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import {
   MessageSquare, Edit2, Search, Hash, Users, Plus, ChevronDown,
-  Loader, Phone, Video, Pin, Settings2, MessageCircle, ChevronRight,
+  Loader, Phone, Video, Pin, Settings2, MessageCircle, ChevronLeft, ChevronRight,
   Smile, CornerDownRight, Trash2, ChevronUp, Send, X,
   FolderOpen, Paperclip, ExternalLink, Download, Check, CheckCheck,
   Clock, Calendar, Volume2, MicOff, PhoneOff, Monitor, Mic, Headphones, HeadphoneOff, Eye, Quote,
+  FileText, Link as LinkIcon,
 } from 'lucide-react'
 import { C, neu } from '../../theme'
 import type { ApiConfig, Auth, Conversation, ChatMessage, ThreadActivity, UserInfo } from '../../types'
@@ -17,143 +18,43 @@ import { MessageInput } from './MessageInput'
 import { OgPreview } from './OgPreview'
 import { InlineAttachment, AuthImage } from './Attachments'
 import { EmojiPicker } from './EmojiPicker'
-import { renderMessageContent, extractUrls, isImageUrl, REPORT_LINK_RE, TASK_LINK_RE, FEEDBACK_LINK_RE } from '../../utils/markdown'
+import { PinnedView } from './PinnedView'
+import { SharedMediaView } from './SharedMediaView'
+import { ThreadView } from './ThreadView'
+import { TaskDiscussionChannel } from './TaskDiscussionChannel'
+import { renderMessageContent, extractUrls, isImageUrl, REPORT_LINK_RE, TASK_LINK_RE, FEEDBACK_LINK_RE, MESSAGE_LINK_RE } from '../../utils/markdown'
 import { formatTime, timeAgo } from '../../utils/format'
 import { ReportLinkCard } from './ReportLinkCard'
 import { TaskLinkCard } from './TaskLinkCard'
 import { FeedbackLinkCard } from './FeedbackLinkCard'
+import { MessageLinkCard } from './MessageLinkCard'
+import { useNotificationsStore } from '../../stores'
+import { debugRecord } from '../../stores/debugStore'
+import { useConferenceLockStore, readConferenceLock } from '../../stores/conferenceLockStore'
+import { useLightboxClaim } from '../../utils/lightboxClaim'
+import { apiFetch as sharedApiFetch } from '../../api/client'
+import { QueuedWriteError } from '../../api/writeQueue'
+import { playSound } from '../../utils/sounds'
 import CallWidget from '../calls/CallWidget'
 import VoiceChannelView from '../calls/VoiceChannelView'
 import type { IncomingCallPayload } from './IncomingCallOverlay'
+import { LightboxOverlay } from './LightboxOverlay'
+import { ThreadItem } from './ThreadItem'
+import { MessageRow } from './MessageRow'
+import { useMessagesSearch } from './useMessagesSearch'
+import { FloatingCallBar } from './FloatingCallBar'
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '🚀']
 
 const ogClientCache = new Map<string, { title: string | null; description: string | null; image: string | null; siteName: string | null } | null>()
 
-// ─── Thread Item (used in Threads view) ───────────────────────────────────────
-
-function ThreadItem({ thread, senderName, displayChannelName, replies, config, apiFetch, onOpenThread, onReplySent }: {
-  thread: ThreadActivity
-  senderName: string
-  displayChannelName: string
-  replies: { content: string; createdAt: string; sender: { alias: string | null; username: string; avatarUrl: string | null } }[]
-  config: ApiConfig
-  apiFetch: (path: string, opts?: RequestInit) => Promise<any>
-  onOpenThread: () => void
-  onReplySent: (reply: { content: string; createdAt: string; sender: { alias: string | null; username: string; avatarUrl: string | null } }) => void
-}) {
-  const [replyInput, setReplyInput] = useState('')
-  const [sending, setSending] = useState(false)
-  const [hovered, setHovered] = useState(false)
-
-  async function handleSendReply() {
-    if (!replyInput.trim() || sending) return
-    const content = replyInput.trim()
-    setSending(true)
-    setReplyInput('')
-    try {
-      const data = await apiFetch(`/api/channels/${thread.channelId}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ content, parentMessageId: thread.id }),
-      })
-      const sender = data?.sender ?? { alias: null, username: 'You', avatarUrl: null }
-      onReplySent({ content, createdAt: new Date().toISOString(), sender })
-    } catch { /* offline */ } finally { setSending(false) }
-  }
-
-  const allRepliesShown = replies.length >= thread.replyCount
-
-  return (
-    <div style={{ padding: '0 16px', marginBottom: 10 }}>
-      <div
-        style={{
-          background: hovered ? C.sidebarHover : C.bgSecondary,
-          border: `1px solid ${C.separator}`,
-          borderRadius: 10,
-          padding: '14px 16px',
-          transition: 'background 0.15s ease',
-        }}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      >
-        {/* Channel name header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, cursor: 'pointer' }} onClick={onOpenThread}>
-          {thread.channelType === 'channel' ? <Hash size={12} color={C.textMuted} /> : thread.channelType === 'group' ? <Users size={12} color={C.textMuted} /> : <MessageSquare size={12} color={C.textMuted} />}
-          <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayChannelName}</span>
-        </div>
-
-        {/* Parent message */}
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer' }} onClick={onOpenThread}>
-          <Avatar url={thread.parentMessage.sender.avatarUrl} name={senderName} size={28} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{senderName}</div>
-            <div style={{ fontSize: 13, color: C.text, marginTop: 2, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{thread.parentMessage.content}</div>
-          </div>
-        </div>
-
-        {/* Reply count + time — hidden when all replies are already shown inline */}
-        {!allRepliesShown && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 38, marginTop: 6, cursor: 'pointer' }} onClick={onOpenThread}>
-            <span style={{ fontSize: 12, color: C.accent, fontWeight: 600 }}>{thread.replyCount} {thread.replyCount === 1 ? 'reply' : 'replies'}</span>
-            <span style={{ fontSize: 11, color: C.textMuted }}>{timeAgo(thread.lastReply.createdAt)}</span>
-            {thread.unread && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, flexShrink: 0 }} />}
-          </div>
-        )}
-
-        {/* Recent replies (up to 3) */}
-        <div style={{ paddingLeft: 38, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {replies.map((reply, idx) => {
-            const name = reply.sender.alias ?? reply.sender.username
-            return (
-              <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', cursor: 'pointer' }} onClick={onOpenThread}>
-                <Avatar url={reply.sender.avatarUrl} name={name} size={18} />
-                <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.textMuted, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                  <span style={{ fontWeight: 600, color: C.sidebarText }}>{name}:</span>{' '}{reply.content}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-
-        {/* Time indicator when all replies shown */}
-        {allRepliesShown && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 38, marginTop: 6, cursor: 'pointer' }} onClick={onOpenThread}>
-            <span style={{ fontSize: 11, color: C.textMuted }}>{timeAgo(thread.lastReply.createdAt)}</span>
-            {thread.unread && <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, flexShrink: 0 }} />}
-          </div>
-        )}
-
-        {/* Inline reply input */}
-        <div style={{ paddingLeft: 38, marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input
-            type="text"
-            placeholder="Reply..."
-            value={replyInput}
-            onChange={e => setReplyInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendReply() } }}
-            style={{
-              flex: 1, padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.separator}`,
-              background: C.bgInput, color: C.text, fontSize: 12, outline: 'none',
-            }}
-          />
-          <button
-            onClick={handleSendReply}
-            disabled={!replyInput.trim() || sending}
-            style={{
-              padding: '5px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
-              background: replyInput.trim() ? C.accent : 'transparent',
-              color: replyInput.trim() ? '#fff' : C.textMuted,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              opacity: sending ? 0.5 : 1,
-            }}
-          >
-            <Send size={14} />
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+// Hoisted out of the messages.map() body — these were rebuilt once per
+// message per render, which at 100 messages × 4 regexes is 400 needless
+// allocations per re-render. They're stateless, so module scope is fine.
+const REPORT_URL_RE_MSG = /\/report\/[a-z0-9]+\/[a-z0-9]+/i
+const TASK_URL_RE_MSG = /\/tasks\/[a-z0-9]+$/i
+const FEEDBACK_URL_RE_MSG = /\/report\/feedback\/[a-z0-9]+/i
+const MESSAGE_URL_RE_MSG = /\/messages\/[a-z0-9]+\/[a-z0-9]+/i
 
 // ─── MessagesPanel ────────────────────────────────────────────────────────────
 
@@ -167,6 +68,19 @@ export function MessagesPanel({
   answerSdpRef: React.MutableRefObject<string | null>
   isVisible: boolean
 }) {
+  // ── API helper (defined first; hooks below depend on it) ────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apiFetch = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
+    const method = (opts?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT'
+    const headers = (opts?.headers ?? {}) as Record<string, string>
+    const hasBody = opts?.body !== undefined && opts?.body !== null
+    return sharedApiFetch(path, {
+      method,
+      rawBody: hasBody ? (opts!.body as BodyInit) : undefined,
+      headers: hasBody ? { 'Content-Type': 'application/json', ...headers } : headers,
+    })
+  }, [])
+
   const [channels, setChannels] = useState<Conversation[]>([])
   const channelsRef = useRef<Conversation[]>([])
   channelsRef.current = channels
@@ -196,8 +110,60 @@ export function MessagesPanel({
 
   const [selected, setSelected] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const showToast = useNotificationsStore((s) => s.show)
+
   const [mentionedChannels, setMentionedChannels] = useState<Set<string>>(new Set())
-  const [input, setInput] = useState('')
+  const [input, setInputState] = useState('')
+  // Mirror of `input` so the draft-persistence effect can read the value
+  // SYNCHRONOUSLY when `selected.id` changes (state updates haven't flushed
+  // to the new render yet at that point).
+  const inputRef = useRef<string>('')
+  // Wrap setInput so the ref stays current. Stable identity (deps: []) so
+  // the draft-persistence useEffect below doesn't need to depend on it.
+  const setInput = useCallback((v: string | ((prev: string) => string)) => {
+    setInputState((prev) => {
+      const next = typeof v === 'function' ? v(prev) : v
+      inputRef.current = next
+      return next
+    })
+  }, [])
+
+  // P2.15 (DMs batch) — tag the activity heartbeat with the focused channel
+  // so the daily rollup can populate `messagingSeconds`. Mirrors how
+  // setCurrentTask / setCurrentReportDocument work.
+  useEffect(() => {
+    window.electronAPI.setCurrentChannel(selected?.id ?? null)
+    return () => { window.electronAPI.setCurrentChannel(null) }
+  }, [selected?.id])
+
+  // P3.20 — per-channel draft persistence. When the user switches channels
+  // mid-compose, we stash the unsent text in localStorage. Restored when
+  // the same channel is reopened. Cleared on send (parent clears `input`
+  // to '' after a successful POST → empty string overwrites the draft).
+  const prevSelectedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const prevId = prevSelectedIdRef.current
+    if (prevId) {
+      try {
+        const draft = inputRef.current
+        if (draft && draft.trim()) {
+          window.localStorage.setItem(`bundy.msg.draft.${prevId}`, draft)
+        } else {
+          window.localStorage.removeItem(`bundy.msg.draft.${prevId}`)
+        }
+      } catch { /* ignore */ }
+    }
+    const newId = selected?.id ?? null
+    if (newId) {
+      try { setInput(window.localStorage.getItem(`bundy.msg.draft.${newId}`) ?? '') }
+      catch { setInput('') }
+    } else {
+      setInput('')
+    }
+    prevSelectedIdRef.current = newId
+    // setInput is stable (useCallback deps: []) so excluding it is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id])
   const [sending, setSending] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
   const [showNewConv, setShowNewConv] = useState<false | 'dm' | 'group' | 'channel'>(false)
@@ -211,27 +177,31 @@ export function MessagesPanel({
   const [editingContent, setEditingContent] = useState('')
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null)
 
-  // Search state
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<Array<{
-    id: string; channelId: string; content: string; createdAt: string
-    sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-    channel: { id: string; name: string | null; type: string }
-  }>>([])
-  const [searching, setSearching] = useState(false)
-  const [showSearch, setShowSearch] = useState(false)
-  const searchTimer = useRef<NodeJS.Timeout | null>(null)
-
-  // In-conversation search state (separate from global sidebar search)
-  const [convSearchQuery, setConvSearchQuery] = useState('')
-  const [convSearchResults, setConvSearchResults] = useState<Array<{
-    id: string; channelId: string; content: string; createdAt: string
-    sender: { id: string; username: string; alias: string | null; avatarUrl: string | null }
-    channel: { id: string; name: string | null; type: string }
-  }>>([])
-  const [convSearching, setConvSearching] = useState(false)
-  const [showConvSearch, setShowConvSearch] = useState(false)
-  const convSearchTimer = useRef<NodeJS.Timeout | null>(null)
+  // Sidebar global search + in-conversation search both follow the same
+  // debounced-fetch shape — extracted into useMessagesSearch.
+  const sidebarSearch = useMessagesSearch(apiFetch, (q) => `/api/channels/search?${new URLSearchParams({ q })}`)
+  const {
+    query: searchQuery,
+    results: searchResults,
+    searching,
+    show: showSearch, setShow: setShowSearch,
+    handleInput: handleSearchInput,
+    reset: resetSidebarSearch,
+  } = sidebarSearch
+  // In-conversation search: scopes to currently-selected channel; skips
+  // fetch when nothing is selected.
+  const convSearch = useMessagesSearch(apiFetch, (q) => {
+    if (!selected) return null
+    return `/api/channels/search?${new URLSearchParams({ q, channelId: selected.id })}`
+  })
+  const {
+    query: convSearchQuery,
+    results: convSearchResults,
+    searching: convSearching,
+    show: showConvSearch, setShow: setShowConvSearch,
+    handleInput: handleConvSearchInput,
+    reset: resetConvSearch,
+  } = convSearch
 
   // Pagination
   const [hasMore, setHasMore] = useState(false)
@@ -240,6 +210,8 @@ export function MessagesPanel({
   // Thread panel
   const [threadParent, setThreadParent] = useState<ChatMessage | null>(null)
   const [threadMessages, setThreadMessages] = useState<ChatMessage[]>([])
+  // P3-#13 v2 — when a search hit is a thread reply, ThreadView scrolls to + highlights it.
+  const [threadFocusReplyId, setThreadFocusReplyId] = useState<string | null>(null)
   const [threadInput, setThreadInput] = useState('')
   const [sendingThread, setSendingThread] = useState(false)
 
@@ -255,6 +227,89 @@ export function MessagesPanel({
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [hoveredSection, setHoveredSection] = useState<string | null>(null)
   const toggleSection = (key: string) => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }))
+
+  // Projects section: tasks the user is on that have at least one comment.
+  // Clicking a row opens the task drawer at its discussion tab — same UX
+  // as opening it from the Tasks panel. Acts as a "central inbox" for all
+  // task discussions alongside DMs / channels / groups.
+  const [projectTasks, setProjectTasks] = useState<Array<{
+    id: string; title: string; commentCount: number; updatedAt: string
+    project?: { id: string; name: string; color: string | null } | null
+  }>>([])
+  // Selected task discussion — when set, the main pane renders the
+  // TaskDiscussionChannel mirror instead of a regular conversation.
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  // In-memory unread count per task discussion. Increments when a
+  // comment SSE arrives for a task the user isn't currently viewing,
+  // clears when the user opens the row. Persisted to localStorage so
+  // badges survive app restart.
+  const [unreadByTask, setUnreadByTask] = useState<Record<string, number>>(() => {
+    try {
+      const raw = window.localStorage.getItem('bundy.discussion.unread')
+      return raw ? JSON.parse(raw) as Record<string, number> : {}
+    } catch { return {} }
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('bundy.discussion.unread', JSON.stringify(unreadByTask)) } catch { /* quota exceeded */ }
+  }, [unreadByTask])
+  // Clear unread when the user opens the row's view — either the
+  // legacy TaskDiscussionChannel mount (selectedTaskId) or the
+  // post-migration channel selection (selected.taskId).
+  useEffect(() => {
+    const taskId = selectedTaskId ?? (selected?.type === 'task' ? selected.taskId : null)
+    if (!taskId) return
+    setUnreadByTask(prev => {
+      if (!prev[taskId]) return prev
+      const next = { ...prev }
+      delete next[taskId]
+      return next
+    })
+  }, [selectedTaskId, selected?.id, selected?.type, selected?.taskId])
+  // Tally incoming task comments + fire a group-chat-style banner +
+  // sound, matching the DM channel UX. The banner uses channelType:'task'
+  // so the notification tray can route a click back to the discussion.
+  useEffect(() => {
+    function onTaskComment(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        taskId?: string; mainTaskId?: string; actorId?: string
+        actorName?: string; taskTitle?: string; commentId?: string; summary?: string
+      } | undefined
+      if (!detail) return
+      if (detail.actorId === auth.userId) return
+      const taskId = detail.mainTaskId ?? detail.taskId
+      if (!taskId) return
+
+      // Bump the sidebar unread count unless the user is currently
+      // looking at that task's discussion.
+      if (selectedTaskId !== taskId) {
+        setUnreadByTask(prev => ({ ...prev, [taskId]: (prev[taskId] ?? 0) + 1 }))
+      }
+
+      // Sound + banner — same path channel/group messages use, so the
+      // notification tray treats discussion comments uniformly.
+      playSound('message.task.in')
+      const senderName = detail.actorName ?? 'Someone'
+      const taskTitle = detail.taskTitle ?? 'Discussion'
+      const body = detail.summary ?? ''
+      if (!document.hasFocus()) {
+        try { window.electronAPI?.showNotification?.(`${taskTitle} discussion`, `${senderName}: ${body}`) } catch { /* ignore */ }
+      }
+      window.dispatchEvent(new CustomEvent('bundy-notification', { detail: {
+        id: detail.commentId ?? `${taskId}-${Date.now()}`,
+        type: 'message',
+        title: senderName,
+        body,
+        channelId: taskId,
+        channelName: `${taskTitle} discussion`,
+        channelType: 'task',
+        senderAvatar: null,
+        timestamp: new Date().toISOString(),
+        read: false,
+      } }))
+    }
+    window.addEventListener('bundy-task-comment-added', onTaskComment)
+    return () => window.removeEventListener('bundy-task-comment-added', onTaskComment)
+  }, [auth.userId, selectedTaskId])
 
   // Threads view
   const [showThreadsView, setShowThreadsView] = useState(false)
@@ -296,15 +351,99 @@ export function MessagesPanel({
   // New messages while scrolled up
   const [newMsgCount, setNewMsgCount] = useState(0)
   const isNearBottomRef = useRef(true)
+  // P3-#14 — render-driven mirror of `isNearBottomRef` so the floating
+  // scroll-down button can show whenever the user is scrolled up, not only
+  // when there's an unread badge.
+  const [isNearBottom, setIsNearBottom] = useState(true)
 
   // Lightbox
-  const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null)
+  // Lightbox can hold a single item or a gallery (#1) — when `items` has
+  // more than one entry, the overlay shows prev/next arrows + ←/→ keys.
+  const [lightbox, setLightbox] = useState<{ url: string; filename: string; items?: Array<{ url: string; filename: string }>; index?: number } | null>(null)
+
+  // P3-#10 — listen for `bundy-open-lightbox` CustomEvent emitted by inline
+  // image tags inside parseContent so any image rendered through the
+  // markdown pipeline opens in the lightbox instead of a browser tab.
+  // Route the DMs lightbox through the same claim stack the drawer +
+  // task discussion mirror use. MessagesPanel is mounted at app boot
+  // so its claim sits at the BOTTOM of the stack and only fires when
+  // no overlay (drawer / channel mirror) is currently above it. This
+  // replaces the old direct window listener, which fired in the
+  // wrong phase order and let two lightboxes stack on top of each
+  // other when an overlay was active.
+  useLightboxClaim((detail) => {
+    setLightbox(detail as { url: string; filename: string; items?: Array<{ url: string; filename: string }>; index?: number })
+  })
   useEffect(() => {
     if (!lightbox) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [lightbox])
+
+  // #12 — Deep-link handler for copied message links. Anyone clicking a
+  // `bundy.40h.studio/messages/{channelId}/{messageId}` URL inside the app
+  // ends up here: switch channel + scroll the target into view.
+  useEffect(() => {
+    const onOpenMsg = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { channelId: string; messageId: string } | undefined
+      if (!detail) return
+      const ch = channels.find(c => c.id === detail.channelId)
+      if (!ch) {
+        showToast({ kind: 'warning', message: 'You don’t have access to that conversation' })
+        return
+      }
+      pendingScrollMsgRef.current = detail.messageId
+      if (ch.id === selected?.id) {
+        const el = document.getElementById(`msg-${detail.messageId}`)
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          el.style.background = `${C.accent}22`
+          setTimeout(() => { el.style.background = '' }, 2000)
+          pendingScrollMsgRef.current = null
+        }
+      } else {
+        setShowThreadsView(false); setShowScheduledView(false)
+        setSelected(ch)
+      }
+    }
+    window.addEventListener('bundy-open-message', onOpenMsg)
+    return () => window.removeEventListener('bundy-open-message', onOpenMsg)
+  }, [channels, selected?.id, showToast])
+
+  // Notification tray "task" entries route here so the user lands in
+  // the Discussion mirror instead of the task drawer.
+  useEffect(() => {
+    function onOpenTaskDiscussion(e: Event) {
+      const detail = (e as CustomEvent).detail as { taskId?: string } | undefined
+      if (!detail?.taskId) return
+      selectConv(null)
+      setSelectedVc(null)
+      setShowThreadsView(false)
+      setShowScheduledView(false)
+      setSelectedTaskId(detail.taskId)
+    }
+    window.addEventListener('bundy-open-task-discussion', onOpenTaskDiscussion)
+    return () => window.removeEventListener('bundy-open-task-discussion', onOpenTaskDiscussion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // v1.5.2111 — toast cards from the notifications store dispatch this
+  // when clicked (also dispatched from FullDashboard tab-switch). If the
+  // channel is in our current list we select it directly; if it isn't,
+  // it'll appear after the next /api/threads refresh and the user can
+  // click again. Idempotent.
+  useEffect(() => {
+    function onOpenConversation(e: Event) {
+      const detail = (e as CustomEvent).detail as { channelId?: string } | undefined
+      if (!detail?.channelId) return
+      const ch = channelsRef.current.find(c => c.id === detail.channelId)
+      if (ch) selectConv(ch)
+    }
+    window.addEventListener('bundy-open-conversation', onOpenConversation)
+    return () => window.removeEventListener('bundy-open-conversation', onOpenConversation)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Active 1:1 call
   const [activeCall, setActiveCall] = useState<{
@@ -325,6 +464,46 @@ export function MessagesPanel({
   const conferenceJoinedAtRef = useRef(0)
   const myConferenceRef = useRef(myConference)
   myConferenceRef.current = myConference
+
+  // Mirror VC/DM-call presence to the conference-lock store so:
+  //   1. The calendar can refuse to start a meeting when the user is
+  //      already in a call (mutex — v1.5.2105).
+  //   2. FullDashboard can render the cross-tab FloatingConferenceBar
+  //      when off the messages tab (v1.5.2106).
+  // We pass the full info, not just a boolean, so the floating bar
+  // has the channel name + joinedAt without re-fetching.
+  const setInVoiceOrCall = useConferenceLockStore((s) => s.setInVoiceOrCall)
+  useEffect(() => {
+    if (!myConference) {
+      setInVoiceOrCall(null)
+      return
+    }
+    const kind: 'vc' | 'call' = myConference.channelId.startsWith('vc_') ? 'vc' : 'call'
+    setInVoiceOrCall({
+      channelId: myConference.channelId,
+      channelName: myConference.channelName,
+      joinedAt: conferenceJoinedAtRef.current || Date.now(),
+      kind,
+    })
+  }, [myConference, setInVoiceOrCall])
+
+  // Cross-tab Leave from FloatingConferenceBar dispatches
+  // `bundy-vc-leave-from-bar`. We tear down the LiveKit session via
+  // the existing `bundy-vc-disconnect` channel that VoiceChannelView
+  // listens for, then clear local state.
+  useEffect(() => {
+    const handler = () => {
+      if (!myConferenceRef.current) return
+      window.dispatchEvent(new CustomEvent('bundy-vc-disconnect'))
+      flushSync(() => {
+        setMyConference(null)
+        setVcLocalState({ muted: false, deafened: false, screenSharing: false })
+        setVcPreview(null)
+      })
+    }
+    window.addEventListener('bundy-vc-leave-from-bar', handler)
+    return () => window.removeEventListener('bundy-vc-leave-from-bar', handler)
+  }, [])
 
   // Users currently in 1:1 calls
   const [usersInCall, setUsersInCall] = useState<Set<string>>(new Set())
@@ -364,7 +543,28 @@ export function MessagesPanel({
   const [vcPreview, setVcPreview] = useState<{ stream: MediaStream; name: string } | null>(null)
   const vcPreviewVideoRef = useRef<HTMLVideoElement>(null)
 
-  const selectConv = (c: Conversation | null) => { if (c) { setShowThreadsView(false); setShowScheduledView(false); setSelectedVc(null); setShowConvSearch(false); setConvSearchQuery(''); setConvSearchResults([]) }; setSelected(c) }
+  // #5 — switching conversations needs to drop *all* per-conversation
+  // overlays so we don't land on User B with User A's Files / Pinned /
+  // Thread / search state still active. Drafts are already keyed per
+  // channelId in the persistence effect; this just makes the visible
+  // state match the new conversation.
+  const selectConv = (c: Conversation | null) => {
+    if (c && c.id === selected?.id) { setSelected(c); return }
+    setShowThreadsView(false)
+    setShowScheduledView(false)
+    setShowPinned(false)
+    setShowSharedMedia(false)
+    setThreadParent(null)
+    setThreadMessages([])
+    setThreadFocusReplyId(null)
+    setSelectedVc(null)
+    resetConvSearch()
+    setEditingMsgId(null)
+    setEditingContent('')
+    if (c) setSelectedTaskId(null) // a regular conv clears any task mirror
+    setLightbox(null) // close any leftover lightbox from previous view
+    setSelected(c)
+  }
 
   // When parent accepts an incoming call, open CallWidget in answer mode
   const acceptedCallRef = useRef<IncomingCallPayload | null | undefined>(null)
@@ -517,6 +717,11 @@ export function MessagesPanel({
     if (!onlineUsersRef.current.has(userId)) return 'away'
     // Amber: user is online but system idle >5 min
     if (userIdleRef.current[userId]) return 'recent'
+    // Stale heartbeat — they're nominally online but haven't pinged in
+    // 90 s, so the green "active" dot would be misleading. Downgrade to
+    // amber until a fresh user-activity event lands.
+    const lastSeen = lastSeenRef.current[userId]
+    if (lastSeen && Date.now() - lastSeen > 90_000) return 'recent'
     // Green: user is online and active
     return 'active'
   }, [lastSeenTick])
@@ -531,19 +736,10 @@ export function MessagesPanel({
   const messagesScrollRef = useRef<HTMLDivElement>(null)
   const typingTimers = useRef<Record<string, NodeJS.Timeout>>({})
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: {
-        'Authorization': `Bearer ${config.token}`,
-        'Content-Type': 'application/json',
-        ...(opts?.headers ?? {}),
-      },
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
-
+  // Delegates to the shared cache-aware apiFetch — GETs to whitelisted
+  // paths fall back to IndexedDB on network failure, so the panel keeps
+  // rendering when the server is unreachable.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const loadScheduledMessages = useCallback(async () => {
     setLoadingScheduled(true)
     try {
@@ -558,6 +754,7 @@ export function MessagesPanel({
       const data = await apiFetch('/api/channels') as {
         channels: Array<{
           id: string; type: string; name: string | null; createdBy?: string
+          taskId?: string | null
           members: Array<{ userId: string; user: UserInfo }>
           messages: Array<{ content: string; createdAt: string; sender: { username: string; alias: string | null } }>
           unread?: number
@@ -575,6 +772,8 @@ export function MessagesPanel({
           partnerId = other?.userId
         } else if (ch.type === 'group') {
           name = ch.name ?? 'Group'
+        } else if (ch.type === 'task') {
+          name = ch.name ?? 'Discussion'
         } else {
           name = `#${ch.name ?? 'channel'}`
         }
@@ -582,12 +781,19 @@ export function MessagesPanel({
         return {
           id: ch.id, type: ch.type as Conversation['type'], name, avatar, partnerId,
           members, createdBy: ch.createdBy,
+          taskId: ch.taskId ?? null,
           lastMessage: last ? `${last.sender.alias ?? last.sender.username}: ${last.content}` : undefined,
           lastTime: last?.createdAt,
           unread: ch.unread ?? 0,
         }
       })
-      setChannels(convs)
+      // If a channel is currently open + we're already reading it,
+      // pin its unread to 0. Without this, /api/channels can race
+      // ahead of the /read POST and stamp a stale non-zero count
+      // back on, which is what makes the DMs tab badge linger after
+      // the user has clearly read everything.
+      const openId = selectedRef.current?.id
+      setChannels(convs.map(c => openId && c.id === openId ? { ...c, unread: 0 } : c))
     } catch { /* offline */ }
   }, [apiFetch, auth.userId])
 
@@ -667,6 +873,13 @@ export function MessagesPanel({
         signal: ctrl.signal,
       }).then(async res => {
         if (!res.body) { scheduleReconnect(); return }
+        // v1.5.2203 — every successful SSE handshake triggers a resync.
+        // The stream itself doesn't replay missed events on reconnect, so
+        // anything that landed during the disconnect window would otherwise
+        // stay invisible until the next focus / visibility change. Firing
+        // bundy-sse-reconnected makes panels (Discussion list, channels,
+        // tasks panel etc.) catch up immediately.
+        window.dispatchEvent(new CustomEvent('bundy-sse-reconnected'))
         const reader = res.body.getReader()
         const dec = new TextDecoder()
         while (true) {
@@ -680,6 +893,8 @@ export function MessagesPanel({
             const dataMatch = part.match(/^data: (.+)/m)
             if (!eventMatch || !dataMatch) continue
             const ev = eventMatch[1].trim()
+            // v1.5.2204 — debug: record every SSE arrival timestamp.
+            debugRecord.sse(ev)
             try {
               const payload = JSON.parse(dataMatch[1])
               if (payload.senderId && payload.senderId !== auth.userId) {
@@ -689,21 +904,44 @@ export function MessagesPanel({
                 const channelId = payload.channelId as string
                 const parentMsgId = payload.parentMessageId as string | null | undefined
                 const isCurrentChannel = selectedRef.current?.id === channelId
+                // Relay to anyone outside MessagesPanel that needs to
+                // react to channel-message events (e.g. the task drawer
+                // subscribed to its discussion channel).
+                window.dispatchEvent(new CustomEvent('bundy-channel-message', { detail: payload }))
+                // Clear "typing…" for this sender — their message has
+                // landed, so the indicator should drop instantly instead
+                // of lingering until the 3 s timeout fires.
+                if (payload.senderId && payload.senderId !== auth.userId) {
+                  const senderName = (payload.senderAlias ?? payload.senderName) as string | undefined
+                  if (senderName) {
+                    const timerKey = `${channelId}:${senderName}`
+                    if (typingTimers.current[timerKey]) {
+                      clearTimeout(typingTimers.current[timerKey])
+                      delete typingTimers.current[timerKey]
+                    }
+                    setTypingMap(prev => {
+                      const cur = (prev[channelId] ?? []).filter(n => n !== senderName)
+                      if (cur.length === 0) { const { [channelId]: _, ...rest } = prev; return rest }
+                      return { ...prev, [channelId]: cur }
+                    })
+                  }
+                }
                 if (isCurrentChannel) {
                   if (parentMsgId) {
-                    if (payload.senderId !== auth.userId) {
-                      setMessages(prev => prev.map(m =>
-                        m.id === parentMsgId ? {
-                          ...m, replyCount: (m.replyCount ?? 0) + 1,
-                          replySenders: (() => {
-                            const cur = m.replySenders ?? []
-                            if (cur.some(s => s.id === payload.senderId)) return cur
-                            const newSender = { id: payload.senderId, username: payload.senderName, alias: payload.senderAlias ?? payload.senderName, avatarUrl: payload.senderAvatar ?? null }
-                            return [...cur, newSender].slice(0, 3)
-                          })()
-                        } : m
-                      ))
-                    }
+                    // P3-#13 — always update replySenders (incl. self-replies)
+                    // so the avatar stack on the parent message refreshes
+                    // immediately after sending instead of after a reload.
+                    setMessages(prev => prev.map(m =>
+                      m.id === parentMsgId ? {
+                        ...m, replyCount: (m.replyCount ?? 0) + 1,
+                        replySenders: (() => {
+                          const cur = m.replySenders ?? []
+                          if (cur.some(s => s.id === payload.senderId)) return cur
+                          const newSender = { id: payload.senderId, username: payload.senderName, alias: payload.senderAlias ?? payload.senderName, avatarUrl: payload.senderAvatar ?? null }
+                          return [...cur, newSender].slice(0, 3)
+                        })()
+                      } : m
+                    ))
                     setThreadMessages(prev => {
                       if (prev.some(m => m.id === payload.id)) return prev
                       return [...prev, {
@@ -718,7 +956,10 @@ export function MessagesPanel({
                       t.id === parentMsgId ? {
                         ...t, replyCount: t.replyCount + 1,
                         lastReply: { content: payload.content, sender: { alias: payload.senderAlias ?? null, username: payload.senderName, avatarUrl: payload.senderAvatar ?? null }, createdAt: payload.createdAt },
-                        unread: false,
+                        // v1.5.2111 — mark unread when the message lands in a
+                        // thread the user isn't currently viewing. Previously
+                        // hard-coded `unread: false` swallowed badges.
+                        unread: threadParent?.id !== parentMsgId,
                       } : t
                     ))
                   } else {
@@ -738,7 +979,19 @@ export function MessagesPanel({
                       setNewMsgCount(c => c + 1)
                     }
                   }
-                  if (isVisibleRef.current) {
+                  // v1.5.2111 — only auto-mark-as-read when the user is
+                  // actually viewing the message's location (main view OR
+                  // the same thread it landed in) AND scrolled to the
+                  // bottom (so the message is visible). Previously any
+                  // incoming message would mark the WHOLE channel as read,
+                  // swallowing unread badges even when the user was
+                  // scrolled up reading older history. The "1 new" pill
+                  // already uses isNearBottomRef for the same reason —
+                  // the unread badge now mirrors that signal.
+                  const userInOpenThread = parentMsgId && threadParent?.id === parentMsgId
+                  const userInMainView = !parentMsgId && !threadParent && isNearBottomRef.current
+                  const isUserViewingThisLocation = isVisibleRef.current && (userInOpenThread || userInMainView)
+                  if (isUserViewingThisLocation) {
                     fetch(`${config.apiBase}/api/channels/${channelId}/read`, {
                       method: 'POST', headers: { Authorization: `Bearer ${config.token}` },
                     }).catch(() => {})
@@ -748,13 +1001,61 @@ export function MessagesPanel({
                     ))
                   }
                   if (payload.senderId !== auth.userId) {
-                    new Audio('sounds/new-message.mp3').play().catch(() => {})
+                    // Material Design pack — pick the sound for this channel
+                    // type so the user can hear DM vs group vs channel without
+                    // looking. @mention overrides because attention beats type.
+                    const _ch = channelsRef.current.find(c => c.id === channelId)
+                    const isMentioned = !!payload.content && payload.content.toLowerCase().includes(`@${auth.username.toLowerCase()}`)
+                    if (isMentioned) playSound('message.mention')
+                    else if (_ch?.type === 'dm') playSound('message.dm.in')
+                    else if (_ch?.type === 'group') playSound('message.group.in')
+                    else if (_ch?.type === 'task') playSound('message.task.in')
+                    else playSound('message.channel.in')
                     // Show native desktop notification via main process
                     if (!document.hasFocus()) {
                       window.electronAPI?.showNotification?.('New message', `${payload.senderAlias ?? payload.senderName}: ${payload.content}`)
                     }
-                    // Dispatch to in-app notification tray
-                    const _ch = channelsRef.current.find(c => c.id === channelId)
+                    // v1.5.2111 — surface a top-right toast card when the
+                    // message arrives in a different thread than the user
+                    // is actively viewing. Otherwise the user only hears
+                    // a sound and might miss the message entirely.
+                    const isInOpenThread = parentMsgId && threadParent?.id === parentMsgId
+                    const isInMainViewWithThreadOpen = !parentMsgId && threadParent
+                    if (!isInOpenThread || isInMainViewWithThreadOpen) {
+                      // v1.5.2111 — richer toast: include WHERE the message
+                      // landed (channel/task/group/DM) and WHETHER it's a
+                      // thread reply so the user can triage by urgency
+                      // without opening the panel.
+                      const senderName = payload.senderAlias ?? payload.senderName
+                      const venueLabel = (() => {
+                        if (!_ch) return null
+                        if (_ch.type === 'task') return `task: ${_ch.name}`
+                        if (_ch.type === 'group') return `group: ${_ch.name}`
+                        if (_ch.type === 'channel') return `#${_ch.name}`
+                        return 'DM'
+                      })()
+                      const replyLabel = parentMsgId ? ' · in thread' : ''
+                      const title = isMentioned
+                        ? `${senderName} mentioned you${venueLabel ? ` in ${venueLabel}` : ''}${replyLabel}`
+                        : venueLabel ? `${senderName} → ${venueLabel}${replyLabel}` : senderName
+                      useNotificationsStore.getState().show({
+                        kind: isMentioned ? 'task-mention' : (_ch?.type === 'task' ? 'task-discussion' : 'info'),
+                        title,
+                        message: (payload.content || '').slice(0, 200),
+                        // durationMs omitted → persist until manual close.
+                        onClick: () => {
+                          const ch = channelsRef.current.find(c => c.id === channelId)
+                          if (ch) selectConv(ch)
+                          else {
+                            window.dispatchEvent(new CustomEvent('bundy-open-conversation', {
+                              detail: { channelId, parentMessageId: parentMsgId ?? null },
+                            }))
+                          }
+                        },
+                      })
+                    }
+                    // Dispatch to in-app notification tray (reuse the
+                    // _ch resolved above for the sound branch).
                     window.dispatchEvent(new CustomEvent('bundy-notification', { detail: {
                       id: payload.id,
                       type: parentMsgId ? 'thread-reply' : 'message',
@@ -776,7 +1077,46 @@ export function MessagesPanel({
                     c.id === channelId ? { ...c, unread: (c.unread ?? 0) + 1 } : c
                   ))
                   if (isMention) setMentionedChannels(prev => new Set([...prev, channelId]))
-                  new Audio('sounds/mentioned-message.mp3').play().catch(() => {})
+                  // v1.5.2111 — toast card for messages arriving in OTHER
+                  // channels. Same shape + enrichment as in-channel toasts.
+                  {
+                    const _bgChForToast = channelsRef.current.find(c => c.id === channelId)
+                    const senderName = payload.senderAlias ?? payload.senderName
+                    const venueLabel = (() => {
+                      if (!_bgChForToast) return null
+                      if (_bgChForToast.type === 'task') return `task: ${_bgChForToast.name}`
+                      if (_bgChForToast.type === 'group') return `group: ${_bgChForToast.name}`
+                      if (_bgChForToast.type === 'channel') return `#${_bgChForToast.name}`
+                      return 'DM'
+                    })()
+                    const replyLabel = parentMsgId ? ' · in thread' : ''
+                    const title = isMention
+                      ? `${senderName} mentioned you${venueLabel ? ` in ${venueLabel}` : ''}${replyLabel}`
+                      : venueLabel ? `${senderName} → ${venueLabel}${replyLabel}` : senderName
+                    useNotificationsStore.getState().show({
+                      kind: isMention ? 'task-mention' : (_bgChForToast?.type === 'task' ? 'task-discussion' : 'info'),
+                      title,
+                      message: (payload.content || '').slice(0, 200),
+                      // durationMs omitted → persist until manual close.
+                      onClick: () => {
+                        const ch = channelsRef.current.find(c => c.id === channelId)
+                        if (ch) selectConv(ch)
+                        else {
+                          window.dispatchEvent(new CustomEvent('bundy-open-conversation', {
+                            detail: { channelId, parentMessageId: parentMsgId ?? null },
+                          }))
+                        }
+                      },
+                    })
+                  }
+                  // Background-channel sound — pick by channel type unless
+                  // you're @mentioned (which always wins).
+                  const _bgCh = channelsRef.current.find(c => c.id === channelId)
+                  if (isMention) playSound('message.mention')
+                  else if (_bgCh?.type === 'dm') playSound('message.dm.in')
+                  else if (_bgCh?.type === 'group') playSound('message.group.in')
+                  else if (_bgCh?.type === 'task') playSound('message.task.in')
+                  else playSound('message.channel.in')
                   window.electronAPI?.showNotification?.(
                     isMention ? '📣 You were mentioned' : 'New message',
                     `${payload.senderAlias ?? payload.senderName}: ${payload.content}`
@@ -813,15 +1153,18 @@ export function MessagesPanel({
                   ))
                 }
               } else if (ev === 'channel-message-edit') {
+                window.dispatchEvent(new CustomEvent('bundy-channel-message-edit', { detail: payload }))
                 const updater = (prev: ChatMessage[]) => prev.map(m =>
                   m.id === payload.messageId ? { ...m, content: payload.content, editedAt: payload.editedAt } : m
                 )
                 setMessages(updater)
                 setThreadMessages(updater)
               } else if (ev === 'channel-message-delete') {
+                window.dispatchEvent(new CustomEvent('bundy-channel-message-delete', { detail: payload }))
                 setMessages(prev => prev.filter(m => m.id !== payload.messageId))
                 setThreadMessages(prev => prev.filter(m => m.id !== payload.messageId))
               } else if (ev === 'channel-typing') {
+                window.dispatchEvent(new CustomEvent('bundy-channel-typing', { detail: payload }))
                 const channelId = payload.channelId as string
                 if (payload.userId !== auth.userId) {
                   lastSeenRef.current[payload.userId] = Date.now()
@@ -960,6 +1303,9 @@ export function MessagesPanel({
                 if (payload.userId && payload.userId !== auth.userId) {
                   userIdleRef.current[payload.userId] = !!payload.idle
                   onlineUsersRef.current.add(payload.userId) // receiving heartbeat = online
+                  // Also stamp last-seen so the stale-presence check in
+                  // getPresence can dim users who haven't pinged in a while.
+                  lastSeenRef.current[payload.userId] = Date.now()
                   setLastSeenTick(t => t + 1)
                 }
               } else if (ev === 'online-users') {
@@ -1034,6 +1380,137 @@ export function MessagesPanel({
     loadChannels()
   }, [loadChannels])
 
+  // Fetch task discussions for the Projects sidebar section. Limits to
+  // tasks where the user is involved + has at least one comment, sorted
+  // by most-recently-updated. Refreshed when the user adds a comment
+  // anywhere (the bundy-task-comment-added event fires from the drawer).
+  const loadProjectTasks = useCallback(async () => {
+    const _debugStartedAt = Date.now()
+    try {
+      // `involved=1` (server-side filter) returns tasks I'm assigned to,
+      // created, or have commented on. Older backends ignore the param
+      // and return all tasks; we narrow client-side to ones with at least
+      // one comment to avoid surfacing every task in the workspace.
+      const data = await apiFetch('/api/tasks?involved=1&my=1&includeSubtasks=1') as {
+        tasks: Array<{
+          id: string; title: string; updatedAt: string; status: string
+          parentTaskId?: string | null
+          project?: { id: string; name: string; color: string | null } | null
+          _count?: { comments?: number }
+          mentionedMe?: boolean
+        }>
+      }
+      // v1.5.2201 — Discussion-list visibility rules (per UX spec):
+      //  * Show: any task I'm involved in (assigned / mentioned / commented
+      //    / subtask-assigned) that ISN'T marked done/cancelled.
+      //  * Show: tasks marked done/cancelled IF I was @mentioned in their
+      //    discussion. The mention is the ongoing-conversation signal —
+      //    the "thanks, can you also..." reply still needs to surface.
+      //  * Hide: tasks marked done/cancelled where I'm only an assignee
+      //    or commenter, never mentioned. Once shipped, my participation
+      //    is archived.
+      const filtered = (data.tasks ?? [])
+        .filter(t => !t.parentTaskId)
+        .filter(t => {
+          const isFinal = t.status === 'done' || t.status === 'cancelled'
+          if (!isFinal) return true
+          return !!t.mentionedMe
+        })
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+        .map(t => ({
+          id: t.id, title: t.title, updatedAt: t.updatedAt,
+          commentCount: t._count?.comments ?? 0,
+          project: t.project ?? null,
+        }))
+      setProjectTasks(filtered)
+      // v1.5.2204 — debug record. Tracks how long the API took and how
+      // many tasks the filter ended up with.
+      debugRecord.load(Date.now() - _debugStartedAt, filtered.length)
+      debugRecord.render(filtered.length)
+    } catch (err) {
+      console.error('[messages] loadProjectTasks failed:', err)
+      debugRecord.load(Date.now() - _debugStartedAt, -1)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useEffect(() => {
+    loadProjectTasks()
+    // SSE is the instant trigger for new tasks / comments / notifications.
+    // Window-focus + visibility cover the "wake from sleep, SSE was
+    // dropped" case. No polling timer needed — DMs parity.
+    // Also reload /api/channels so any task channel I just got added
+    // to (subtask assignment, parent task assignment via PATCH)
+    // appears in `channels` state — otherwise the Discussion row
+    // can't find a matching channel and falls back to opening the
+    // drawer instead of the DMs main pane.
+    function onAny() { void loadProjectTasks(); void loadChannels() }
+    // Optimistic removal: the moment a task PATCH lands a status of
+    // done/cancelled, drop it from the Discussion sidebar locally so
+    // the row disappears without waiting for the loadProjectTasks
+    // re-fetch round-trip.
+    function onTaskUpdate(e: Event) {
+      const detail = (e as CustomEvent).detail as { taskId?: string; mainTaskId?: string; changes?: { status?: string } } | undefined
+      const newStatus = detail?.changes?.status
+      if (newStatus === 'done' || newStatus === 'cancelled') {
+        const tid = detail?.mainTaskId ?? detail?.taskId
+        if (tid) setProjectTasks(prev => prev.filter(t => t.id !== tid))
+      }
+      void loadProjectTasks(); void loadChannels()
+    }
+    // Local read sync — DiscussionPanel inside the task drawer fires
+    // this when it marks its channel as read. Without it, MessagesPanel's
+    // unread state can lag behind and the DMs tab badge stays elevated.
+    function onLocalRead(e: Event) {
+      const detail = (e as CustomEvent).detail as { channelId?: string } | undefined
+      if (!detail?.channelId) return
+      setChannels(prev => prev.map(c => c.id === detail.channelId ? { ...c, unread: 0 } : c))
+      setMentionedChannels(prev => { const next = new Set(prev); next.delete(detail.channelId!); return next })
+    }
+    // Phase 2 — when the queue replays a queued write, swap the
+    // optimistic temp message id for the server-assigned id so reactions
+    // / edits / deletes work normally afterward.
+    function onReplayed(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        kind: string
+        tempId?: string
+        response?: { message?: ChatMessage }
+      } | undefined
+      if (!detail || detail.kind !== 'message' || !detail.tempId) return
+      const real = detail.response?.message
+      if (!real) return
+      setMessages(prev => prev.map(m => m.id === detail.tempId ? { ...real, reactions: real.reactions ?? [], reads: real.reads ?? [], replyCount: real.replyCount ?? 0 } : m))
+    }
+    window.addEventListener('bundy-task-comment-added', onAny)
+    window.addEventListener('bundy-task-updated', onTaskUpdate)
+    window.addEventListener('bundy-task-notification', onAny)
+    // v1.5.2203 — SSE reconnect resync (catches events lost during the
+    // 3s reconnect gap, including Cloudflare-tunnel idle drops).
+    window.addEventListener('bundy-sse-reconnected', onAny)
+    window.addEventListener('bundy-channel-read-local', onLocalRead)
+    window.addEventListener('bundy-write-replayed', onReplayed)
+    window.addEventListener('focus', onAny)
+    document.addEventListener('visibilitychange', onAny)
+    // v1.5.2203 — belt-and-suspenders: every 30s, if the document is
+    // visible, force a silent resync. Catches any SSE event that was
+    // dropped silently (network glitches, server-side broadcaster blips
+    // before they're noticed). 30s feels near-instant + costs ~120 KB
+    // /min for two endpoints.
+    const periodicResync = setInterval(() => {
+      if (document.visibilityState === 'visible') onAny()
+    }, 30_000)
+    return () => {
+      window.removeEventListener('bundy-task-comment-added', onAny)
+      window.removeEventListener('bundy-task-updated', onTaskUpdate)
+      window.removeEventListener('bundy-task-notification', onAny)
+      window.removeEventListener('bundy-sse-reconnected', onAny)
+      window.removeEventListener('bundy-channel-read-local', onLocalRead)
+      window.removeEventListener('bundy-write-replayed', onReplayed)
+      window.removeEventListener('focus', onAny)
+      document.removeEventListener('visibilitychange', onAny)
+      clearInterval(periodicResync)
+    }
+  }, [loadProjectTasks, loadChannels])
+
   // Thread activities (loaded when threads view opens)
   useEffect(() => {
     if (!showThreadsView) return
@@ -1100,6 +1577,7 @@ export function MessagesPanel({
     justSwitchedRef.current = true
     setNewMsgCount(0)
     isNearBottomRef.current = true
+    setIsNearBottom(true)
     loadMessages(selected)
     setThreadParent(null); setThreadMessages([]); setShowPinned(false); setEmojiPickerMsgId(null); setFullEmojiPickerMsgId(null)
     if (pendingThreadRef.current) {
@@ -1178,6 +1656,7 @@ export function MessagesPanel({
     if (!el) return
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150
     isNearBottomRef.current = nearBottom
+    setIsNearBottom(nearBottom)
     if (nearBottom) setNewMsgCount(0)
   }
 
@@ -1194,92 +1673,156 @@ export function MessagesPanel({
   async function send() {
     if (!input.trim() || !selected || sending) return
     const content = input.trim()
+    const channelId = selected.id
     setSending(true); setInput('')
+    const tempId = `temp-${(crypto as Crypto).randomUUID?.() ?? Math.random().toString(36).slice(2)}`
     try {
-      await apiFetch(`/api/channels/${selected.id}/messages`, { method: 'POST', body: JSON.stringify({ content }) })
+      await sharedApiFetch(`/api/channels/${channelId}/messages`, {
+        method: 'POST', body: { content }, tempId,
+      })
       await loadMessages(selected)
       setChannels(prev => prev.map(c =>
-        c.id === selected.id
+        c.id === channelId
           ? { ...c, lastMessage: `${auth.username}: ${content}`, lastTime: new Date().toISOString() }
           : c
       ))
-    } catch { /* offline */ } finally { setSending(false) }
+    } catch (err) {
+      if (err instanceof QueuedWriteError) {
+        // Queue accepted the send — render an optimistic placeholder so
+        // the user's message lands in the thread immediately.
+        const optimistic: ChatMessage = {
+          id: tempId,
+          content,
+          createdAt: new Date().toISOString(),
+          editedAt: null,
+          sender: { id: auth.userId, username: auth.username, alias: null, avatarUrl: auth.avatarUrl ?? null },
+          reactions: [], reads: [], replyCount: 0,
+          parentMessageId: null,
+          isPinned: false, pinnedAt: null, pinnedBy: null,
+        }
+        setMessages(prev => [...prev, optimistic])
+        setChannels(prev => prev.map(c =>
+          c.id === channelId
+            ? { ...c, lastMessage: `${auth.username}: ${content}`, lastTime: new Date().toISOString() }
+            : c
+        ))
+      } else {
+        console.error('[Messages] send failed:', err)
+      }
+    } finally { setSending(false) }
   }
 
-  async function handleEditMessage() {
-    if (!editingMsgId || !editingContent.trim() || !selected) return
+  // Refs hold the latest editing state without changing identity — the
+  // useCallback below stays referentially stable (no editingContent dep)
+  // so React.memo on <MessageRow> can short-circuit while the user types.
+  const editingMsgIdRef = useRef(editingMsgId)
+  const editingContentRef = useRef(editingContent)
+  editingMsgIdRef.current = editingMsgId
+  editingContentRef.current = editingContent
+  const handleEditMessage = useCallback(async () => {
+    const id = editingMsgIdRef.current
+    const content = editingContentRef.current
+    if (!id || !content.trim() || !selected) return
     try {
-      await apiFetch(`/api/channels/${selected.id}/messages/${editingMsgId}`, {
-        method: 'PATCH', body: JSON.stringify({ content: editingContent.trim() }),
+      await apiFetch(`/api/channels/${selected.id}/messages/${id}`, {
+        method: 'PATCH', body: JSON.stringify({ content: content.trim() }),
       })
       setMessages(prev => prev.map(m =>
-        m.id === editingMsgId ? { ...m, content: editingContent.trim(), editedAt: new Date().toISOString() } : m
+        m.id === id ? { ...m, content: content.trim(), editedAt: new Date().toISOString() } : m
       ))
     } catch (err) { console.error('[Messages] edit failed:', err) }
     setEditingMsgId(null); setEditingContent('')
-  }
+  }, [selected, apiFetch])
 
-  async function handleDeleteMessage(msgId: string) {
+  const handleDeleteMessage = useCallback(async (msgId: string) => {
     if (!selected) return
     try {
       await apiFetch(`/api/channels/${selected.id}/messages/${msgId}`, { method: 'DELETE' })
       setMessages(prev => prev.filter(m => m.id !== msgId))
     } catch (err) { console.error('[Messages] delete failed:', err) }
-  }
+  }, [selected, apiFetch])
 
-  function handleSearchInput(q: string) {
-    setSearchQuery(q)
-    if (searchTimer.current) clearTimeout(searchTimer.current)
-    if (!q.trim() || q.trim().length < 2) { setSearchResults([]); return }
-    searchTimer.current = setTimeout(async () => {
-      setSearching(true)
-      try {
-        const data = await apiFetch(`/api/channels/search?${new URLSearchParams({ q: q.trim() })}`)
-        setSearchResults(data.messages ?? [])
-      } catch { setSearchResults([]) }
-      setSearching(false)
-    }, 400)
-  }
-
-  function handleSearchResultClick(result: typeof searchResults[0]) {
+  async function handleSearchResultClick(result: typeof searchResults[0]) {
     const ch = channels.find(c => c.id === result.channelId)
-    if (ch) {
-      pendingScrollMsgRef.current = result.id
-      if (ch.id === selected?.id) {
-        // Same channel — check DOM first, otherwise reload around the target
-        const el = document.getElementById(`msg-${result.id}`)
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          el.style.background = `${C.accent}22`
-          setTimeout(() => { el.style.background = '' }, 2000)
-          pendingScrollMsgRef.current = null
-        } else {
-          loadMessages(ch)
-        }
-      } else {
-        setSelected(ch) // useEffect will call loadMessages with around param
-      }
+    if (!ch) {
+      resetSidebarSearch()
+      return
     }
-    setShowSearch(false); setSearchQuery(''); setSearchResults([])
-  }
-
-  // In-conversation search handler (scoped to current channel)
-  function handleConvSearchInput(q: string) {
-    setConvSearchQuery(q)
-    if (convSearchTimer.current) clearTimeout(convSearchTimer.current)
-    if (!q.trim() || q.trim().length < 2) { setConvSearchResults([]); return }
-    if (!selected) return
-    convSearchTimer.current = setTimeout(async () => {
-      setConvSearching(true)
+    // P3-#9 — thread-reply hits open the thread panel instead of trying to
+    // scroll the main list (which only contains top-level messages).
+    if (result.parentMessageId) {
+      // Switch channel if needed first; loadMessages will fetch top-level msgs.
+      if (ch.id !== selected?.id) {
+        setSelected(ch)
+        // Wait for channel switch + initial load before opening thread.
+        await new Promise(r => setTimeout(r, 200))
+      }
+      // P3-#13 v2 — directly fetch the parent message without using `around=`,
+      // which only returns top-level messages and was returning [] for thread
+      // parents whose own row is buried in pagination. Pass the focus id to
+      // ThreadView so it scrolls to + highlights the matched reply.
       try {
-        const data = await apiFetch(`/api/channels/search?${new URLSearchParams({ q: q.trim(), channelId: selected.id })}`)
-        setConvSearchResults(data.messages ?? [])
-      } catch { setConvSearchResults([]) }
-      setConvSearching(false)
-    }, 400)
+        const parentRes = await apiFetch(`/api/channels/${ch.id}/messages?around=${result.parentMessageId}`)
+        let parent: ChatMessage | undefined = (parentRes.messages ?? []).find((m: ChatMessage) => m.id === result.parentMessageId)
+        if (!parent) {
+          // Last resort: synthesize a minimal parent from the search payload.
+          parent = {
+            id: result.parentMessageId,
+            content: '(loading thread parent…)',
+            createdAt: result.createdAt,
+            sender: { id: '', username: '?', alias: null, avatarUrl: null },
+            reactions: [], reads: [], replyCount: 0,
+          } as ChatMessage
+        }
+        setThreadFocusReplyId(result.id)
+        openThread(parent)
+      } catch (err) { console.error('[search] open thread failed:', err) }
+      resetSidebarSearch()
+      return
+    }
+    // Top-level hit — original flow.
+    pendingScrollMsgRef.current = result.id
+    if (ch.id === selected?.id) {
+      const el = document.getElementById(`msg-${result.id}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.style.background = `${C.accent}22`
+        setTimeout(() => { el.style.background = '' }, 2000)
+        pendingScrollMsgRef.current = null
+      } else {
+        loadMessages(ch)
+      }
+    } else {
+      setSelected(ch)
+    }
+    resetSidebarSearch()
   }
 
-  function handleConvSearchResultClick(result: typeof convSearchResults[0]) {
+  async function handleConvSearchResultClick(result: typeof convSearchResults[0]) {
+    // #5 — thread-reply hits open the ThreadView with the matched reply
+    // highlighted, instead of trying to scroll the main list (which only
+    // ever holds top-level messages).
+    if (result.parentMessageId && selected) {
+      try {
+        const parentRes = await apiFetch(`/api/channels/${selected.id}/messages?around=${result.parentMessageId}`)
+        let parent: ChatMessage | undefined = (parentRes.messages ?? []).find((m: ChatMessage) => m.id === result.parentMessageId)
+        if (!parent) {
+          parent = {
+            id: result.parentMessageId,
+            content: '(loading thread parent…)',
+            createdAt: result.createdAt,
+            sender: { id: '', username: '?', alias: null, avatarUrl: null },
+            reactions: [], reads: [], replyCount: 0,
+          } as ChatMessage
+        }
+        setThreadFocusReplyId(result.id)
+        openThread(parent)
+      } catch (err) {
+        console.error('[search] open thread failed:', err)
+      }
+      resetConvSearch()
+      return
+    }
     const el = document.getElementById(`msg-${result.id}`)
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -1290,7 +1833,7 @@ export function MessagesPanel({
       pendingScrollMsgRef.current = result.id
       loadMessages(selected)
     }
-    setShowConvSearch(false); setConvSearchQuery(''); setConvSearchResults([])
+    resetConvSearch()
   }
 
   async function loadOlderMessages() {
@@ -1310,7 +1853,7 @@ export function MessagesPanel({
     } catch { /* offline */ } finally { setLoadingMore(false) }
   }
 
-  async function toggleReaction(msgId: string, emoji: string, isThread = false) {
+  const toggleReaction = useCallback(async (msgId: string, emoji: string, isThread = false) => {
     if (!selected) return
     try {
       const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/reactions`, {
@@ -1332,9 +1875,9 @@ export function MessagesPanel({
     } catch { /* offline */ }
     setEmojiPickerMsgId(null)
     setFullEmojiPickerMsgId(null)
-  }
+  }, [selected, apiFetch, auth.userId, auth.username])
 
-  async function togglePin(msgId: string) {
+  const togglePin = useCallback(async (msgId: string) => {
     if (!selected) return
     try {
       const res = await apiFetch(`/api/channels/${selected.id}/messages/${msgId}/pin`, { method: 'POST' })
@@ -1342,7 +1885,7 @@ export function MessagesPanel({
         m.id === msgId ? { ...m, isPinned: res.isPinned, pinnedAt: res.pinnedAt, pinnedBy: res.pinnedBy } : m
       ))
     } catch { /* offline */ }
-  }
+  }, [selected, apiFetch])
 
   async function loadPinnedMessages() {
     if (!selected) return
@@ -1362,13 +1905,13 @@ export function MessagesPanel({
     finally { setLoadingSharedMedia(false) }
   }
 
-  async function openThread(msg: ChatMessage) {
+  const openThread = useCallback(async (msg: ChatMessage) => {
     setThreadParent(msg); setThreadInput('')
     try {
       const data = await apiFetch(`/api/channels/${selected!.id}/messages?parentMessageId=${msg.id}`)
       setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({ ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0 })))
     } catch { setThreadMessages([]) }
-  }
+  }, [selected, apiFetch])
 
   async function sendThreadReply() {
     if (!threadInput.trim() || !selected || !threadParent || sendingThread) return
@@ -1378,9 +1921,9 @@ export function MessagesPanel({
       await apiFetch(`/api/channels/${selected.id}/messages`, {
         method: 'POST', body: JSON.stringify({ content, parentMessageId: threadParent.id }),
       })
-      const data = await apiFetch(`/api/channels/${selected.id}/messages?parentMessageId=${threadParent.id}`)
-      setThreadMessages((data.messages ?? []).map((m: ChatMessage) => ({ ...m, reactions: m.reactions ?? [], replyCount: m.replyCount ?? 0 })))
-      setMessages(prev => prev.map(m => m.id === threadParent.id ? { ...m, replyCount: (m.replyCount ?? 0) + 1 } : m))
+      // P3-#6 — replyCount + replySenders + threadMessages all refresh via the
+      // `channel-message` SSE handler (lines ~767-794). The previous optimistic
+      // `+1` here was running BOTH paths and double-counting self-replies.
     } catch { /* offline */ } finally { setSendingThread(false) }
   }
 
@@ -1407,6 +1950,16 @@ export function MessagesPanel({
 
   // ─── Conference join helper ─────────────────────────────────────────────────
   async function joinConference(channelId: string, channelName: string) {
+    // Mutex: refuse to enter a DM/group call while a calendar meeting
+    // is active (v1.5.2105).
+    if (readConferenceLock().inMeeting) {
+      useNotificationsStore.getState().show({
+        kind: 'warning',
+        title: 'Already in a meeting',
+        message: 'Leave the calendar meeting before joining a call.',
+      })
+      return
+    }
     try {
       const res = await fetch(`${config.apiBase}/api/calls`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
@@ -1464,7 +2017,27 @@ export function MessagesPanel({
     })
   }, [activeConferences])
 
+  // Adapter wrapper used by <MessageRow> for VC-invite cards. Looks up
+  // the VC by id from the current list and forwards to joinVoiceChannel.
+  // useRef so the wrapper reference stays stable as joinVoiceChannel
+  // closure rebuilds each render (its inner state changes are frequent).
+  const joinVoiceChannelRef = useRef<((vc: VoiceChannelInfo) => Promise<void>) | null>(null)
+  const onJoinVoiceChannel = useCallback((vcId: string) => {
+    const vc = voiceChannels.find(v => v.id === vcId)
+    if (vc) void joinVoiceChannelRef.current?.(vc)
+  }, [voiceChannels])
+
   async function joinVoiceChannel(vc: VoiceChannelInfo) {
+    // Mutex: refuse to enter a VC while a calendar meeting is active.
+    // The user has to leave the meeting first (v1.5.2105).
+    if (readConferenceLock().inMeeting) {
+      useNotificationsStore.getState().show({
+        kind: 'warning',
+        title: 'Already in a meeting',
+        message: 'Leave the calendar meeting before joining a voice channel.',
+      })
+      return
+    }
     // If already in this VC, just show the call view
     if (myConference?.channelId === `vc_${vc.id}`) {
       setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false)
@@ -1490,6 +2063,7 @@ export function MessagesPanel({
       window.dispatchEvent(new CustomEvent('bundy-vc-joined'))
     } catch {}
   }
+  joinVoiceChannelRef.current = joinVoiceChannel
 
   async function createVoiceChannel() {
     if (!vcCreateName.trim() || vcSaving) return
@@ -1714,7 +2288,17 @@ export function MessagesPanel({
         <div style={{ padding: '12px 16px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, borderBottom: `1px solid ${C.separator}` }}>
           <span style={{ fontWeight: 700, fontSize: 16, color: C.sidebarTextActive }}>Messages</span>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button onClick={() => { setShowSearch(!showSearch); if (showSearch) { setSearchQuery(''); setSearchResults([]) } }} title="Search messages"
+            <button onClick={async () => {
+              try {
+                await apiFetch('/api/channels/read-all', { method: 'POST', body: JSON.stringify({}) })
+                setChannels(prev => prev.map(c => ({ ...c, unread: 0 })))
+                setMentionedChannels(new Set())
+              } catch (err) { console.error('[messages] mark-all-read failed:', err) }
+            }} title="Mark all as read"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.sidebarText, padding: 4, borderRadius: 4 }}>
+              <CheckCheck size={16} />
+            </button>
+            <button onClick={() => { if (showSearch) resetSidebarSearch(); else setShowSearch(true) }} title="Search messages"
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: showSearch ? C.accent : C.sidebarText, padding: 4, borderRadius: 4 }}>
               <Search size={16} />
             </button>
@@ -1835,6 +2419,128 @@ export function MessagesPanel({
                 </>
               )}
 
+              {/* Discussion — task discussions surfaced as channel-like
+                  rows. Grouped under a top-level "Discussion" section
+                  with each project (InSync / Wahed / etc) as its own
+                  collapsible sub-section. Two-way sync with the task
+                  drawer via the existing bundy-task-comment-added SSE. */}
+              {projectTasks.length > 0 && (() => {
+                // Group tasks by project. Tasks without a project go
+                // into a synthesized "No project" bucket so they're not
+                // hidden from the user.
+                const groups = new Map<string, { name: string; color: string | null; tasks: typeof projectTasks }>()
+                for (const t of projectTasks) {
+                  const key = t.project?.id ?? '__none'
+                  const name = t.project?.name ?? 'No project'
+                  const color = t.project?.color ?? null
+                  if (!groups.has(key)) groups.set(key, { name, color, tasks: [] })
+                  groups.get(key)!.tasks.push(t)
+                }
+                const sortedGroups = Array.from(groups.entries())
+                  .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+                return (
+                  <>
+                    <div
+                      onMouseEnter={() => setHoveredSection('discussion')}
+                      onMouseLeave={() => setHoveredSection(null)}
+                      style={{ padding: '12px 16px 4px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                    >
+                      <ChevronDown size={12} color={C.sidebarText} style={{ transition: 'transform 0.15s ease', transform: collapsedSections.discussion ? 'rotate(-90deg)' : 'rotate(0deg)' }} onClick={() => toggleSection('discussion')} />
+                      <span onClick={() => toggleSection('discussion')} style={{ fontSize: 14, fontWeight: 600, color: C.sidebarText, flex: 1 }}>Discussion</span>
+                    </div>
+                    {!collapsedSections.discussion && sortedGroups.map(([key, group]) => {
+                      const groupKey = `discussion:${key}`
+                      const isCollapsed = !!collapsedSections[groupKey]
+                      const groupCount = group.tasks.reduce((n, t) => n + t.commentCount, 0)
+                      return (
+                        <div key={key}>
+                          <div
+                            onClick={() => toggleSection(groupKey)}
+                            style={{ padding: '4px 24px 4px 28px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                          >
+                            <ChevronDown size={10} color={C.sidebarText}
+                              style={{ transition: 'transform 0.15s ease', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', opacity: 0.7 }} />
+                            {group.color && (
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: group.color, flexShrink: 0 }} />
+                            )}
+                            <span style={{ fontSize: 12, fontWeight: 600, color: C.sidebarText, opacity: 0.85, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {group.name}
+                            </span>
+                            <span style={{ fontSize: 10, color: C.textMuted, fontWeight: 500 }}>{group.tasks.length}</span>
+                          </div>
+                          {!isCollapsed && group.tasks.map(t => {
+                            // Each task has a 1:1 backing Channel
+                            // (type="task") so the discussion inherits
+                            // the channel pipeline. Click selects that
+                            // channel — same UX as a group chat.
+                            const taskChannel = channels.find(c => (c as Conversation & { taskId?: string | null }).taskId === t.id)
+                            const isActive = taskChannel ? selected?.id === taskChannel.id : false
+                            return (
+                              <button key={t.id}
+                                onClick={() => {
+                                  setSelectedVc(null)
+                                  setShowThreadsView(false)
+                                  setShowScheduledView(false)
+                                  setSelectedTaskId(null)
+                                  if (taskChannel) {
+                                    selectConv(taskChannel)
+                                  } else {
+                                    // No channel yet — fall back to opening the task drawer.
+                                    window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: t.id, focusDiscussion: true } }))
+                                  }
+                                }}
+                                title={t.title}
+                                style={{
+                                  width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                                  padding: '5px 16px 5px 36px', border: 'none', cursor: 'pointer',
+                                  background: isActive ? C.sidebarActive ?? `${C.accent}1a` : 'transparent',
+                                  textAlign: 'left', fontFamily: 'inherit',
+                                }}
+                                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = C.sidebarHover }}
+                                onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}>
+                                <div style={{
+                                  width: 22, height: 22, borderRadius: 5, flexShrink: 0,
+                                  background: group.color ? `${group.color}33` : `${C.accent}22`,
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  color: group.color ?? C.accent,
+                                }}>
+                                  <MessageCircle size={11} />
+                                </div>
+                                {/* #4 — unread count comes from the
+                                    channel itself (server-tracked,
+                                    decreases when read) instead of the
+                                    forever-on commentCount. Falls back
+                                    to the in-memory counter if the
+                                    channel isn't in state yet. */}
+                                {(() => {
+                                  const unread = (taskChannel?.unread ?? 0) + (unreadByTask[t.id] ?? 0)
+                                  return (
+                                    <>
+                                      <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: C.sidebarText, fontWeight: unread > 0 ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {t.title}
+                                      </span>
+                                      {unread > 0 && (
+                                        <span style={{
+                                          background: C.danger ?? '#ef4444', color: '#fff',
+                                          borderRadius: 10, fontSize: 10, padding: '1px 6px',
+                                          fontWeight: 700, minWidth: 18, textAlign: 'center',
+                                        }}>
+                                          {unread > 99 ? '99+' : unread}
+                                        </span>
+                                      )}
+                                    </>
+                                  )
+                                })()}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                  </>
+                )
+              })()}
+
               {groupList.length > 0 && (
                 <>
                   <div
@@ -1877,8 +2583,15 @@ export function MessagesPanel({
                     const partnerVcEntry = partnerId ? Object.entries(activeConferences).find(([key, ps]) => key.startsWith('vc_') && ps.some(p => p.id === partnerId)) : undefined
                     const partnerInVc = partnerVcEntry ? (voiceChannels.find(vc => `vc_${vc.id}` === partnerVcEntry[0])?.name ?? 'Voice Channel') : null
                     const partnerVc = partnerVcEntry ? voiceChannels.find(vc => `vc_${vc.id}` === partnerVcEntry[0]) : undefined
+                    // Detect partner in a calendar meeting (LiveKit room
+                    // id `meeting_<eventId>`). The conferences map already
+                    // tracks this — we just look for any meeting_* room
+                    // that has this partner in it. (v1.5.2105)
+                    const partnerInMeeting = !!(partnerId && Object.entries(activeConferences).some(
+                      ([key, ps]) => key.startsWith('meeting_') && ps.some(p => p.id === partnerId)
+                    ))
                     return (
-                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall || dmHasConference} partnerInVc={partnerInVc} onJoinVc={partnerVc ? () => joinVoiceChannel(partnerVc) : undefined} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
+                      <ConvRow key={c.id} conv={c} selected={selected?.id === c.id} typingUsers={typingMap[c.id] ?? []} hasActiveCall={partnerInCall || dmHasConference} partnerInVc={partnerInVc} onJoinVc={partnerVc ? () => joinVoiceChannel(partnerVc) : undefined} partnerInMeeting={partnerInMeeting} isMentioned={mentionedChannels.has(c.id)} onClick={() => selectConv(c)} onClose={selected?.id === c.id ? () => selectConv(null) : undefined} getPresence={getPresence} getTrackerStatus={getTrackerStatus} />
                     )
                   })}
                 </>
@@ -2025,100 +2738,17 @@ export function MessagesPanel({
           )}
         </div>
 
-        {/* Floating call control bar at bottom of sidebar */}
-        {myConference && (
-          <div style={{
-            borderTop: `1px solid ${C.separator}`, background: C.bgSecondary, flexShrink: 0,
-            padding: '8px 10px',
-          }}>
-            {/* Top line: status + show call icon */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <Volume2 size={14} color={C.success} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: C.success }}>Voice Connected</div>
-                <div style={{ fontSize: 10, color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{myConference.channelName}</div>
-              </div>
-              <button
-                onClick={() => { setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false) }}
-                title="Show Call"
-                style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 6, padding: 5, cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)' }}
-              >
-                <Eye size={14} />
-              </button>
-            </div>
-            {/* Speaker video/screen preview — only shown when user is not looking at the call room */}
-            {vcPreview && (selected || selectedVc || showThreadsView || showScheduledView) && (
-              <div
-                onClick={() => { setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false) }}
-                title="Click to open call"
-                style={{ marginBottom: 6, borderRadius: 6, overflow: 'hidden', background: '#000', position: 'relative', aspectRatio: '4/3', cursor: 'pointer' }}>
-                <video ref={vcPreviewVideoRef} autoPlay playsInline muted
-                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
-                <div style={{ position: 'absolute', bottom: 4, left: 6, fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.6)', borderRadius: 3, padding: '1px 5px' }}>
-                  {vcPreview.name}
-                </div>
-                <div style={{ position: 'absolute', top: 4, right: 4, background: 'rgba(0,0,0,0.5)', borderRadius: 3, padding: '1px 4px', fontSize: 9, color: 'rgba(255,255,255,0.7)' }}>↗</div>
-              </div>
-            )}
-            {/* Bottom line: mute, deafen, screen share, end call */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('bundy-vc-toggle-mute'))}
-                title={vcLocalState.muted ? 'Unmute' : 'Mute'}
-                style={{
-                  flex: 1, background: vcLocalState.muted ? 'rgba(248,113,113,0.15)' : 'rgba(255,255,255,0.06)',
-                  border: 'none', borderRadius: 6, padding: '6px 0', cursor: 'pointer',
-                  color: vcLocalState.muted ? '#f87171' : C.text, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8' }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
-              >
-                {vcLocalState.muted ? <MicOff size={15} /> : <Mic size={15} />}
-              </button>
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('bundy-vc-toggle-deafen'))}
-                title={vcLocalState.deafened ? 'Undeafen' : 'Deafen'}
-                style={{
-                  flex: 1, background: vcLocalState.deafened ? 'rgba(248,113,113,0.15)' : 'rgba(255,255,255,0.06)',
-                  border: 'none', borderRadius: 6, padding: '6px 0', cursor: 'pointer',
-                  color: vcLocalState.deafened ? '#f87171' : C.text, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8' }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
-              >
-                {vcLocalState.deafened ? <HeadphoneOff size={15} /> : <Headphones size={15} />}
-              </button>
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('bundy-vc-toggle-screenshare'))}
-                title={vcLocalState.screenSharing ? 'Stop Sharing' : 'Share Screen'}
-                style={{
-                  flex: 1, background: vcLocalState.screenSharing ? 'rgba(59,165,93,0.2)' : 'rgba(255,255,255,0.06)',
-                  border: 'none', borderRadius: 6, padding: '6px 0', cursor: 'pointer',
-                  color: vcLocalState.screenSharing ? C.success : C.text, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8' }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
-              >
-                <Monitor size={15} />
-              </button>
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('bundy-vc-disconnect'))}
-                title="Disconnect"
-                style={{
-                  flex: 1, background: 'rgba(237,66,69,0.15)', border: 'none', borderRadius: 6,
-                  padding: '6px 0', cursor: 'pointer', color: '#f87171',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8' }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
-              >
-                <PhoneOff size={15} />
-              </button>
-            </div>
-          </div>
-        )}
+        {/* Bottom-of-sidebar floating call control bar — see FloatingCallBar.tsx.
+            The video preview only shows when the user is NOT currently viewing
+            the call room itself; we gate that here by passing a possibly-null
+            preview. */}
+        <FloatingCallBar
+          myConference={myConference}
+          vcLocalState={vcLocalState}
+          vcPreview={(selected || selectedVc || showThreadsView || showScheduledView) ? vcPreview : null}
+          vcPreviewVideoRef={vcPreviewVideoRef}
+          onShowCall={() => { setSelected(null); setSelectedVc(null); setShowThreadsView(false); setShowScheduledView(false) }}
+        />
       </div>
 
       {/* ─── VoiceChannelView (always mounted when in call, hidden when navigating) ─── */}
@@ -2590,7 +3220,7 @@ export function MessagesPanel({
                           <span style={{ fontSize: 11, color: C.textMuted }}>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
                       )}
-                      <div style={{ fontSize: 14, color: C.text, lineHeight: 1.45, wordBreak: 'break-word' }}>{renderMessageContent(msg.content, false)}</div>
+                      <div style={{ fontSize: 14, color: C.text, lineHeight: 1.45, wordBreak: 'break-word' }}>{renderMessageContent(msg.content, false, usersMap)}</div>
                     </div>
                   </div>
                 </React.Fragment>
@@ -2611,6 +3241,17 @@ export function MessagesPanel({
           />
         </div>
 
+      ) : selectedTaskId ? (
+        /* ─── Task discussion mirror (Projects sidebar entry) ─────────────── */
+        <TaskDiscussionChannel
+          taskId={selectedTaskId}
+          config={config}
+          auth={auth}
+          onClose={() => setSelectedTaskId(null)}
+          onOpenInDrawer={() => {
+            window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: selectedTaskId, focusDiscussion: true } }))
+          }}
+        />
       ) : selected ? (
         /* ─── Channel / DM view ────────────────────────────────────────────── */
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden', background: C.contentBg }}>
@@ -2631,6 +3272,8 @@ export function MessagesPanel({
                   )
                 })() : selected.type === 'channel' ? (
                   <Hash size={18} color={C.textMuted} />
+                ) : selected.type === 'task' ? (
+                  <MessageCircle size={18} color={C.accent} />
                 ) : (
                   <Users size={18} color={C.textMuted} />
                 )}
@@ -2670,7 +3313,17 @@ export function MessagesPanel({
 
               {/* Action icons */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                {(() => {
+                {/* #2 — Open task button for task discussions, replacing
+                    the call button (you can't call into a task). */}
+                {selected.type === 'task' && selected.taskId && (
+                  <button onClick={() => window.dispatchEvent(new CustomEvent('bundy-open-task', { detail: { taskId: selected.taskId } }))}
+                    title="Open task"
+                    style={{ height: 32, display: 'flex', alignItems: 'center', background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, padding: '0 12px', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }}>
+                    Open task
+                  </button>
+                )}
+                {/* #3 — call button only for DMs / groups / channels. */}
+                {selected.type !== 'task' && (() => {
                   const conf = activeConferences[selected.id]
                   const inThisConf = myConference?.channelId === selected.id
                   if (inThisConf) return null
@@ -2692,15 +3345,17 @@ export function MessagesPanel({
                   )
                 })()}
 
-                <button onClick={() => { setShowPinned(!showPinned); if (!showPinned) loadPinnedMessages() }} title="Pinned messages"
-                  style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: showPinned ? C.accent : C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Pin size={15} />
-                </button>
-                <button onClick={() => { setShowConvSearch(!showConvSearch); if (showConvSearch) { setConvSearchQuery(''); setConvSearchResults([]) } }} title="Search in conversation"
+                {/* #6 — pin button removed from the top-right action row;
+                    the Pins tab below already covers it. */}
+                <button onClick={() => { if (showConvSearch) resetConvSearch(); else setShowConvSearch(true) }} title="Search in conversation"
                   style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: showConvSearch ? C.accent : C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Search size={15} />
                 </button>
-                {selected.type !== 'dm' && (
+                {/* Settings hidden on task channels — members are
+                    auto-synced from task assignees / collaborators
+                    / commenters; the "Open task" button above gives
+                    you the actual control surface. */}
+                {selected.type !== 'dm' && selected.type !== 'task' && (
                   <button onClick={() => setShowSettings(true)} title="Channel settings"
                     style={{ width: 32, height: 32, borderRadius: 6, background: 'none', border: `1px solid ${C.separator}`, cursor: 'pointer', color: C.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Settings2 size={15} />
@@ -2743,7 +3398,7 @@ export function MessagesPanel({
                   autoFocus
                   style={{ width: '100%', padding: '7px 32px 7px 10px', fontSize: 12, border: `1px solid ${C.separator}`, borderRadius: 8, outline: 'none', background: C.inputBg, color: C.text }}
                 />
-                <button onClick={() => { setShowConvSearch(false); setConvSearchQuery(''); setConvSearchResults([]) }}
+                <button onClick={() => { resetConvSearch() }}
                   style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, display: 'flex', alignItems: 'center' }}>
                   <X size={14} />
                 </button>
@@ -2796,8 +3451,52 @@ export function MessagesPanel({
             )
           })()}
 
-          {/* Messages area */}
+          {/* Messages area — full-screen takeover for thread / pinned / files
+              (P3-#7 v2 + P3-#8). When any of those is active, the entire
+              main pane becomes that view; back-arrow returns to messages. */}
           <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+          {threadParent ? (
+            <ThreadView
+              config={config}
+              auth={auth}
+              channelId={selected!.id}
+              parent={threadParent}
+              replies={threadMessages}
+              replyCount={Math.max(threadParent.replyCount ?? 0, threadMessages.length)}
+              loading={false}
+              threadInput={threadInput}
+              setThreadInput={setThreadInput}
+              sendReply={sendThreadReply}
+              sendingReply={sendingThread}
+              groupReactions={groupReactions}
+              toggleReaction={toggleReaction}
+              usersMap={usersMap}
+              onClose={() => { setThreadParent(null); setThreadMessages([]); setThreadFocusReplyId(null) }}
+              onScheduled={loadScheduledMessages}
+              focusReplyId={threadFocusReplyId}
+            />
+          ) : showPinned ? (
+            <PinnedView
+              pinnedMessages={pinnedMessages}
+              onClose={() => setShowPinned(false)}
+              usersMap={usersMap}
+              onJump={(messageId) => {
+                setShowPinned(false)
+                pendingScrollMsgRef.current = messageId
+                if (selected) loadMessages(selected)
+              }}
+            />
+          ) : showSharedMedia ? (
+            <SharedMediaView
+              config={config}
+              sharedMedia={sharedMedia}
+              sharedMediaTab={sharedMediaTab}
+              setSharedMediaTab={setSharedMediaTab}
+              loadingSharedMedia={loadingSharedMedia}
+              onClose={() => setShowSharedMedia(false)}
+              onOpenFile={(url, filename) => setLightbox({ url, filename })}
+            />
+          ) : (
             <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div ref={messagesScrollRef} onScroll={handleMessagesScroll} style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               {hasMore && (
@@ -2811,346 +3510,36 @@ export function MessagesPanel({
                 <div style={{ textAlign: 'center', color: C.textMuted, padding: 20 }}><Loader size={18} /></div>
               )}
 
-              {messages.map((msg, i) => {
-                const isMe = msg.sender.id === auth.userId
-                const prevMsg = messages[i - 1]
-                const timeDiff = prevMsg ? new Date(msg.createdAt).getTime() - new Date(prevMsg.createdAt).getTime() : Infinity
-                const showHeader = !prevMsg || prevMsg.sender.id !== msg.sender.id || timeDiff > 5 * 60 * 1000
-                const senderName = msg.sender.alias ?? msg.sender.username
-                const isAttachment = /^\[📎\s[^\]]+?\]\(https?:\/\/\S+?\)\s*$/.test(msg.content)
-                const fwdMatch = msg.content.match(/^<!--fwd:(\{.*?\})-->\n([\s\S]*)$/)
-                const fwdMeta = fwdMatch ? (() => { try { return JSON.parse(fwdMatch[1]) as { s: string; t: string; c: string; ct?: string } } catch { return null } })() : null
-                const fwdContent = fwdMatch ? fwdMatch[2] : null
-                const REPORT_URL_RE = /\/report\/[a-z0-9]+\/[a-z0-9]+/i
-                const TASK_URL_RE = /\/tasks\/[a-z0-9]+$/i
-                const FEEDBACK_URL_RE = /\/report\/feedback\/[a-z0-9]+/i
-                const allUrls = isAttachment ? [] : extractUrls(msg.content)
-                const plainUrls = allUrls.filter(u => !isImageUrl(u) && !FEEDBACK_URL_RE.test(u) && !REPORT_URL_RE.test(u) && !TASK_URL_RE.test(u))
-                const feedbackLinks = allUrls.map(u => FEEDBACK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                const reportLinks = allUrls.filter(u => !FEEDBACK_URL_RE.test(u)).map(u => REPORT_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                const taskLinks = allUrls.map(u => TASK_LINK_RE.exec(u)).filter(Boolean) as RegExpExecArray[]
-                const isEditing = editingMsgId === msg.id
-                const isHovered = hoveredMsgId === msg.id
-                const grouped = groupReactions(msg.reactions ?? [])
-                const msgDate = new Date(msg.createdAt)
-                const prevDate = prevMsg ? new Date(prevMsg.createdAt) : null
-                const showDateSep = !prevDate || msgDate.toDateString() !== prevDate.toDateString()
-                const todayDate = new Date()
-                const yesterdayDate = new Date(todayDate); yesterdayDate.setDate(yesterdayDate.getDate() - 1)
-                let dateLabel = msgDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-                if (msgDate.toDateString() === todayDate.toDateString()) dateLabel = 'Today'
-                else if (msgDate.toDateString() === yesterdayDate.toDateString()) dateLabel = 'Yesterday'
-
-                return (
-                  <div key={msg.id} id={`msg-${msg.id}`}>
-                    {showDateSep && (
-                      <div style={{ display: 'flex', alignItems: 'center', padding: '16px 16px 8px', gap: 12 }}>
-                        <div style={{ flex: 1, height: 1, background: C.separator }} />
-                        <span style={{ fontSize: 12, fontWeight: 700, color: C.textSecondary, whiteSpace: 'nowrap', padding: '2px 12px', border: `1px solid ${C.separator}`, borderRadius: 12, background: C.lgBg }}>{dateLabel}</span>
-                        <div style={{ flex: 1, height: 1, background: C.separator }} />
-                      </div>
-                    )}
-                    {msg.isPinned && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingLeft: 56, marginBottom: 2 }}>
-                        <Pin size={10} color={C.accent} />
-                        <span style={{ fontSize: 10, color: C.accent, fontWeight: 600 }}>Pinned</span>
-                      </div>
-                    )}
-                    <div
-                      onMouseEnter={() => setHoveredMsgId(msg.id)}
-                      onMouseLeave={() => { setHoveredMsgId(null); if (emojiPickerMsgId === msg.id && fullEmojiPickerMsgId !== msg.id) setEmojiPickerMsgId(null) }}
-                      style={{
-                        display: 'flex', padding: showHeader ? '8px 20px 4px' : '1px 20px',
-                        position: 'relative', gap: 8,
-                        background: isHovered ? `${C.text}0a` : 'transparent',
-                        borderTop: isHovered ? `1px solid ${C.text}08` : '1px solid transparent',
-                        borderBottom: isHovered ? `1px solid ${C.text}08` : '1px solid transparent',
-                        marginTop: showHeader ? 0 : -1,
-                      }}
-                    >
-                      {showHeader ? (
-                        <div style={{ width: 36, flexShrink: 0 }}>
-                          <Avatar url={msg.sender.avatarUrl} name={senderName} size={36} />
-                        </div>
-                      ) : (
-                        <div style={{ width: 36, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-                          {isHovered && (
-                            <span style={{ fontSize: 10, color: C.textMuted, lineHeight: '20px', whiteSpace: 'nowrap' }}>
-                              {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {showHeader && (
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
-                            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{senderName}</span>
-                            <span style={{ fontSize: 11, color: C.textMuted }}>
-                              {msgDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
-                            </span>
-                            {isMe && (() => {
-                              const otherReads = (msg.reads ?? []).filter(r => r.userId !== auth.userId)
-                              const isRead = otherReads.length > 0
-                              const fmtOpts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }
-                              const sentTime = msgDate.toLocaleString('en-US', fmtOpts)
-                              const readTime = isRead && otherReads[0]?.readAt
-                                ? new Date(otherReads[0].readAt).toLocaleString('en-US', fmtOpts)
-                                : null
-                              const Icon = isRead ? CheckCheck : Check
-                              const iconColor = isRead ? C.accent : C.textMuted
-                              const isGroupOrChannel = selected?.type === 'group' || selected?.type === 'channel'
-                              const totalOthers = isGroupOrChannel ? (selected.members?.filter(m => m.userId !== auth.userId).length ?? 0) : 0
-                              // Build reader names for tooltip
-                              const memberMap = new Map((selected?.members ?? []).map(m => [m.userId, m.user.alias ?? m.user.username]))
-                              const readerNames = otherReads.map(r => memberMap.get(r.userId) ?? 'Unknown')
-                              return (
-                                <span style={{ position: 'relative', alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'default' }}
-                                  onMouseEnter={e => {
-                                    const tip = e.currentTarget.querySelector('[data-tip]') as HTMLElement
-                                    if (tip) tip.style.opacity = '1'
-                                  }}
-                                  onMouseLeave={e => {
-                                    const tip = e.currentTarget.querySelector('[data-tip]') as HTMLElement
-                                    if (tip) tip.style.opacity = '0'
-                                  }}>
-                                  <Icon size={14} color={iconColor} />
-                                  {isGroupOrChannel && isRead && (
-                                    <span style={{ fontSize: 10, color: C.textMuted }}>
-                                      {otherReads.length === totalOthers ? 'Read by all' : `Read by ${otherReads.length}`}
-                                    </span>
-                                  )}
-                                  <span data-tip="" style={{
-                                    position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
-                                    marginBottom: 6, padding: '6px 10px', borderRadius: 6,
-                                    background: C.bgInput, border: `1px solid ${C.separator}`,
-                                    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-                                    fontSize: 11, fontWeight: 500, color: C.text,
-                                    whiteSpace: 'nowrap', pointerEvents: 'none',
-                                    opacity: 0, transition: 'opacity 0.15s',
-                                    zIndex: 50, display: 'flex', flexDirection: 'column', gap: 2,
-                                  }}>
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Check size={11} color={C.textMuted} />Sent {sentTime}</span>
-                                    {isRead && readTime && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><CheckCheck size={11} color={iconColor} />Read {readTime}</span>}
-                                    {isGroupOrChannel && readerNames.length > 0 && (
-                                      <span style={{ borderTop: `1px solid ${C.separator}`, paddingTop: 3, marginTop: 1, fontSize: 10, color: C.textMuted }}>
-                                        {readerNames.join(', ')}
-                                      </span>
-                                    )}
-                                  </span>
-                                </span>
-                              )
-                            })()}
-                            {msg.editedAt && <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>}
-                          </div>
-                        )}
-                        {isEditing ? (
-                          <div style={{ padding: '6px 10px', borderRadius: 4, background: C.bgInput, border: `2px solid ${C.accent}` }}>
-                            <textarea
-                              value={editingContent}
-                              onChange={e => setEditingContent(e.target.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditMessage() }
-                                if (e.key === 'Escape') { setEditingMsgId(null); setEditingContent('') }
-                              }}
-                              autoFocus
-                              style={{ width: '100%', minHeight: 36, fontSize: 14, color: C.text, background: 'transparent', border: 'none', outline: 'none', resize: 'none', fontFamily: 'inherit' }}
-                            />
-                            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
-                              <button onClick={() => { setEditingMsgId(null); setEditingContent('') }}
-                                style={{ fontSize: 11, color: C.textMuted, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
-                              <button onClick={handleEditMessage}
-                                style={{ fontSize: 11, color: C.accent, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Save</button>
-                            </div>
-                          </div>
-                        ) : isAttachment ? (
-                          <InlineAttachment content={msg.content} isMe={isMe} config={config} onImageClick={(url, fn) => setLightbox({ url, filename: fn })} />
-                        ) : fwdMeta && fwdContent !== null ? (
-                          <div style={{ borderRadius: 6, background: C.bgInput, padding: '8px 12px', marginTop: 2 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                              <CornerDownRight size={12} color={C.accent} />
-                              <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>Forwarded</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                              <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{fwdMeta.s}</span>
-                              <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(fwdMeta.t)}</span>
-                              {fwdMeta.c && (
-                                <>
-                                  <span style={{ fontSize: 10, color: C.textMuted }}>·</span>
-                                  <span style={{ fontSize: 10, color: C.textMuted }}>{fwdMeta.ct === 'channel' ? '#' : ''}{fwdMeta.c}</span>
-                                </>
-                              )}
-                            </div>
-                            <div style={{ fontSize: 14, color: C.text, lineHeight: 1.46, wordBreak: 'break-word', overflowWrap: 'break-word', userSelect: 'text', WebkitUserSelect: 'text' }}>
-                              {renderMessageContent(fwdContent, false, usersMap)}
-                            </div>
-                          </div>
-                        ) : (() => {
-                          // Check for VC invite embed
-                          const vcInviteMatch = msg.content.match(/^\[vc-invite:([^:]+):(.+)\]$/)
-                          if (vcInviteMatch) {
-                            const [, vcId, vcName] = vcInviteMatch
-                            const isMe = msg.sender.id === auth.userId
-                            return (
-                              <div style={{ background: C.bgInput, border: `1px solid ${C.separator}`, borderRadius: 10, padding: 14, maxWidth: 380, marginTop: 2 }}>
-                                <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 10 }}>
-                                  {isMe ? 'You sent an invite to join a voice channel' : `${msg.sender.alias ?? msg.sender.username} sent an invite to join a voice channel`}
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                  <div style={{ width: 44, height: 44, borderRadius: 10, background: C.cardBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                    <Volume2 size={20} color={C.accent} />
-                                  </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{vcName}</div>
-                                    <div style={{ fontSize: 11, color: C.textMuted }}>Voice Channel</div>
-                                  </div>
-                                  <button
-                                    onClick={() => {
-                                      const vc = voiceChannels.find(v => v.id === vcId)
-                                      if (vc) joinVoiceChannel(vc)
-                                    }}
-                                    style={{ background: C.success, border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, fontWeight: 600, padding: '8px 16px', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
-                                  >
-                                    Join Voice
-                                  </button>
-                                </div>
-                              </div>
-                            )
-                          }
-                          return (
-                            <div style={{ fontSize: 14, color: C.text, lineHeight: 1.46, wordBreak: 'break-word', overflowWrap: 'break-word', userSelect: 'text', WebkitUserSelect: 'text' }}>
-                              {renderMessageContent(msg.content, false, usersMap)}
-                            </div>
-                          )
-                        })()}
-                        {!isEditing && !showHeader && msg.editedAt && (
-                          <span style={{ fontSize: 10, color: C.textMuted }}>(edited)</span>
-                        )}
-                        {plainUrls.map((url, ui) => <OgPreview key={ui} url={url} config={config} />)}
-                        {feedbackLinks.map((m, fi) => {
-                          const matchedUrl = allUrls.find(u => FEEDBACK_LINK_RE.test(u)) || ''
-                          return <FeedbackLinkCard key={`f${fi}`} linkId={m[1]} pinId={m[2] || null} fullUrl={matchedUrl} config={config} />
-                        })}
-                        {reportLinks.map((m, ri) => <ReportLinkCard key={`r${ri}`} clientId={m[1]} projectId={m[2]} itemType={m[3] || null} itemId={m[4] || null} config={config} />)}
-                        {taskLinks.map((m, ti) => {
-                  // Extract optional ?comment=xxx so the card can deep-link to a comment.
-                  let commentId: string | null = null
-                  try {
-                    const url = new URL(m[0].startsWith('http') ? m[0] : `https://x.example${m[0]}`)
-                    commentId = url.searchParams.get('comment')
-                  } catch { /* ignore parse failure */ }
-                  return <TaskLinkCard key={`t${ti}`} taskId={m[1]} commentId={commentId} config={config} />
-                })}
-                        {grouped.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-                            {grouped.map(r => (
-                              <button key={r.emoji} onClick={() => toggleReaction(msg.id, r.emoji)} title={r.users.join(', ')}
-                                style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 12, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 12 }}>
-                                <span>{r.emoji}</span>
-                                <span style={{ fontSize: 10, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {(msg.replyCount ?? 0) > 0 && (
-                          <button onClick={() => openThread(msg)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, background: 'transparent', border: '1px solid transparent', cursor: 'pointer', padding: '4px 8px', borderRadius: 6, width: '100%', transition: 'background 0.15s, border-color 0.15s' }}
-                            onMouseEnter={e => { e.currentTarget.style.background = C.bgInput; e.currentTarget.style.borderColor = C.separator }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent' }}>
-                            {(msg.replySenders?.length ?? 0) > 0 ? (
-                              <div style={{ display: 'flex', flexShrink: 0 }}>
-                                {msg.replySenders!.slice(0, 3).map((rs, ri) => (
-                                  <div key={rs.id} style={{ width: 22, height: 22, borderRadius: '50%', border: `2px solid ${C.bgPrimary}`, marginLeft: ri === 0 ? 0 : -8, zIndex: 3 - ri, position: 'relative', overflow: 'hidden', background: C.bgInput }}>
-                                    <Avatar url={rs.avatarUrl} name={rs.alias ?? rs.username} size={18} />
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div style={{ width: 20, height: 20, borderRadius: 4, background: C.accent + '22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                <MessageCircle size={11} color={C.accent} />
-                              </div>
-                            )}
-                            <span style={{ color: C.accent, fontSize: 12, fontWeight: 700 }}>{msg.replyCount} {msg.replyCount === 1 ? 'reply' : 'replies'}</span>
-                            <span style={{ color: C.textMuted, fontSize: 11 }}>View thread</span>
-                            <ChevronRight size={14} color={C.textMuted} style={{ marginLeft: 'auto' }} />
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Hover toolbar */}
-                      {isHovered && !isEditing && (
-                        <div style={{ position: 'absolute', top: -16, right: 24, display: 'flex', gap: 0, background: C.bgInput, borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '1px 2px', zIndex: 10 }}>
-                          {[{
-                            icon: <Smile size={16} />, title: 'React',
-                            onClick: () => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id), color: C.textSecondary,
-                          }, {
-                            icon: <MessageCircle size={16} />, title: 'Reply in thread',
-                            onClick: () => openThread(msg), color: C.textSecondary,
-                          }, {
-                            icon: <Quote size={16} />, title: 'Quote',
-                            onClick: () => {
-                              const senderAlias = usersMap[msg.senderId] ?? msg.senderId
-                              const quoted = msg.content.split('\n').map(l => `> ${l}`).join('\n')
-                              const quoteBlock = `> **${senderAlias}**\n${quoted}\n\n`
-                              setInput(prev => quoteBlock + prev)
-                            }, color: C.textSecondary,
-                          }, {
-                            icon: <CornerDownRight size={16} />, title: 'Forward',
-                            onClick: () => setForwardingMsg(msg), color: C.textSecondary,
-                          }, {
-                            icon: <Pin size={16} />, title: msg.isPinned ? 'Unpin' : 'Pin',
-                            onClick: () => togglePin(msg.id), color: msg.isPinned ? C.accent : C.textSecondary,
-                          }, ...(isMe ? [{
-                            icon: <Edit2 size={16} />, title: 'Edit',
-                            onClick: () => { setEditingMsgId(msg.id); setEditingContent(msg.content) },
-                            color: C.textSecondary,
-                            show: (Date.now() - new Date(msg.createdAt).getTime()) < 12 * 60 * 60 * 1000,
-                          }, {
-                            icon: <Trash2 size={16} />, title: 'Delete',
-                            onClick: () => handleDeleteMessage(msg.id), color: C.danger, show: true,
-                          }] : [])].filter((b: any) => b.show !== false).map((btn: any, bi) => (
-                            <button key={bi} onClick={btn.onClick} title={btn.title}
-                              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${C.text}12` }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
-                              style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '5px 7px', color: btn.color, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.1s' }}>
-                              {btn.icon}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Emoji picker popup */}
-                      {emojiPickerMsgId === msg.id && fullEmojiPickerMsgId !== msg.id && (
-                        <div style={{ position: 'absolute', top: -44, right: 24, display: 'flex', gap: 2, background: C.bgInput, borderRadius: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.25)', border: `1px solid ${C.separator}`, padding: '4px 6px', zIndex: 20 }}>
-                          {QUICK_EMOJIS.map(e => (
-                            <button key={e} onClick={() => toggleReaction(msg.id, e)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: '2px 4px', borderRadius: 6 }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none' }}>
-                              {e}
-                            </button>
-                          ))}
-                          <button onClick={() => setFullEmojiPickerMsgId(msg.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 6px', borderRadius: 6, color: C.textMuted, display: 'flex', alignItems: 'center' }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)' }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none' }}
-                            title="More emojis">
-                            <Plus size={14} />
-                          </button>
-                        </div>
-                      )}
-                      {/* Full emoji picker for reactions */}
-                      {fullEmojiPickerMsgId === msg.id && (
-                        <div style={{ position: 'relative' }}>
-                          <EmojiPicker
-                            onSelect={(emoji) => { toggleReaction(msg.id, emoji); setFullEmojiPickerMsgId(null); setEmojiPickerMsgId(null) }}
-                            onClose={() => { setFullEmojiPickerMsgId(null); setEmojiPickerMsgId(null) }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
+              {messages.map((msg, i) => (
+                <MessageRow
+                  key={msg.id}
+                  msg={msg}
+                  prevMsg={messages[i - 1] ?? null}
+                  config={config}
+                  auth={auth}
+                  selected={selected}
+                  usersMap={usersMap}
+                  isEditing={editingMsgId === msg.id}
+                  editingContent={editingContent}
+                  isHovered={hoveredMsgId === msg.id}
+                  showQuickEmojiPicker={emojiPickerMsgId === msg.id}
+                  showFullEmojiPicker={fullEmojiPickerMsgId === msg.id}
+                  setHoveredMsgId={setHoveredMsgId}
+                  setEditingMsgId={setEditingMsgId}
+                  setEditingContent={setEditingContent}
+                  setEmojiPickerMsgId={setEmojiPickerMsgId}
+                  setFullEmojiPickerMsgId={setFullEmojiPickerMsgId}
+                  setForwardingMsg={setForwardingMsg}
+                  setLightbox={setLightbox}
+                  onEditMessage={handleEditMessage}
+                  onDeleteMessage={handleDeleteMessage}
+                  onToggleReaction={toggleReaction}
+                  onTogglePin={togglePin}
+                  onOpenThread={openThread}
+                  onJoinVoiceChannel={onJoinVoiceChannel}
+                  showToast={showToast}
+                />
+              ))}
 
               {selectedTyping.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', paddingLeft: 8 }}>
@@ -3166,215 +3555,65 @@ export function MessagesPanel({
               )}
               <div ref={messagesEndRef} />
             </div>
-            {/* Floating new messages button */}
-            {newMsgCount > 0 && (
+            {/* Note: thread / pinned / shared-media side panels removed —
+                thread now renders inline below the parent (see InlineThread
+                inside the message map above), and pinned / files use full-
+                screen views (PinnedView / SharedMediaView) above. */}
+            {/* P3-#14 — Floating "scroll to latest" button. Shown whenever
+                the user is scrolled up; badge shows new-message count if any. */}
+            {!isNearBottom && (
               <button
                 onClick={() => {
                   const el = messagesScrollRef.current
-                  if (el) el.scrollTop = el.scrollHeight
+                  if (el) {
+                    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+                  }
                   setNewMsgCount(0)
                 }}
+                title="Jump to latest"
                 style={{
-                  position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
-                  padding: '6px 16px', borderRadius: 20, border: 'none',
-                  background: C.accent, color: '#fff', fontSize: 12, fontWeight: 600,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10,
+                  position: 'absolute', bottom: 20, right: 28,
+                  height: 44, padding: newMsgCount > 0 ? '0 16px 0 14px' : 0,
+                  width: newMsgCount > 0 ? 'auto' : 44,
+                  borderRadius: 22,
+                  background: C.accent,
+                  color: '#fff',
+                  fontSize: 13, fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08) inset',
+                  zIndex: 10, border: 'none',
+                  transition: 'transform 0.15s, box-shadow 0.15s',
                 }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 10px 24px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.12) inset' }}
+                onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = '0 6px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08) inset' }}
               >
-                <ChevronDown size={14} />
-                {newMsgCount} new message{newMsgCount > 1 ? 's' : ''}
+                <ChevronDown size={20} strokeWidth={2.5} />
+                {newMsgCount > 0 && <span>{newMsgCount} new</span>}
               </button>
             )}
             </div>
+          )}
 
-            {/* Thread side panel */}
-            {threadParent && (
-              <div style={{ width: 320, borderLeft: `1px solid ${C.separator}`, background: C.lgBg, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Thread</span>
-                  <button onClick={() => { setThreadParent(null); setThreadMessages([]) }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
-                    <X size={14} />
-                  </button>
-                </div>
-                <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.separator}`, background: C.bgInput }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <Avatar url={threadParent.sender.avatarUrl} name={threadParent.sender.alias ?? threadParent.sender.username} size={20} />
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{threadParent.sender.alias ?? threadParent.sender.username}</span>
-                    <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(threadParent.createdAt)}</span>
-                  </div>
-                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                    {renderMessageContent(threadParent.content, false, usersMap)}
-                  </div>
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {threadMessages.length === 0 && (
-                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No replies yet</div>
-                  )}
-                  {threadMessages.map(reply => {
-                    const rName = reply.sender.alias ?? reply.sender.username
-                    const rIsMe = reply.sender.id === auth.userId
-                    const rGrouped = groupReactions(reply.reactions ?? [])
-                    return (
-                      <div key={reply.id}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                          <Avatar url={reply.sender.avatarUrl} name={rName} size={18} />
-                          <span style={{ fontSize: 11, fontWeight: 700, color: rIsMe ? C.accent : C.text }}>{rName}</span>
-                          <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(reply.createdAt)}</span>
-                        </div>
-                        <div style={{ paddingLeft: 24, fontSize: 13, color: C.text, lineHeight: 1.5 }}>
-                          {renderMessageContent(reply.content, false, usersMap)}
-                        </div>
-                        {rGrouped.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 3, paddingLeft: 24 }}>
-                            {rGrouped.map(r => (
-                              <button key={r.emoji} onClick={() => toggleReaction(reply.id, r.emoji, true)} title={r.users.join(', ')}
-                                style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '1px 5px', borderRadius: 8, border: `1px solid ${r.reacted ? C.accent : C.separator}`, background: r.reacted ? C.accentLight : C.bgInput, cursor: 'pointer', fontSize: 11 }}>
-                                <span>{r.emoji}</span>
-                                <span style={{ fontSize: 9, fontWeight: 600, color: r.reacted ? C.accent : C.textMuted }}>{r.count}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-                <MessageInput
-                  placeholder="Reply…"
-                  config={config}
-                  channelId={selected?.id ?? ''}
-                  onTyping={() => {}}
-                  input={threadInput}
-                  setInput={setThreadInput}
-                  sendFn={sendThreadReply}
-                  sending={sendingThread}
-                />
-              </div>
-            )}
-
-            {/* Pinned messages side panel */}
-            {showPinned && (
-              <div style={{ width: 300, borderLeft: `1px solid ${C.separator}`, background: C.lgBg, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Pin size={14} /> Pinned Messages
-                  </span>
-                  <button onClick={() => setShowPinned(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
-                    <X size={14} />
-                  </button>
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px' }}>
-                  {pinnedMessages.length === 0 && (
-                    <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No pinned messages</div>
-                  )}
-                  {pinnedMessages.map(pm => (
-                    <div key={pm.id} style={{ padding: '10px 12px', borderRadius: 8, background: C.bgInput, border: `1px solid ${C.separator}`, marginBottom: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        <Avatar url={pm.sender.avatarUrl} name={pm.sender.alias ?? pm.sender.username} size={18} />
-                        <span style={{ fontSize: 11, fontWeight: 700, color: C.accent }}>{pm.sender.alias ?? pm.sender.username}</span>
-                        <span style={{ fontSize: 10, color: C.textMuted }}>{formatTime(pm.createdAt)}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: C.text, lineHeight: 1.4 }}>{renderMessageContent(pm.content, false, usersMap)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Shared media directory panel */}
-            {showSharedMedia && (
-              <div style={{ width: 300, borderLeft: `1px solid ${C.separator}`, background: C.lgBg, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-                <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.separator}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <FolderOpen size={14} /> Shared Files
-                  </span>
-                  <button onClick={() => setShowSharedMedia(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2 }}>
-                    <X size={14} />
-                  </button>
-                </div>
-                <div style={{ display: 'flex', borderBottom: `1px solid ${C.separator}`, flexShrink: 0 }}>
-                  {(['media', 'files', 'links'] as const).map(tab => (
-                    <button key={tab} onClick={() => setSharedMediaTab(tab)}
-                      style={{ flex: 1, padding: '8px 0', border: 'none', cursor: 'pointer', background: sharedMediaTab === tab ? C.accent + '15' : 'transparent', color: sharedMediaTab === tab ? C.accent : C.textMuted, fontWeight: sharedMediaTab === tab ? 700 : 400, fontSize: 12, borderBottom: sharedMediaTab === tab ? `2px solid ${C.accent}` : '2px solid transparent' }}>
-                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px' }}>
-                  {loadingSharedMedia ? (
-                    <div style={{ textAlign: 'center', padding: 20, color: C.textMuted }}><Loader size={16} /></div>
-                  ) : sharedMediaTab === 'media' ? (
-                    sharedMedia.media.length === 0 ? (
-                      <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared media</div>
-                    ) : (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-                        {sharedMedia.media.map((m: any, i: number) => {
-                          const fullUrl = `${config.apiBase}${m.url}`
-                          return (
-                            <div key={i} onClick={() => window.electronAPI.openExternal(fullUrl)} style={{ borderRadius: 6, overflow: 'hidden', aspectRatio: '1', background: 'rgba(255,255,255,0.3)', cursor: 'pointer' }}>
-                              {m.url.match(/\.(mp4|webm|mov)$/i) ? (
-                                <video src={fullUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                              ) : (
-                                <AuthImage src={fullUrl} config={config} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )
-                  ) : sharedMediaTab === 'files' ? (
-                    sharedMedia.files.length === 0 ? (
-                      <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared files</div>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {sharedMedia.files.map((f: any, i: number) => (
-                          <a key={i} href={`${config.apiBase}${f.url}`} target="_blank" rel="noopener noreferrer"
-                            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.separator}`, textDecoration: 'none' }}>
-                            <Paperclip size={14} color={C.textMuted} />
-                            <div style={{ flex: 1, overflow: 'hidden' }}>
-                              <div style={{ fontSize: 12, color: C.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename.replace(/^\d+-/, '')}</div>
-                              <div style={{ fontSize: 10, color: C.textMuted }}>{f.sender} · {new Date(f.createdAt).toLocaleDateString()}</div>
-                            </div>
-                          </a>
-                        ))}
-                      </div>
-                    )
-                  ) : (
-                    sharedMedia.links.length === 0 ? (
-                      <div style={{ textAlign: 'center', color: C.textMuted, fontSize: 12, padding: 16 }}>No shared links</div>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {sharedMedia.links.map((l: any, i: number) => (
-                          <a key={i} href={l.url} target="_blank" rel="noopener noreferrer"
-                            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.separator}`, textDecoration: 'none' }}>
-                            <ExternalLink size={14} color={C.accent} />
-                            <div style={{ flex: 1, overflow: 'hidden' }}>
-                              <div style={{ fontSize: 12, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.url.replace(/^https?:\/\//, '').slice(0, 50)}</div>
-                              <div style={{ fontSize: 10, color: C.textMuted }}>{l.sender} · {new Date(l.createdAt).toLocaleDateString()}</div>
-                            </div>
-                          </a>
-                        ))}
-                      </div>
-                    )
-                  )}
-                </div>
-              </div>
-            )}
+          {/* P3-#7/#8 — Right-pane sidebars deleted. Thread renders inline
+              below the parent message; pin/files use full-screen views. */}
           </div>
 
-          {/* Message input */}
-          <MessageInput
-            placeholder={`Message ${selected.name}…`}
-            config={config}
-            channelId={selected.id}
-            onTyping={sendTyping}
-            input={input}
-            setInput={setInput}
-            sendFn={send}
-            sending={sending}
-          />
+          {/* Main message input — hidden when ThreadView / Pinned / Files
+              has taken over the pane (each of those owns its own composer
+              or is read-only). */}
+          {!threadParent && !showPinned && !showSharedMedia && (
+            <MessageInput
+              placeholder={`Message ${selected.name}…`}
+              config={config}
+              channelId={selected.id}
+              onTyping={sendTyping}
+              input={input}
+              setInput={setInput}
+              sendFn={send}
+              sending={sending}
+              onScheduled={loadScheduledMessages}
+            />
+          )}
         </div>
 
       ) : !myConference ? (
@@ -3473,41 +3712,7 @@ export function MessagesPanel({
 
       {/* ─── Lightbox overlay ──────────────────────────────────────────────── */}
       {lightbox && (
-        <div
-          onClick={() => setLightbox(null)}
-          style={{ position: 'fixed', inset: 0, zIndex: 99999, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'zoom-out' }}
-        >
-          <button onClick={() => setLightbox(null)} style={{ position: 'absolute', top: 16, right: 16, background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <X size={20} color="#fff" />
-          </button>
-          <button
-            onClick={e => {
-              e.stopPropagation()
-              fetch(lightbox.url, { headers: { Authorization: `Bearer ${config.token}` } })
-                .then(r => r.blob())
-                .then(blob => {
-                  const a = document.createElement('a')
-                  a.href = URL.createObjectURL(blob)
-                  a.download = lightbox.filename
-                  a.click()
-                  setTimeout(() => URL.revokeObjectURL(a.href), 30_000)
-                }).catch(() => {})
-            }}
-            style={{ position: 'absolute', top: 16, right: 64, background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-          >
-            <Download size={18} color="#fff" />
-          </button>
-          <div style={{ position: 'absolute', top: 20, left: 20, color: '#fff', fontSize: 14, fontWeight: 600, opacity: 0.8, maxWidth: 'calc(100% - 140px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {lightbox.filename}
-          </div>
-          <div onClick={e => e.stopPropagation()} style={{ cursor: 'default', maxWidth: '90vw', maxHeight: '85vh' }}>
-            {config ? (
-              <AuthImage src={lightbox.url} config={config} alt={lightbox.filename} style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 4 }} />
-            ) : (
-              <img src={lightbox.url} alt={lightbox.filename} style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 4 }} />
-            )}
-          </div>
-        </div>
+        <LightboxOverlay lightbox={lightbox} config={config} onClose={() => setLightbox(null)} />
       )}
 
       {/* ─── Voice Channel Delete Confirmation ──────────────────────────── */}
@@ -3537,3 +3742,8 @@ export function MessagesPanel({
     </div>
   )
 }
+
+// ─── Lightbox overlay ─────────────────────────────────────────────────────
+// (#10 + #11b) Inline preview for images/videos under 10 MB; for files larger
+// or non-previewable types (pdf, zip, audio/*, etc.) shows a download CTA so
+// we don't burn bandwidth streaming a 50 MB file every click.

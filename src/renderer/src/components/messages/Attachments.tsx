@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { FileText, Loader, ChevronDown } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig } from '../../types'
-import { isImageUrl, isVideoUrl } from '../../utils/markdown'
+import { isImageUrl, isVideoUrl, isAudioUrl, isVoiceNoteName, isVideoNoteName } from '../../utils/markdown'
 
 // ─── Auth-aware image (fetches with bearer token for protected uploads) ───────
 
@@ -113,11 +113,39 @@ export function InlineAttachment({
     )
   }
 
-  if (isVideoUrl(cleanUrl)) {
+  // Audio (incl. voice notes recorded with the mic button — `.webm` files
+  // whose filename starts with `voice-note-`).
+  if (isAudioUrl(cleanUrl, filename)) {
+    const isVoice = isVoiceNoteName(filename)
     return (
       <div style={{ marginTop: 4 }}>
-        {fileHeader}
-        <video controls src={cleanUrl} style={{ maxWidth: 360, maxHeight: 260, borderRadius: 8, display: 'block' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <span style={{ fontSize: 12, color: C.textMuted }}>{isVoice ? '🎤 Voice note' : extUpper}</span>
+          <ChevronDown size={12} color={C.textMuted} />
+        </div>
+        <audio controls src={cleanUrl}
+          style={{ width: 320, maxWidth: '100%', display: 'block' }} />
+      </div>
+    )
+  }
+
+  if (isVideoUrl(cleanUrl, filename)) {
+    const isVideoNote = isVideoNoteName(filename)
+    return (
+      <div style={{ marginTop: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <span style={{ fontSize: 12, color: C.textMuted }}>{isVideoNote ? '📹 Video note' : extUpper}</span>
+          <ChevronDown size={12} color={C.textMuted} />
+        </div>
+        <video controls src={cleanUrl}
+          onClick={(e) => { e.stopPropagation() }}
+          style={{ maxWidth: 360, maxHeight: 260, borderRadius: 8, display: 'block', cursor: 'pointer' }} />
+        <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
+          <button onClick={() => onImageClick?.(cleanUrl, filename)}
+            style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', padding: 0, fontSize: 11 }}>
+            Open full preview
+          </button>
+        </div>
       </div>
     )
   }
@@ -128,7 +156,7 @@ export function InlineAttachment({
         <span style={{ fontSize: 12, color: C.textMuted }}>{extUpper}</span>
         <ChevronDown size={12} color={C.textMuted} />
       </div>
-      <div onClick={() => window.electronAPI.openExternal(cleanUrl)}
+      <div onClick={() => onImageClick?.(cleanUrl, filename)}
         style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 8, border: `1px solid ${C.separator}`, background: 'transparent', cursor: 'pointer', maxWidth: 400 }}>
         <div style={{ width: 36, height: 36, borderRadius: 6, background: typeColor, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <FileText size={18} color="#fff" />

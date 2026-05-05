@@ -3,13 +3,14 @@ import {
   Users, Shield, ShieldCheck, Search, ChevronRight, Loader,
   Monitor, Clock, Mail, Phone, Calendar, Edit2, Check, X,
   RefreshCw, DollarSign, Calculator, CalendarDays, Eye,
-  Trash2, TrendingUp, BarChart2, AlertTriangle, Plus,
+  Trash2, TrendingUp, BarChart2, AlertTriangle, Plus, Headphones, Flag,
 } from 'lucide-react'
 import { C } from '../../theme'
 import type { ApiConfig, Auth } from '../../types'
 import { Avatar } from '../shared/Avatar'
 import MonitoringPanel from './MonitoringPanel'
 import TimeTrackingPanel from './TimeTrackingPanel'
+import CallsReviewPanel from './CallsReviewPanel'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -211,7 +212,7 @@ export default function AdminPanel({ config, auth }: Props): JSX.Element {
   const [editingField, setEditingField] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
-  const [menu, setMenu] = useState<'members' | 'salary' | 'salary-calc' | 'calendar' | 'monitoring' | 'time-tracking'>('members')
+  const [menu, setMenu] = useState<'members' | 'salary' | 'salary-calc' | 'calendar' | 'monitoring' | 'time-tracking' | 'calls'>('members')
   const [renewingUserId, setRenewingUserId] = useState<string | null>(null)
   const [renewResult, setRenewResult] = useState<{ userId: string; token: string; dmSent: boolean } | null>(null)
 
@@ -296,6 +297,7 @@ export default function AdminPanel({ config, auth }: Props): JSX.Element {
           <AdminMenuItem icon={<Calculator size={16} />} label="Salary Calculation" active={menu === 'salary-calc'} onClick={() => setMenu('salary-calc')} />
           <AdminMenuItem icon={<CalendarDays size={16} />} label="Calendar" active={menu === 'calendar'} onClick={() => setMenu('calendar')} />
           <AdminMenuItem icon={<Eye size={16} />} label="Monitoring" active={menu === 'monitoring'} onClick={() => setMenu('monitoring')} />
+          <AdminMenuItem icon={<Headphones size={16} />} label="Calls Review" active={menu === 'calls'} onClick={() => setMenu('calls')} />
           <AdminMenuItem icon={<Clock size={16} />} label="Time Tracking" active={menu === 'time-tracking'} onClick={() => setMenu('time-tracking')} />
         </div>
       </div>
@@ -351,6 +353,8 @@ export default function AdminPanel({ config, auth }: Props): JSX.Element {
           <CalendarPanel config={config} />
         ) : menu === 'monitoring' ? (
           <MonitoringPanel config={config} />
+        ) : menu === 'calls' ? (
+          <CallsReviewPanel config={config} users={users} />
         ) : menu === 'time-tracking' ? (
           <TimeTrackingPanel config={config} users={users} />
         ) : null}
@@ -678,8 +682,14 @@ function SalaryCalcPanel({ config }: { config: ApiConfig }) {
 
   useEffect(() => {
     setLoading(true)
+    // Pass the selected payroll range to the overview endpoint so the
+    // server widens its log-fetch window if `start` is older than the
+    // rolling 30-day default. Fixes "selecting 1 April returns no data
+    // for April 1-2 because today is May 2 and the rolling window
+    // started at April 3".
+    const qs = `?from=${encodeURIComponent(payrollRange.start)}&to=${encodeURIComponent(payrollRange.end)}`
     Promise.all([
-      fetch(`${config.apiBase}/api/admin/overview`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.ok ? r.json() : { users: [] }),
+      fetch(`${config.apiBase}/api/admin/overview${qs}`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.ok ? r.json() : { users: [] }),
       fetch(`${config.apiBase}/api/admin/salary/bases`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.ok ? r.json() : { bases: [] }),
       fetch(`${config.apiBase}/api/admin/salary/holidays`, { headers: { Authorization: `Bearer ${config.token}` } }).then(r => r.ok ? r.json() : { holidays: [] }),
     ]).then(([ov, b, h]) => {
@@ -688,7 +698,7 @@ function SalaryCalcPanel({ config }: { config: ApiConfig }) {
       setHolidays((h as { holidays: HolidayDate[] }).holidays ?? [])
       setLoading(false)
     })
-  }, [config])
+  }, [config, payrollRange.start, payrollRange.end])
 
   if (loading) return <CenterLoader />
 

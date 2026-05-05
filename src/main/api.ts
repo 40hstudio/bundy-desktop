@@ -232,7 +232,7 @@ export async function uploadScreenshot(
   imageBase64: string,
   displayIndex: number,
   capturedAt: string,
-  format: 'png' | 'jpeg' = 'jpeg',
+  format: 'png' | 'jpeg' | 'webp' = 'jpeg',
 ): Promise<void> {
   try {
     await request('/api/activity/screenshot', {
@@ -326,8 +326,39 @@ let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 export type SseTaskEvent =
   | { kind: 'task-update'; data: { taskId: string; mainTaskId: string; kind: 'created' | 'updated' | 'deleted'; changes?: Record<string, unknown> } }
-  | { kind: 'task-comment'; data: { taskId: string; mainTaskId: string; summary: string; actorId: string } }
+  | { kind: 'task-comment'; data: {
+      taskId: string; mainTaskId: string; summary: string; actorId: string;
+      actorName?: string; taskTitle?: string; commentId?: string;
+      comment?: {
+        id: string; body: string; createdAt: string; editedAt: string | null;
+        parentCommentId: string | null;
+        attachmentUrl: string | null; attachmentName: string | null;
+        user: { id: string; username: string; alias: string | null; avatarUrl: string | null };
+        reactions: Array<{ emoji: string; userId: string; user: { id: string; username: string; alias: string | null } }>;
+      };
+    } }
+  | { kind: 'task-comment-edit'; data: { taskId: string; mainTaskId: string; commentId: string; body: string; editedAt: string } }
+  | { kind: 'task-comment-delete'; data: { taskId: string; mainTaskId: string; commentId: string } }
   | { kind: 'task-notification'; data: { userId: string; notificationId: string; taskId: string; type: string; message: string; commentId?: string | null; subtaskId?: string | null } }
+  | { kind: 'task-typing'; data: { taskId: string; mainTaskId: string; userId: string; userName: string } }
+  | { kind: 'task-typing-stop'; data: { taskId: string; mainTaskId: string; userId: string } }
+
+// Report tab SSE events (Phase D of the Report-tab batch). Forwarded via the
+// same IPC channel as task events so the renderer has a single subscription.
+export type SseReportEvent =
+  | { kind: 'report-tree-update'; data: { kind: string; action: string; id: string; projectId?: string | null; clientId?: string | null; actorId?: string } }
+  | { kind: 'feedback-pin'; data: { linkId: string; pinId: string; action: 'created' | 'updated' | 'deleted'; actorId?: string } }
+  | { kind: 'feedback-reply'; data: { pinId: string; replyId: string; action: 'created' | 'updated' | 'deleted'; actorId?: string } }
+  | { kind: 'report-doc-edit'; data: { documentId: string; editId: string; summary: string | null; actorId: string; actorName: string } }
+  | { kind: 'report-doc-presence'; data: { documentId: string; editors: { userId: string; userName: string; avatar: string | null }[] } }
+  | { kind: 'feedback-notification'; data: { userId: string; notificationId: string; pinId: string; type: string; message: string } }
+
+// Calendar SSE — single event family, action-discriminated. Renderer
+// CalendarPanel re-fetches the visible window on any of these.
+export type SseCalendarEvent =
+  | { kind: 'calendar-event'; data: { eventId: string; action: 'created' | 'updated' | 'deleted'; recipientIds: string[]; title?: string; startsAt?: string; hostId?: string } }
+
+export type SseBundyEvent = SseTaskEvent | SseReportEvent | SseCalendarEvent
 
 export type ConnectSseOptions = {
   /** Generic "something changed in bundy clock state" — used to refetch status. */
@@ -336,6 +367,12 @@ export type ConnectSseOptions = {
   onReconnect?: () => void
   /** Typed task SSE channel. Fires per event so the renderer can apply deltas. */
   onTaskEvent?: (event: SseTaskEvent) => void
+  /** Typed report SSE channel. Fires per event so the renderer can apply deltas. */
+  onReportEvent?: (event: SseReportEvent) => void
+  /** Typed calendar SSE channel. Fires when an event the user cares about
+   *  is created, updated, or deleted. The renderer refetches its visible
+   *  window — the payload is enough for a toast but not for inline render. */
+  onCalendarEvent?: (event: SseCalendarEvent) => void
 }
 
 export function connectSSE(opts: ConnectSseOptions | (() => void), onReconnect?: () => void): void {
@@ -402,11 +439,34 @@ export function connectSSE(opts: ConnectSseOptions | (() => void), onReconnect?:
                   if (_onTokenExpired) _onTokenExpired()
                 } else if (
                   options.onTaskEvent &&
-                  (currentEvent === 'task-update' || currentEvent === 'task-comment' || currentEvent === 'task-notification')
+                  (currentEvent === 'task-update' || currentEvent === 'task-comment' || currentEvent === 'task-notification'
+                    || currentEvent === 'task-typing' || currentEvent === 'task-typing-stop'
+                    || currentEvent === 'task-comment-edit' || currentEvent === 'task-comment-delete')
                 ) {
                   try {
                     const data = JSON.parse(dataStr)
                     options.onTaskEvent({ kind: currentEvent, data } as SseTaskEvent)
+                  } catch { /* malformed payload — drop */ }
+                } else if (
+                  options.onReportEvent &&
+                  (currentEvent === 'report-tree-update'
+                    || currentEvent === 'feedback-pin'
+                    || currentEvent === 'feedback-reply'
+                    || currentEvent === 'report-doc-edit'
+                    || currentEvent === 'report-doc-presence'
+                    || currentEvent === 'feedback-notification')
+                ) {
+                  try {
+                    const data = JSON.parse(dataStr)
+                    options.onReportEvent({ kind: currentEvent, data } as SseReportEvent)
+                  } catch { /* malformed payload — drop */ }
+                } else if (
+                  options.onCalendarEvent &&
+                  currentEvent === 'calendar-event'
+                ) {
+                  try {
+                    const data = JSON.parse(dataStr)
+                    options.onCalendarEvent({ kind: currentEvent, data } as SseCalendarEvent)
                   } catch { /* malformed payload — drop */ }
                 }
                 currentEvent = ''
@@ -452,6 +512,10 @@ export async function sendHeartbeat(data: {
   topUrls?: Record<string, number>
   /** Task in focus during this window — populates ActivitySummary.taskId. */
   taskId?: string | null
+  /** Report document open in editor during this window — populates ActivitySummary.reportDocumentId (P2.16). */
+  reportDocumentId?: string | null
+  /** DM/channel conversation focused during this window — populates ActivitySummary.channelId (P2.15 of DMs batch). */
+  channelId?: string | null
 }): Promise<void> {
   try {
     await request('/api/activity/heartbeat', { method: 'POST', body: data })

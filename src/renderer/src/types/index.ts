@@ -13,13 +13,17 @@ export interface ChannelMember {
   userId: string; user: UserInfo
 }
 export interface Conversation {
-  id: string; type: 'channel' | 'group' | 'dm'
+  id: string; type: 'channel' | 'group' | 'dm' | 'task'
   name: string; avatar?: string | null
   lastMessage?: string; lastTime?: string
   unread?: number
   members: ChannelMember[]
   partnerId?: string
   createdBy?: string
+  /** Set on type === 'task' channels — the linked Task id. Lets the
+   *  Discussion sidebar match a channel to its task without an extra
+   *  fetch. */
+  taskId?: string | null
 }
 export interface ChatMessage {
   id: string; content: string; createdAt: string; editedAt: string | null
@@ -66,6 +70,13 @@ export interface Task {
   comments?: TaskComment[]
   subtasks?: Task[]
   activities?: TaskActivityItem[]
+  /** 1:1 backing channel for the task discussion (post-migration).
+   *  Null for subtasks — they use their parent's channel. */
+  discussionChannel?: { id: string } | null
+  /** Resolved channel id (own channel, or parent's for subtasks).
+   *  Use this rather than discussionChannel.id when subscribing to
+   *  realtime updates so subtasks work too. */
+  discussionChannelId?: string | null
   attachments?: TaskAttachment[]
   _count: { comments: number; subtasks: number }
 }
@@ -135,7 +146,7 @@ export interface TimelineSlot {
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
-export type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'report' | 'settings'
+export type Tab = 'home' | 'messages' | 'tasks' | 'activity' | 'calendar' | 'report' | 'settings'
 export interface NavItem { id: Tab; icon: (active: boolean) => React.ReactNode; label: string }
 
 export interface TaskNotificationItem {

@@ -25,16 +25,20 @@ import { autoUpdater } from 'electron-updater'
 import store, { getApiBase } from './store'
 import { exchangeToken, getBundyStatus, doAction, submitReport, getDailyPlan, ensureDailyPlan, getProjects, addPlanItem, updatePlanItem, deletePlanItem, submitReportWithPlan, setTokenExpiredHandler, isServerReachable, setOnlineStateChangeHandler, breakOnQuit } from './api'
 import { initCrashReporter, sendUserReport } from './crash-reporter'
+import { initErrorLogger, getErrorLogPath } from './error-logger'
 import { getToken, setToken, clearToken, migrateToken } from './secure-storage'
 import {
   setTray,
   popupWin, fullNativeWin,
   callFloatWin, callFloatState, fullWindowIds,
   cachedStatus, setCachedStatus,
+  trayTimerState, setTrayTimerState,
   pendingUpdateVersion, pendingDownloadPercent, updateDownloaded,
   setPendingUpdateVersion, setPendingDownloadPercent, setUpdateDownloaded,
 } from './state'
-import { getTrayIcon, stopTrayTimer } from './tray'
+import { getTrayIcon, startTrayTimer, stopTrayTimer, updateTray } from './tray'
+import { startScreenshots, stopScreenshots } from './screenshot'
+import { startActivity, stopActivity } from './activity'
 import { openFullWindow, flushUpdateState, openCallFloat } from './windows'
 import { startPoller, stopPoller, stopServices, pollAndPush, isNetworkError, enqueueAction, broadcastOnlineState, drainActionQueue } from './poller'
 
@@ -103,12 +107,70 @@ ipcMain.handle('get-status', async () => {
   }
 })
 
+// Compute the optimistic next status from a queued action — so the tray /
+// dashboard reflect the user's INTENT immediately, even though the server
+// hasn't acknowledged yet. Resolves the bug where clock-in offline reverted
+// to the "Clock In" button after switching panels.
+//
+// v1.5.1651 — also updates `trayTimerState`, tray icon, and starts/stops
+// screenshots + activity tracking. Without this, going on break offline
+// stopped the in-app timer but the menu-bar tray title kept ticking, and
+// screenshots/activity heartbeats kept firing during a break.
+function applyOptimisticAction(action: string): void {
+  const prev = cachedStatus
+  if (!prev) return // no baseline to mutate; first poll after reconnect will fix
+  const username = prev.username
+  const role = prev.role
+  // Freeze the live elapsed value at the moment of the action so the timer
+  // doesn't snap back to the last polled value when the action takes effect.
+  // (Tray title is `baseMs + (now - snapshotAt)` while tracking; mirror that.)
+  const liveElapsed = trayTimerState.isTracking
+    ? trayTimerState.baseMs + Math.max(0, Date.now() - trayTimerState.snapshotAt)
+    : prev.elapsedMs
+  const elapsed = liveElapsed
+  let next: typeof prev
+  switch (action) {
+    case 'clock-in':
+      next = { ...prev, isClockedIn: true, isTracking: true, onBreak: false, elapsedMs: elapsed, username, role }
+      break
+    case 'break-start':
+      next = { ...prev, isClockedIn: true, isTracking: false, onBreak: true, elapsedMs: elapsed, username, role }
+      break
+    case 'break-end':
+      next = { ...prev, isClockedIn: true, isTracking: true, onBreak: false, elapsedMs: elapsed, username, role }
+      break
+    case 'clock-out':
+      next = { ...prev, isClockedIn: false, isTracking: false, onBreak: false, elapsedMs: 0, username, role }
+      break
+    default:
+      return
+  }
+  setCachedStatus(next)
+
+  // Mirror the side-effects the poller would normally apply when status
+  // flips. Without this, the tray title keeps counting on break, screenshot
+  // capture continues, and activity tracking keeps emitting heartbeats —
+  // even though the in-app UI has correctly switched to "On break".
+  setTrayTimerState({ baseMs: next.elapsedMs, snapshotAt: Date.now(), isTracking: next.isTracking })
+  updateTray(next.isClockedIn, next.isTracking)
+  if (next.isTracking) {
+    startTrayTimer()
+    startScreenshots()
+    void startActivity()
+  } else {
+    stopTrayTimer()
+    stopScreenshots()
+    stopActivity()
+  }
+}
+
 ipcMain.handle('do-action', async (_event, action: string, note?: string) => {
   const now = Date.now()
   if (now - lastDoActionCall < 2000) throw new Error('Please wait before trying again')
   lastDoActionCall = now
   if (!isServerReachable()) {
     enqueueAction(action)
+    applyOptimisticAction(action) // ← so subsequent get-status reflects the queued action
     broadcastOnlineState()
     return
   }
@@ -118,6 +180,7 @@ ipcMain.handle('do-action', async (_event, action: string, note?: string) => {
   } catch (err) {
     if (isNetworkError(err)) {
       enqueueAction(action)
+      applyOptimisticAction(action)
       broadcastOnlineState()
     } else {
       throw err
@@ -134,16 +197,27 @@ ipcMain.handle('submit-report', async (_event, content: string) => {
 })
 
 ipcMain.handle('check-permissions', async () => {
+  // P0-1 — these APIs are macOS-only. On Windows / Linux,
+  // systemPreferences.getMediaAccessStatus('screen') doesn't exist on
+  // the system in the way TCC does on macOS, and
+  // isTrustedAccessibilityClient is undefined. Return a "granted" sentinel
+  // so the renderer doesn't gate clock-in on a permission check that
+  // can never be satisfied off macOS.
+  if (process.platform !== 'darwin') {
+    return { screen: 'granted', accessibility: true }
+  }
   const screen = systemPreferences.getMediaAccessStatus('screen')
   const accessibility = systemPreferences.isTrustedAccessibilityClient(false)
   return { screen, accessibility }
 })
 
 ipcMain.handle('open-accessibility-settings', async () => {
+  if (process.platform !== 'darwin') return
   await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
 })
 
 ipcMain.handle('open-screen-recording-settings', async () => {
+  if (process.platform !== 'darwin') return
   await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
 })
 
@@ -165,6 +239,29 @@ ipcMain.on('set-in-call', async (_event, value: boolean) => {
 ipcMain.on('set-current-task', async (_event, taskId: string | null) => {
   const { setCurrentTaskId } = await import('./activity')
   setCurrentTaskId(typeof taskId === 'string' ? taskId : null)
+})
+
+// P2.16 — Renderer pushes the currently-open report document. Mirrors
+// set-current-task; tags ActivitySummary.reportDocumentId on next heartbeat.
+ipcMain.on('set-current-report-document', async (_event, documentId: string | null) => {
+  const { setCurrentReportDocumentId } = await import('./activity')
+  setCurrentReportDocumentId(typeof documentId === 'string' ? documentId : null)
+})
+
+// P2.15 (DMs batch) — Renderer pushes the currently-focused DM/channel.
+// Tags ActivitySummary.channelId on the next heartbeat so the rollup can
+// populate `messagingSeconds`.
+ipcMain.on('set-current-channel', async (_event, channelId: string | null) => {
+  const { setCurrentChannelId } = await import('./activity')
+  setCurrentChannelId(typeof channelId === 'string' ? channelId : null)
+})
+
+// Wave C-3 — Renderer pushes the currently-joined VC. Tags
+// ActivitySummary.voiceChannelId on the next heartbeat so the rollup
+// can credit time-spent-in-voice toward work hours.
+ipcMain.on('set-current-voice-channel', async (_event, voiceChannelId: string | null) => {
+  const { setCurrentVoiceChannelId } = await import('./activity')
+  setCurrentVoiceChannelId(typeof voiceChannelId === 'string' ? voiceChannelId : null)
 })
 
 ipcMain.on('set-badge-count', (_event, count: number) => {
@@ -322,6 +419,8 @@ app.whenReady().then(() => {
   })
 
   initCrashReporter()
+  initErrorLogger()
+  console.log(`[error-logger] Errors are appended to: ${getErrorLogPath()}`)
 
   // ── Auto-updater ────────────────────────────────────────────────────────────
   autoUpdater.autoDownload = true

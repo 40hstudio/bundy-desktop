@@ -3,6 +3,7 @@ import { Task, Auth } from '../../types'
 import { C } from '../../theme'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_STATUS_ICONS, TASK_STATUS_LABELS, PRIORITY_COLORS } from './constants'
+import { effectiveDueDate, dueDateFromSubtask } from './effectiveDueDate'
 import UnreadBadge from './UnreadBadge'
 import type { UnreadBreakdown } from './TasksPanel'
 
@@ -11,7 +12,12 @@ export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, un
   showDivider?: boolean; unread?: UnreadBreakdown
 }) {
   const isDone = task.status === 'done'
-  const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && !isDone
+  // Display the rolled-up deadline: latest subtask dueDate if any,
+  // falling back to the task's own dueDate. A parent task whose
+  // subtasks have all moved out should follow them.
+  const displayDue = effectiveDueDate(task)
+  const fromSub = dueDateFromSubtask(task)
+  const isOverdue = displayDue && new Date(displayDue) < new Date() && !isDone
 
   return (
     <div
@@ -48,11 +54,18 @@ export default function TaskListRow({ task, auth: _auth, onOpen, showDivider, un
           }}>{task.priority}</span>
         </div>
       </div>
-      {task.dueDate && (
-        <span style={{
-          fontSize: 10, color: isOverdue ? C.danger : C.textMuted, flexShrink: 0,
-          display: 'flex', alignItems: 'center', gap: 3, fontWeight: isOverdue ? 600 : 400,
-        }}><Calendar size={10} />{new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+      {displayDue && (
+        <span
+          title={fromSub ? `Latest subtask due ${new Date(displayDue).toLocaleDateString()}` : undefined}
+          style={{
+            fontSize: 10, color: isOverdue ? C.danger : C.textMuted, flexShrink: 0,
+            display: 'flex', alignItems: 'center', gap: 3, fontWeight: isOverdue ? 600 : 400,
+            fontStyle: fromSub ? 'italic' : 'normal',
+          }}
+        >
+          <Calendar size={10} />
+          {new Date(displayDue).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        </span>
       )}
       {(task._count?.subtasks ?? 0) > 0 && (
         <span style={{ fontSize: 10, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>

@@ -3,6 +3,10 @@ import { Edit2, LogOut, RefreshCw } from 'lucide-react'
 import { ApiConfig, Auth } from '../../types'
 import { C, card, neu } from '../../theme'
 import Avatar from '../shared/Avatar'
+import { SoundSettings } from './SoundSettings'
+import { isMac } from '../../hooks/usePlatform'
+import { xhrUploadJson } from '../../api/xhrUpload'
+import { trackUpload } from '../../stores/uploadProgressStore'
 
 function PermRow({ label, granted, onFix }: { label: string; granted: boolean; onFix: () => void }) {
   return (
@@ -31,12 +35,15 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
   const [editStatus, setEditStatus] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [errorLogPath, setErrorLogPath] = useState<string | null>(null)
+  const [logPathCopied, setLogPathCopied] = useState(false)
   const avatarFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     window.electronAPI.checkPermissions().then(setPerms).catch(() => {})
     window.electronAPI.getVersion().then(setVersion).catch(() => {})
     window.electronAPI.getUpdateState().then(setUpdateState).catch(() => {})
+    window.electronAPI.getErrorLogPath().then(setErrorLogPath).catch(() => {})
     const unsubAvail = window.electronAPI.onUpdateAvailable((info) => {
       setUpdateState(prev => ({ version: info.version, percent: prev?.percent ?? null, downloaded: false }))
     })
@@ -87,21 +94,25 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
     form.append('file', file)
     setSaving(true)
     setSaveMsg('Uploading…')
+    const tracker = trackUpload({ name: file.name, surface: 'avatar', total: file.size })
     try {
-      const res = await fetch(`${config.apiBase}/api/user/avatar`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${config.token}` },
-        body: form,
-      })
-      const d = await res.json() as { user?: { avatarUrl: string } }
+      const d = await xhrUploadJson<{ user?: { avatarUrl: string } }>(
+        `${config.apiBase}/api/user/avatar`, config.token, form,
+        (loaded, total) => tracker.onProgress(total > 0 ? (loaded / total) * 100 : 0),
+      )
       if (d.user?.avatarUrl) {
         setProfile(p => p ? { ...p, avatarUrl: d.user!.avatarUrl } : p)
         setSaveMsg('Avatar updated!')
+        tracker.success()
         setTimeout(() => setSaveMsg(''), 2000)
       } else {
         setSaveMsg('Upload failed')
+        tracker.fail('Upload failed')
       }
-    } catch { setSaveMsg('Upload failed') } finally { setSaving(false) }
+    } catch (err) {
+      setSaveMsg('Upload failed')
+      tracker.fail(err instanceof Error ? err.message : String(err))
+    } finally { setSaving(false) }
   }
 
   return (
@@ -162,56 +173,28 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
         </div>
       </div>
 
-      {/* Permissions */}
-      <div style={{ ...card() }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Permissions</div>
-          <button onClick={checkPerms} style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer' }}><RefreshCw size={13} /></button>
-        </div>
-        {!perms ? (
-          <div style={{ color: C.textMuted, fontSize: 12 }}>Checking permissions…</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <PermRow label="Screen Recording" granted={perms.screen === 'granted'} onFix={() => window.electronAPI.openScreenRecordingSettings()} />
-            <PermRow label="Accessibility" granted={perms.accessibility} onFix={() => window.electronAPI.openAccessibilitySettings()} />
+      {/* Permissions — macOS only. The "Open Settings" deep links go
+          through Electron APIs that don't exist on Windows / Linux,
+          and the underlying TCC permissions only apply to macOS. P0-1. */}
+      {isMac && (
+        <div style={{ ...card() }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8 }}>Permissions</div>
+            <button onClick={checkPerms} style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer' }}><RefreshCw size={13} /></button>
           </div>
-        )}
-      </div>
-
-      {/* Privacy / data export (P3.21) */}
-      <div style={{ ...card() }}>
-        <div style={{ fontWeight: 600, fontSize: 13, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 }}>Privacy</div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Download my data</div>
-            <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>
-              Exports every activity record we hold for you (time logs, activity summaries,
-              screenshot metadata, manual time requests, daily plans, foul flags) as a single JSON file.
+          {!perms ? (
+            <div style={{ color: C.textMuted, fontSize: 12 }}>Checking permissions…</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <PermRow label="Screen Recording" granted={perms.screen === 'granted'} onFix={() => window.electronAPI.openScreenRecordingSettings()} />
+              <PermRow label="Accessibility" granted={perms.accessibility} onFix={() => window.electronAPI.openAccessibilitySettings()} />
             </div>
-          </div>
-          <button
-            onClick={async () => {
-              try {
-                const res = await fetch(`${config.apiBase}/api/user/data-export`, {
-                  headers: { Authorization: `Bearer ${config.token}` },
-                })
-                if (!res.ok) { alert('Export failed'); return }
-                const blob = await res.blob()
-                const url = URL.createObjectURL(blob)
-                const a = document.createElement('a')
-                a.href = url
-                a.download = `bundy-data-${auth.userId}.json`
-                document.body.appendChild(a)
-                a.click()
-                a.remove()
-                URL.revokeObjectURL(url)
-              } catch { alert('Export failed') }
-            }}
-            style={{ padding: '8px 14px', ...neu(), border: 'none', color: C.accent, fontWeight: 600, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>
-            Download
-          </button>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* Notification sounds */}
+      <SoundSettings />
 
       {/* About / Updates */}
       <div style={{ ...card() }}>
@@ -235,6 +218,28 @@ export default function SettingsPanel({ auth, config, onLogout }: { auth: Auth; 
             </button>
           )}
         </div>
+
+        {/* Error log location — automatic capture of every console.error /
+            unhandled exception / unhandled rejection. Click to copy the path. */}
+        {errorLogPath && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.separator}` }}>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 4 }}>Error log</div>
+            <button
+              onClick={() => {
+                if (window.electronAPI.writeClipboard) window.electronAPI.writeClipboard(errorLogPath)
+                else navigator.clipboard?.writeText(errorLogPath).catch(() => {})
+                setLogPathCopied(true)
+                setTimeout(() => setLogPathCopied(false), 1500)
+              }}
+              style={{
+                padding: '6px 10px', ...neu(), border: 'none', cursor: 'pointer',
+                fontSize: 11, color: C.textMuted, fontFamily: 'SF Mono, Menlo, monospace',
+                textAlign: 'left', wordBreak: 'break-all', width: '100%',
+              }}>
+              {logPathCopied ? '✓ Copied' : errorLogPath}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

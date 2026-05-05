@@ -7,6 +7,7 @@ import { ApiConfig, Auth, Task, TaskProject } from '../../types'
 import { C, neu } from '../../theme'
 import Avatar from '../shared/Avatar'
 import { TASK_STATUS_COLORS, TASK_BOARD_COLS, PRIORITY_LABELS, PRIORITY_COLORS } from './constants'
+import { effectiveDueDate, dueDateFromSubtask } from './effectiveDueDate'
 import TaskListGroup from './TaskListGroup'
 import TaskDetailDrawer from './TaskDetailDrawer'
 import CreateTaskModal from './CreateTaskModal'
@@ -17,6 +18,7 @@ import UnreadBadge from './UnreadBadge'
 import { useTasksStore } from '../../stores/tasksStore'
 import { useSavedFilterViews } from '../../hooks/useSavedFilterViews'
 import { Bookmark } from 'lucide-react'
+import { apiFetch as sharedApiFetch } from '../../api/client'
 
 interface TaskNotif {
   id: string; readAt: string | null; taskId: string
@@ -86,14 +88,17 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
   const { views: savedViews, saveView, deleteView } = useSavedFilterViews()
   const [showViewsMenu, setShowViewsMenu] = useState(false)
 
-  const apiFetch = useCallback(async (path: string, opts?: RequestInit) => {
-    const res = await fetch(`${config.apiBase}${path}`, {
-      ...opts,
-      headers: { 'Authorization': `Bearer ${config.token}`, 'Content-Type': 'application/json', ...(opts?.headers ?? {}) },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apiFetch = useCallback(async (path: string, opts?: RequestInit): Promise<any> => {
+    const method = (opts?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT'
+    const headers = (opts?.headers ?? {}) as Record<string, string>
+    const hasBody = opts?.body !== undefined && opts?.body !== null
+    return sharedApiFetch(path, {
+      method,
+      rawBody: hasBody ? (opts!.body as BodyInit) : undefined,
+      headers: hasBody ? { 'Content-Type': 'application/json', ...headers } : headers,
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  }, [config])
+  }, [])
 
   const load = useCallback(async (opts: { silent?: boolean } = {}) => {
     if (!opts.silent) setLoading(true)
@@ -477,11 +482,27 @@ export default function TasksPanel({ config, auth, pendingTaskId, pendingComment
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <span style={{ width: 6, height: 6, borderRadius: '50%', background: PRIORITY_COLORS[task.priority] ?? C.textMuted }} />
                             <span style={{ fontSize: 9, color: C.textMuted }}>{PRIORITY_LABELS[task.priority] ?? task.priority}</span>
-                            {task.dueDate && (
-                              <span style={{ fontSize: 9, color: new Date(task.dueDate) < new Date() && task.status !== 'done' ? C.danger : C.textMuted, marginLeft: 'auto' }}>
-                                {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                              </span>
-                            )}
+                            {(() => {
+                              // Rolled-up due date: latest subtask if any has dueDate,
+                              // else the task's own. Italic when sourced from a subtask.
+                              const displayDue = effectiveDueDate(task)
+                              if (!displayDue) return null
+                              const fromSub = dueDateFromSubtask(task)
+                              const overdue = new Date(displayDue) < new Date() && task.status !== 'done'
+                              return (
+                                <span
+                                  title={fromSub ? `Latest subtask due ${new Date(displayDue).toLocaleDateString()}` : undefined}
+                                  style={{
+                                    fontSize: 9,
+                                    color: overdue ? C.danger : C.textMuted,
+                                    marginLeft: 'auto',
+                                    fontStyle: fromSub ? 'italic' : 'normal',
+                                  }}
+                                >
+                                  {new Date(displayDue).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                </span>
+                              )
+                            })()}
                             {(task._count?.subtasks ?? 0) > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><GitBranch size={8} />{task._count.subtasks}</span>}
                             {(task._count?.comments ?? 0) > 0 && <span style={{ fontSize: 9, color: C.textMuted, display: 'flex', alignItems: 'center', gap: 2 }}><MessageSquare size={8} />{task._count.comments}</span>}
                           </div>

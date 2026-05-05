@@ -132,9 +132,9 @@ export async function openFullWindow(): Promise<void> {
           "script-src 'self' 'unsafe-inline'; " +
           "style-src 'self' 'unsafe-inline'; " +
           "img-src 'self' data: blob: https:; " +
-          "media-src 'self' https:; " +
+          "media-src 'self' blob: https:; " +
           "font-src 'self' data: https:; " +
-          "connect-src 'self' https://bundy.40h.studio wss://livekit.40h.studio https://livekit.40h.studio; " +
+          "connect-src 'self' https://bundy.40h.studio wss://livekit.40h.studio https://livekit.40h.studio wss://bundy-yjs.40h.studio https://bundy-yjs.40h.studio https://*.r2.cloudflarestorage.com; " +
           "frame-src 'self' https://bundy.40h.studio; " +
           "child-src 'self' https://bundy.40h.studio"
         ],
@@ -180,6 +180,16 @@ export async function openFullWindow(): Promise<void> {
 // ─── Floating call window ─────────────────────────────────────────────────────
 
 export async function openCallFloat(state: Record<string, unknown>): Promise<void> {
+  // P0-1 — the floating call window relies on a transparent + frameless +
+  // always-on-top BrowserWindow plus setVisibleOnAllWorkspaces with the
+  // macOS-specific visibleOnFullScreen flag. On Windows / Linux some of
+  // those misbehave (transparency on X11, no Spaces equivalent). The
+  // renderer falls back to an in-app mini mode when this resolves with
+  // no window, so we just return early on non-darwin.
+  if (process.platform !== 'darwin') {
+    void state // suppress unused-param warning
+    return
+  }
   if (callFloatWin && !callFloatWin.isDestroyed()) {
     callFloatWin.focus()
     return

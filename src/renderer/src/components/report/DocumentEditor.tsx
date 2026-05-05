@@ -1,11 +1,9 @@
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
 import Highlight from '@tiptap/extension-highlight'
 import Color from '@tiptap/extension-color'
 import { TextStyle } from '@tiptap/extension-text-style'
-import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
@@ -18,8 +16,12 @@ import Subscript from '@tiptap/extension-subscript'
 import Superscript from '@tiptap/extension-superscript'
 import HorizontalRule from '@tiptap/extension-horizontal-rule'
 import FontFamily from '@tiptap/extension-font-family'
+import Collaboration from '@tiptap/extension-collaboration'
+import CollaborationCaret from '@tiptap/extension-collaboration-caret'
+import * as Y from 'yjs'
+import { WebsocketProvider } from 'y-websocket'
 import { FontSize } from './FontSizeExtension'
-import { useCallback, useRef, useEffect, useState } from 'react'
+import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
 import { useImageUpload } from '../../hooks/useImageUpload'
 import {
   Bold, Italic, Underline as UnderlineIcon, Strikethrough, Code,
@@ -30,9 +32,11 @@ import {
   Table as TableIcon, Undo2, Redo2, Highlighter,
   Type, ChevronDown, Subscript as SubIcon, Superscript as SupIcon,
   Printer, Pilcrow, RemoveFormatting, TableCellsMerge, Plus, Trash2,
-  Upload,
+  Upload, History,
 } from 'lucide-react'
 import { C } from '../../theme'
+import { EditHistoryPanel } from './EditHistoryPanel'
+import { apiFetch } from '../../api/client'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -43,6 +47,31 @@ interface DocumentEditorProps {
   apiBase?: string
   token?: string
   projectId?: string
+  /** When set, the editor sends a Report-document presence beacon every 10s
+   *  and tags the activity heartbeat with this id (P1.11 + P2.16). Also
+   *  becomes the default Y.js sync key. */
+  documentId?: string
+  /** Override the Y.js doc-name used for live sync. Defaults to `documentId`.
+   *  Set explicitly when reusing this editor for non-Report-document surfaces
+   *  (e.g. `task-{id}` for the task drawer's description). When `collabKey`
+   *  is provided WITHOUT `documentId`, the presence beacon + heartbeat tag
+   *  are skipped (those are Report-doc-specific). */
+  collabKey?: string
+  /** Current user — surfaced as the live-cursor name + colour in collab mode (P4.31). */
+  user?: { id: string; name: string; avatar?: string | null }
+}
+
+// P4.31 — Stable colour per userId so each collaborator gets a consistent
+// cursor / selection highlight across reconnects. Picks from a curated palette
+// that contrasts well with both light and dark theme backgrounds.
+const COLLAB_COLORS = [
+  '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899',
+  '#06b6d4', '#84cc16', '#f97316', '#10b981', '#8b5cf6',
+] as const
+function colorForUserId(id: string): string {
+  let hash = 0
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0
+  return COLLAB_COLORS[Math.abs(hash) % COLLAB_COLORS.length]
 }
 
 // ─── Font sizes ───────────────────────────────────────────────────────────────
@@ -68,9 +97,61 @@ const HIGHLIGHT_COLORS = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function DocumentEditor({ content, onUpdate, editable = true, apiBase, token, projectId }: DocumentEditorProps) {
+export default function DocumentEditor({ content, onUpdate, editable = true, apiBase, token, projectId, documentId, collabKey, user }: DocumentEditorProps) {
+  // The y-websocket doc name. Prefer explicit `collabKey`, fall back to `documentId`.
+  const collabDocName = collabKey ?? documentId ?? null
   const onUpdateRef = useRef(onUpdate)
   onUpdateRef.current = onUpdate
+
+  // P4.31 — Collaborative editing via Y.js.
+  //
+  // Default WS URL is the production tunnel `wss://bundy-yjs.40h.studio`
+  // (provisioned via cloudflared → localhost:1234 on the bot host).
+  // Override with `localStorage.setItem('bundy.collab.wsUrl', '…')` for
+  // local dev or alt deployments. Set to the literal string `"off"` to
+  // disable collab and keep the plain HTML-saving editor.
+  //
+  // Y.Doc still works locally if the WS handshake fails — peers just won't
+  // see each other's edits until reconnect.
+  const DEFAULT_COLLAB_WS = 'wss://bundy-yjs.40h.studio'
+  const collabPref = (typeof window !== 'undefined' && collabDocName) ? window.localStorage.getItem('bundy.collab.wsUrl') : null
+  const collabWsUrl = collabPref === 'off' ? null : (collabPref || DEFAULT_COLLAB_WS)
+  const collabActive = !!(collabDocName && collabWsUrl)
+
+  const yDoc = useMemo(() => collabActive ? new Y.Doc() : null, [collabActive, collabDocName])
+  const yProvider = useMemo(() => {
+    if (!collabActive || !yDoc || !collabDocName || !collabWsUrl) return null
+    const p = new WebsocketProvider(collabWsUrl, collabDocName, yDoc, { connect: true })
+    return p
+  }, [collabActive, yDoc, collabDocName, collabWsUrl])
+
+  // Tear down provider on unmount or documentId change.
+  useEffect(() => {
+    return () => {
+      yProvider?.destroy()
+      yDoc?.destroy()
+    }
+  }, [yProvider, yDoc])
+
+  // Seed the Y.Doc with the current HTML content the first time we sync — but
+  // only if the doc is empty (no existing peer has populated it yet). This
+  // prevents overwriting other users' edits on reconnect.
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (!collabActive || !yProvider || !yDoc || seededRef.current) return
+    const onSynced = (synced: boolean) => {
+      if (!synced || seededRef.current) return
+      seededRef.current = true
+      const fragment = yDoc.getXmlFragment('default')
+      if (fragment.length === 0 && content && content.trim()) {
+        // editor.commands.setContent feeds HTML through the schema, which
+        // Tiptap propagates into Y.Doc automatically.
+        editorRef.current?.commands.setContent(content)
+      }
+    }
+    yProvider.on('synced', onSynced)
+    return () => { yProvider.off('synced', onSynced) }
+  }, [collabActive, yProvider, yDoc, content])
 
   const [showFontMenu, setShowFontMenu] = useState(false)
   const [showSizeMenu, setShowSizeMenu] = useState(false)
@@ -78,32 +159,161 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
   const [showHighlightMenu, setShowHighlightMenu] = useState(false)
   const [showTableMenu, setShowTableMenu] = useState(false)
   const [showImageMenu, setShowImageMenu] = useState(false)
+
+  // v1.5.2206 — Edit-history panel state (issues #10 + #12). Lazy-loaded:
+  // we don't fetch the edits list unless the user opens the panel, so the
+  // common case (editing the doc) pays nothing.
+  type EditMeta = {
+    id: string
+    summary: string | null
+    createdAt: string
+    user: { id: string; username: string; alias: string | null; avatarUrl: string | null }
+  }
+  const [showEditHistory, setShowEditHistory] = useState(false)
+  const [edits, setEdits] = useState<EditMeta[]>([])
+  const [editsLoading, setEditsLoading] = useState(false)
+  useEffect(() => {
+    if (!showEditHistory || !documentId) return
+    let cancelled = false
+    setEditsLoading(true)
+    apiFetch<{ document: { edits: EditMeta[] } }>(`/api/report/documents/${documentId}`)
+      .then((data) => { if (!cancelled) setEdits(data?.document?.edits ?? []) })
+      .catch(() => { if (!cancelled) setEdits([]) })
+      .finally(() => { if (!cancelled) setEditsLoading(false) })
+    return () => { cancelled = true }
+  }, [showEditHistory, documentId])
+  const onRevertEdit = useCallback(async (editId: string) => {
+    if (!documentId) return
+    if (!window.confirm('Revert document to the state before this edit? Current content will be saved as a new edit so you can roll forward again.')) return
+    try {
+      await apiFetch(`/api/report/documents/${documentId}/edits/${editId}/revert`, { method: 'POST' })
+      // The Y.js sync will pull in the reverted content; close panel.
+      setShowEditHistory(false)
+    } catch (err) {
+      console.error('[DocumentEditor] revert failed:', err)
+      window.alert('Revert failed. ' + (err instanceof Error ? err.message : ''))
+    }
+  }, [documentId])
+
+  // v1.5.2111 — active viewers/editors. Y.js awareness already broadcasts
+  // who's connected (it's how the typing cursors work) — we just surface
+  // it as an avatar stack. `editing` = had a doc change in last 5s.
+  type ViewerState = { id: string; name: string; color: string; avatar: string | null; isEditing: boolean; isSelf: boolean }
+  const [activeViewers, setActiveViewers] = useState<ViewerState[]>([])
+  const lastEditAtRef = useRef<Map<string, number>>(new Map())
+  useEffect(() => {
+    if (!collabActive || !yProvider) return
+    const awareness = yProvider.awareness
+    const myClientId = awareness.clientID
+    const refresh = () => {
+      const now = Date.now()
+      const states: ViewerState[] = []
+      const seenIds = new Set<string>()
+      awareness.getStates().forEach((state, clientId) => {
+        const u = (state as { user?: { id?: string; name?: string; color?: string; avatar?: string | null } }).user
+        if (!u) return
+        const uid = u.id || `client-${clientId}`
+        if (seenIds.has(uid)) return // dedupe multiple tabs from same user
+        seenIds.add(uid)
+        const lastEdit = lastEditAtRef.current.get(uid) ?? 0
+        states.push({
+          id: uid,
+          name: u.name || 'Anonymous',
+          color: u.color || '#3b82f6',
+          avatar: u.avatar ?? null,
+          isEditing: now - lastEdit < 5000,
+          isSelf: clientId === myClientId,
+        })
+      })
+      setActiveViewers(states)
+    }
+    awareness.on('change', refresh)
+    refresh()
+    return () => { awareness.off('change', refresh) }
+  }, [collabActive, yProvider])
+  // Track when each remote peer last edited the doc, so the avatar dot
+  // can flip from "viewing" (grey) to "editing" (green).
+  useEffect(() => {
+    if (!collabActive || !yDoc) return
+    const onUpdate = (_update: Uint8Array, origin: unknown) => {
+      // Origin is the provider that pushed the update; for local edits
+      // it's null/undefined. Map back to user via awareness lookup.
+      if (!yProvider) return
+      const awareness = yProvider.awareness
+      // origin is the awareness client when remote, our own provider when local.
+      // Simplest signal: every state with `user` gets a heartbeat now.
+      awareness.getStates().forEach((state) => {
+        const u = (state as { user?: { id?: string } }).user
+        if (u?.id) lastEditAtRef.current.set(u.id, Date.now())
+      })
+      // Trigger a refresh so isEditing flips
+      setActiveViewers((prev) => prev.map((v) => ({ ...v, isEditing: true })))
+      void _update; void origin
+    }
+    yDoc.on('update', onUpdate)
+    return () => { yDoc.off('update', onUpdate) }
+  }, [collabActive, yDoc, yProvider])
   const imageInputRef = useRef<HTMLInputElement>(null)
 
   const editorRefForUpload = useRef<ReturnType<typeof useEditor>>(null)
-  const { upload: uploadImage, tryUploadFromClipboard, uploading: imageUploading } = useImageUpload({
+  const { upload: uploadImage, uploadMany: uploadManyImages, tryUploadFromClipboard, uploading: imageUploading } = useImageUpload({
     endpoint: '/api/report/documents/upload-image',
     onUploaded: (url) => editorRefForUpload.current?.chain().focus().setImage({ src: url }).run(),
+    // v1.5.2111 — batched insert path for multi-image paste/drop. All N
+    // images go in via a single chained transaction so the cursor advances
+    // correctly between them (previously parallel `setImage` calls clobbered
+    // each other and only the last image survived).
+    onUploadedMany: (urls) => {
+      const editor = editorRefForUpload.current
+      if (!editor) return
+      // v1.5.2207 — use insertContent with a single array of nodes so
+      // ProseMirror inserts all images in one transaction with proper
+      // block boundaries. Previous chain().setImage(...).setImage(...)
+      // didn't reliably advance the cursor between block-level image
+      // inserts, so subsequent setImage calls overwrote the first.
+      const nodes = urls.flatMap((url) => [
+        { type: 'image', attrs: { src: url } },
+        { type: 'paragraph' },
+      ])
+      editor.chain().focus().insertContent(nodes).run()
+    },
     onError: (err) => console.error('[DocumentEditor] image upload failed:', err),
   })
 
   const handleDroppedImage = useCallback((file: File) => { void uploadImage(file) }, [uploadImage])
+  // v1.5.2111 — multi-file drop variant; routed through uploadMany so all
+  // images insert via a single editor transaction.
+  const handleDroppedImages = useCallback((files: File[]) => { void uploadManyImages(files) }, [uploadManyImages])
   void apiBase; void token // kept for prop compat — apiFetch reads from configStore
 
   const editorRef = useRef<ReturnType<typeof useEditor>>(null)
 
   const editor = useEditor({
     extensions: [
+      // Tiptap v3 StarterKit already bundles Underline + Link, so we configure
+      // them inline instead of importing them separately (which would warn
+      // about duplicate extension names and corrupt the schema for Y.js sync).
+      // The Collaboration extension brings its own Y.js-driven undo/redo,
+      // so StarterKit's UndoRedo (note: was called `history` in v2) must be
+      // disabled when collaborating, otherwise both stack-pop on Cmd-Z.
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         horizontalRule: false,
+        // v1.5.2111 — explicit autolink + linkOnPaste so URLs typed inline
+        // become clickable as soon as a space follows (was: only on newline).
+        link: {
+          openOnClick: false,
+          autolink: true,
+          linkOnPaste: true,
+          protocols: ['http', 'https', 'mailto'],
+          HTMLAttributes: { class: 'tiptap-link', rel: 'noopener noreferrer', target: '_blank' },
+        },
+        ...(collabActive ? { undoRedo: false as const } : {}),
       }),
-      Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight.configure({ multicolor: true }),
       TextStyle,
       Color,
-      Link.configure({ openOnClick: false, HTMLAttributes: { class: 'tiptap-link' } }),
       Image.configure({ allowBase64: true, inline: false }),
       Table.configure({ resizable: true }),
       TableRow,
@@ -117,8 +327,22 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
       HorizontalRule,
       FontFamily,
       FontSize,
+      ...(collabActive && yDoc ? [Collaboration.configure({ document: yDoc })] : []),
+      ...(collabActive && yProvider ? [CollaborationCaret.configure({
+        provider: yProvider,
+        user: {
+          // v1.5.2111 — include id + avatar in awareness so the active-viewers
+          // avatar stack can render real faces, not initials.
+          id: user?.id ?? '',
+          name: user?.name || 'Anonymous',
+          color: user?.id ? colorForUserId(user.id) : '#3b82f6',
+          avatar: user?.avatar ?? null,
+        },
+      })] : []),
     ],
-    content,
+    // When collaborating, Y.Doc is the source of truth — don't seed content
+    // (the WS provider will sync the doc state from peers/persistence).
+    content: collabActive ? undefined : content,
     editable,
     onUpdate: ({ editor: ed }) => {
       onUpdateRef.current(ed.getHTML())
@@ -130,12 +354,13 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
       },
       handleDrop: (view, event) => {
         const files = event.dataTransfer?.files
-        if (files?.length && files[0].type.startsWith('image/')) {
-          event.preventDefault()
-          handleDroppedImage(files[0])
-          return true
-        }
-        return false
+        if (!files?.length) return false
+        const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'))
+        if (imageFiles.length === 0) return false
+        event.preventDefault()
+        if (imageFiles.length === 1) handleDroppedImage(imageFiles[0])
+        else handleDroppedImages(imageFiles)
+        return true
       },
       handlePaste: (_view, event) => {
         if (tryUploadFromClipboard(event.clipboardData?.items ?? null)) {
@@ -160,6 +385,41 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [])
+
+  // P1.11 + P2.16 — Presence beacon + heartbeat tag while a documentId is set.
+  // Beacon every 10s; tag the heartbeat for the duration the editor is mounted.
+  useEffect(() => {
+    if (!documentId) return
+    let cancelled = false
+
+    window.electronAPI.setCurrentReportDocument(documentId)
+
+    const beat = async () => {
+      try {
+        const cfg = await window.electronAPI.getApiConfig()
+        if (cancelled) return
+        await fetch(`${cfg.apiBase}/api/report/documents/${documentId}/presence`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${cfg.token}` },
+        })
+      } catch { /* network blip — next beat will retry */ }
+    }
+    beat()
+    const id = setInterval(beat, 10_000)
+
+    return () => {
+      cancelled = true
+      clearInterval(id)
+      window.electronAPI.setCurrentReportDocument(null)
+      window.electronAPI.getApiConfig().then((cfg) => {
+        // Best-effort leave; ignore errors.
+        fetch(`${cfg.apiBase}/api/report/documents/${documentId}/presence`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${cfg.token}` },
+        }).catch(() => {})
+      }).catch(() => {})
+    }
+  }, [documentId])
 
   const setLink = useCallback(() => {
     if (!editor) return
@@ -232,7 +492,7 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
       {/* ── Formatting Toolbar ───────────────────────────────────────── */}
       {editable && (
         <div style={{
@@ -512,10 +772,12 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
               ref={imageInputRef}
               type="file"
               accept="image/*"
+              multiple
               style={{ display: 'none' }}
               onChange={e => {
-                const f = e.target.files?.[0]
-                if (f) addImageFromFile(f)
+                const files = Array.from(e.target.files ?? [])
+                if (files.length === 1) addImageFromFile(files[0])
+                else if (files.length > 1) { void uploadManyImages(files); setShowImageMenu(false) }
                 if (imageInputRef.current) imageInputRef.current.value = ''
               }}
             />
@@ -592,6 +854,55 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
           }} title="Print">
             <Printer size={14} />
           </TB>
+
+          {/* v1.5.2206 — edit history. Only visible when documentId is set
+              (i.e. on a real Report doc, not on the embedded clock-out
+              report editor where there's no version history). */}
+          {documentId && (
+            <TB onClick={() => setShowEditHistory(true)} title="Edit history">
+              <History size={14} />
+            </TB>
+          )}
+
+          {/* v1.5.2111 — active viewers / editors stack. Pushed to the
+              right edge with margin-left:auto so it doesn't fight with
+              formatting controls. Green dot = currently editing. */}
+          {collabActive && activeViewers.length > 0 && (
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'row-reverse' }}>
+                {activeViewers.slice(0, 5).map((v, idx) => (
+                  <div key={v.id} title={`${v.name}${v.isSelf ? ' (you)' : ''} — ${v.isEditing ? 'editing' : 'viewing'}`}
+                    style={{
+                      width: 24, height: 24, borderRadius: '50%',
+                      border: `2px solid ${v.color}`,
+                      marginLeft: idx === activeViewers.slice(0, 5).length - 1 ? 0 : -8,
+                      position: 'relative', overflow: 'visible', zIndex: activeViewers.length - idx,
+                      background: C.bgHover, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                    {v.avatar ? (
+                      <img src={v.avatar.startsWith('http') ? v.avatar : `${apiBase}${v.avatar}`}
+                        alt={v.name}
+                        style={{ width: 20, height: 20, borderRadius: '50%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ fontSize: 10, fontWeight: 600, color: C.text }}>
+                        {(v.name || '?').slice(0, 1).toUpperCase()}
+                      </span>
+                    )}
+                    {/* status dot */}
+                    <span style={{
+                      position: 'absolute', bottom: -1, right: -1,
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: v.isEditing ? '#22c55e' : '#9ca3af',
+                      border: `1.5px solid ${C.lgBg}`,
+                    }} />
+                  </div>
+                ))}
+              </div>
+              {activeViewers.length > 5 && (
+                <span style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>+{activeViewers.length - 5}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -604,6 +915,16 @@ export default function DocumentEditor({ content, onUpdate, editable = true, api
           <EditorContent editor={editor} />
         </div>
       </div>
+
+      {/* v1.5.2206 — slide-in edit history panel (issues #10 + #12). */}
+      {showEditHistory && documentId && (
+        <EditHistoryPanel
+          documentId={documentId}
+          edits={editsLoading ? [] : edits}
+          onClose={() => setShowEditHistory(false)}
+          onRevert={onRevertEdit}
+        />
+      )}
     </div>
   )
 }

@@ -18,6 +18,8 @@ interface OverviewUser {
   status: 'Online' | 'On Break' | 'Offline'
   hoursWorked: number; weekHours: number; monthHours: number
   todayTrackedMinutes?: number; statusDuration: string | null
+  // Wave C-3 — wall-clock + active minutes spent in voice channels today.
+  todayVoiceMinutes?: number; todayVoiceActiveMinutes?: number
   checkInAt: string | null; clockOutAt: string | null
   lastAction: { action: string; timestamp: string; timestampWIB: string } | null
   todayLogs: { id: string; action: string; timestamp: string; timestampWIB: string }[]
@@ -583,6 +585,18 @@ function UserDetailView({ config, user, bases, holidays, currentApp, onBack }: {
             <QuickStat label="Today" value={hoursToHHMM(user.hoursWorked)} />
             <QuickStat label="Week" value={hoursToHHMM(user.weekHours)} />
             <QuickStat label="Month" value={hoursToHHMM(user.monthHours)} />
+            {/* Wave C-3 — wall-clock minutes in voice today, with active%
+                in parentheses (engaged-vs-just-on-the-call). */}
+            {(user.todayVoiceMinutes ?? 0) > 0 && (
+              <QuickStat
+                label="Voice today"
+                value={`${hoursToHHMM(user.todayVoiceMinutes! / 60)}${
+                  user.todayVoiceActiveMinutes !== undefined && user.todayVoiceMinutes! > 0
+                    ? ` (${Math.round((user.todayVoiceActiveMinutes / user.todayVoiceMinutes!) * 100)}% active)`
+                    : ''
+                }`}
+              />
+            )}
           </div>
         </div>
 

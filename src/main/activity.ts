@@ -205,6 +205,7 @@ function bumpActivity(): void {
 // it had fresh keyboard + mouse activity. See P2.9.
 let inCall = false
 export function setInCall(value: boolean): void { inCall = value }
+export function getInCall(): boolean { return inCall }
 
 // Currently-focused task (drawer open). When set, the next 10-min heartbeat
 // is tagged with this taskId so the daily rollup can populate Task.actualHours
@@ -212,6 +213,28 @@ export function setInCall(value: boolean): void { inCall = value }
 let currentTaskId: string | null = null
 export function setCurrentTaskId(id: string | null): void { currentTaskId = id }
 export function getCurrentTaskId(): string | null { return currentTaskId }
+
+// Currently-open report document (P2.16). When set, the next 10-min heartbeat
+// is tagged with this id so the daily rollup can populate per-document
+// reportEditingSeconds. Mirrors the taskId tagging from P2.10.
+let currentReportDocumentId: string | null = null
+export function setCurrentReportDocumentId(id: string | null): void { currentReportDocumentId = id }
+export function getCurrentReportDocumentId(): string | null { return currentReportDocumentId }
+
+// Currently-open DM/channel conversation (P2.15 of the DMs batch). When set,
+// the next 10-min heartbeat is tagged with this channelId so the daily rollup
+// can populate `messagingSeconds`. Same shape as taskId / reportDocumentId.
+let currentChannelId: string | null = null
+export function setCurrentChannelId(id: string | null): void { currentChannelId = id }
+export function getCurrentChannelId(): string | null { return currentChannelId }
+
+// Voice channel currently joined (Wave C-3). Same pattern as the others.
+// Renderer sets this when the user joins a VC and clears it on leave.
+// The next heartbeat tags `voiceChannelId` so the rollup can credit
+// time-spent-in-voice toward work hours.
+let currentVoiceChannelId: string | null = null
+export function setCurrentVoiceChannelId(id: string | null): void { currentVoiceChannelId = id }
+export function getCurrentVoiceChannelId(): string | null { return currentVoiceChannelId }
 
 function bumpMouse(): void {
   lastMouseTs = Date.now()
@@ -283,6 +306,12 @@ function flushHeartbeat(): void {
     // Tag the window with whatever task drawer was open most recently
     // so the daily rollup can populate Task.actualHours (P2.10).
     taskId: currentTaskId,
+    // P2.16 — and whichever report document is open in the editor.
+    reportDocumentId: currentReportDocumentId,
+    // P2.15 (DMs batch) — and whichever DM/channel conversation is focused.
+    channelId: currentChannelId,
+    // Wave C-3 — and whichever voice channel the user is currently in.
+    voiceChannelId: currentVoiceChannelId,
   }
   void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
   mouseEvents = 0
@@ -382,6 +411,9 @@ export function stopActivity(): void {
       topApps: { ...appSeconds },
       topUrls: { ...urlSeconds },
       taskId: currentTaskId,
+      reportDocumentId: currentReportDocumentId,
+      channelId: currentChannelId,
+      voiceChannelId: currentVoiceChannelId,
     }
     void trySendOrQueue(data, sendHeartbeat, queueActivitySummary)
     mouseEvents = 0
